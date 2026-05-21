@@ -14,6 +14,7 @@ class Intent(enum.Enum):
     CHAT = "chat"
     QUERY = "query"
     ACTION = "action"
+    CLARIFY = "clarify"
 
 
 SYSTEM_PROMPT = (
@@ -38,17 +39,22 @@ class Session:
 
 
 CLASSIFIER_PROMPT = (
-    "classify the user message into exactly one category\n"
-    "reply with a single word: chat, query, or action\n"
-    "chat: the user is having a conversation, asking for explanations, or discussing "
-    "topics that can be answered from your own knowledge without external lookups\n"
-    "query: the user needs information that requires fetching external data — "
-    "searching the web, reading documentation, scanning repository files, "
-    "looking up APIs, checking current state of anything outside this conversation\n"
-    "action: the user wants to modify files, write code, create or delete resources "
-    "in the repository\n\n"
-    "when in doubt between chat and query, prefer query\n"
-    "when in doubt between query and action, prefer query"
+    "decompose the user message into one or more labeled tasks\n"
+    "output one line per task in the format: {label}: {sub-prompt}\n"
+    "labels:\n"
+    "  chat    — answer from model knowledge, no external data needed\n"
+    "  query   — needs external data: web search, docs, repo file reads\n"
+    "  action  — modifies repository files (create, edit, delete)\n"
+    "  clarify — the request is too ambiguous to act on; state what is unclear\n\n"
+    "rules:\n"
+    "  output only the labeled lines, no extra text\n"
+    "  use clarify for any part that cannot be confidently categorized\n"
+    "  when in doubt between chat and query, use query\n"
+    "  when in doubt between query and action, use query\n\n"
+    "example input: refactor auth error handling and tell me if GET /users returns JSON or YAML\n"
+    "example output:\n"
+    "action: refactor auth error handling\n"
+    "query: does GET /users return JSON or YAML"
 )
 
 
@@ -63,7 +69,7 @@ class IntentClassifier:
         self._api_key = api_key
         self._api_base = api_base
 
-    async def classify(self, user_input: str) -> Intent:
+    async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
         response = await litellm.acompletion(
             model=self._model,
             messages=[
@@ -73,8 +79,16 @@ class IntentClassifier:
             api_key=self._api_key,
             api_base=self._api_base,
         )
-        raw: str = response.choices[0].message.content.strip().lower()
-        try:
-            return Intent(raw)
-        except ValueError:
-            return Intent.CHAT
+        raw: str = response.choices[0].message.content.strip()
+        segments: list[tuple[Intent, str]] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or ": " not in line:
+                continue
+            label, _, sub_prompt = line.partition(": ")
+            try:
+                intent = Intent(label.strip().lower())
+            except ValueError:
+                intent = Intent.CHAT
+            segments.append((intent, sub_prompt.strip()))
+        return segments if segments else [(Intent.CHAT, user_input)]

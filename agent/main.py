@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+logging.getLogger("LiteLLM.utils").setLevel(logging.ERROR)
+logging.getLogger("litellm").setLevel(logging.ERROR)
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
@@ -60,10 +62,16 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
             continue
 
         try:
+            start = time.monotonic()
+            segments = await agent.classify(stripped)
+
+            if debug:
+                for intent, sub in segments:
+                    console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
+
             chunks: list[str] = []
             token_count = 0
             frame_index = 0
-            start = time.monotonic()
 
             with Live(console=console, refresh_per_second=12, transient=True) as live:
                 live.update(make_spinner_display(frame_index, token_count))
@@ -77,7 +85,7 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
 
                 spinner_task = asyncio.create_task(_animate())
                 try:
-                    async for chunk in agent.process_stream(session, stripped):
+                    async for chunk in agent.process_stream(session, segments):
                         chunks.append(chunk)
                         token_count += 1
                         live.update(make_spinner_display(frame_index, token_count))

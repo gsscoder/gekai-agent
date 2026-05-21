@@ -14,8 +14,12 @@ from .handlers.chat import ChatHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
+from .ui import console
 
 litellm.suppress_debug_info = True
+litellm.success_callback = []
+litellm._async_success_callback = []
+litellm.callbacks = []
 
 load_dotenv()
 
@@ -35,9 +39,6 @@ class GekaiAgent:
         self.working_dir = working_dir
         self.permissions = permissions
         self.debug = debug
-        if debug:
-            logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-            litellm.set_verbose = True
         _validate_config()
         self.model: str = os.environ["GEKAI_DEFAULT_MODEL"]
         self._api_key: str | None = os.environ.get("GEKAI_API_KEY")
@@ -60,33 +61,39 @@ class GekaiAgent:
     def start_session(self) -> Session:
         return Session(working_dir=self.working_dir, permissions=self.permissions)
 
-    async def process(self, session: Session, user_input: str) -> str:
-        intent = await self._classifier.classify(user_input)
+    async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
+        return await self._classifier.classify(user_input)
 
-        if self.debug:
-            from rich.console import Console
-            Console(stderr=True).print(
-                f"[grey50]debug: intent={intent.value}[/grey50]"
-            )
+    async def process(self, session: Session, segments: list[tuple[Intent, str]]) -> str:
+        clarifications = [sub for intent, sub in segments if intent == Intent.CLARIFY]
+        if clarifications:
+            questions = "\n".join(f"- {q}" for q in clarifications)
+            return f"before proceeding, I need some clarification:\n{questions}"
 
-        handler = self._handlers[intent]
-        return await handler.handle(session, user_input)
+        parts: list[str] = []
+        for intent, sub_prompt in segments:
+            handler = self._handlers[intent]
+            parts.append(await handler.handle(session, sub_prompt))
+        return "\n\n".join(parts)
 
     async def process_stream(
-        self, session: Session, user_input: str
+        self, session: Session, segments: list[tuple[Intent, str]]
     ) -> AsyncIterator[str]:
-        intent = await self._classifier.classify(user_input)
+        clarifications = [sub for intent, sub in segments if intent == Intent.CLARIFY]
+        if clarifications:
+            questions = "\n".join(f"- {q}" for q in clarifications)
+            yield f"before proceeding, I need some clarification:\n{questions}"
+            return
 
-        if self.debug:
-            from rich.console import Console
-            Console(stderr=True).print(
-                f"[grey50]debug: intent={intent.value}[/grey50]"
-            )
-
-        handler = self._handlers[intent]
-        if hasattr(handler, "stream"):
-            async for chunk in handler.stream(session, user_input):
-                yield chunk
-        else:
-            result = await handler.handle(session, user_input)
-            yield result
+        first = True
+        for intent, sub_prompt in segments:
+            if not first:
+                yield "\n\n"
+            first = False
+            handler = self._handlers[intent]
+            if hasattr(handler, "stream"):
+                async for chunk in handler.stream(session, sub_prompt):
+                    yield chunk
+            else:
+                result = await handler.handle(session, sub_prompt)
+                yield result
