@@ -7,6 +7,8 @@ from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 
 from .agent import GekaiAgent
+from .commands.exit import ExitCommand
+from .commands.registry import CommandRegistry
 
 console = Console()
 
@@ -18,6 +20,9 @@ def _render_response(text: str) -> None:
 async def _run(debug: bool = False) -> None:
     agent = GekaiAgent(debug=debug)
     session = agent.start_session()
+
+    registry = CommandRegistry()
+    registry.register(ExitCommand())
 
     pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
 
@@ -36,6 +41,14 @@ async def _run(debug: bool = False) -> None:
 
         stripped = user_input.strip()
         if not stripped:
+            continue
+
+        if stripped.startswith("/"):
+            result = await registry.dispatch(stripped)
+            if result.output:
+                console.print(result.output)
+            if result.exit_app:
+                break
             continue
 
         try:
