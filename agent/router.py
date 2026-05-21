@@ -21,10 +21,16 @@ class Session:
 
 CLASSIFIER_PROMPT = (
     "classify the user message into exactly one category\n"
-    "Reply with a single word: chat, query, or action\n"
-    "chat: general conversation, explanations, questions not about a specific codebase\n"
-    "query: questions requiring reading files or searching the repository (read-only)\n"
-    "action: requests that require modifying files in the repository (read + write)"
+    "reply with a single word: chat, query, or action\n"
+    "chat: the user is having a conversation, asking for explanations, or discussing "
+    "topics that can be answered from your own knowledge without external lookups\n"
+    "query: the user needs information that requires fetching external data — "
+    "searching the web, reading documentation, scanning repository files, "
+    "looking up APIs, checking current state of anything outside this conversation\n"
+    "action: the user wants to modify files, write code, create or delete resources "
+    "in the repository\n\n"
+    "when in doubt between chat and query, prefer query\n"
+    "when in doubt between query and action, prefer query"
 )
 
 
