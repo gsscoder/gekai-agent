@@ -1,5 +1,7 @@
 import argparse
 import asyncio
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +17,28 @@ from .commands.registry import CommandRegistry
 from .settings import load_permissions, prompt_permissions
 from .ui import console, make_spinner_display, print_banner, render_operation_summary, render_response
 from .workspace import get_git_branch
+
+
+def _block_until_esc(stop: threading.Event) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+        while not stop.is_set():
+            if msvcrt.kbhit() and msvcrt.getch() == b"\x1b":
+                return
+            time.sleep(0.05)
+    else:
+        import select
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while not stop.is_set():
+                if select.select([sys.stdin], [], [], 0.05)[0] and sys.stdin.read(1) == "\x1b":
+                    return
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 async def _run(working_dir: Path, debug: bool = False) -> None:
@@ -58,43 +82,67 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
 
         try:
             start = time.monotonic()
-            segments = await agent.classify(stripped)
+            stop_esc = threading.Event()
+            loop = asyncio.get_running_loop()
 
-            if debug:
-                for intent, sub in segments:
-                    console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
+            async def _interact() -> str:
+                segments = await agent.classify(stripped)
 
-            chunks: list[str] = []
-            token_count = 0
-            frame_index = 0
+                if debug:
+                    for intent, sub in segments:
+                        console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
 
-            with Live(console=console, refresh_per_second=12, transient=True) as live:
-                live.update(make_spinner_display(frame_index, token_count))
+                chunks: list[str] = []
+                token_count = 0
+                frame_index = 0
 
-                async def _animate() -> None:
-                    nonlocal frame_index
-                    while True:
-                        await asyncio.sleep(0.1)
-                        frame_index += 1
-                        live.update(make_spinner_display(frame_index, token_count))
+                with Live(console=console, refresh_per_second=12, transient=True) as live:
+                    live.update(make_spinner_display(frame_index, token_count))
 
-                spinner_task = asyncio.create_task(_animate())
-                try:
-                    async for chunk in agent.process_stream(session, segments):
-                        chunks.append(chunk)
-                        token_count += 1
-                        live.update(make_spinner_display(frame_index, token_count))
-                finally:
-                    spinner_task.cancel()
+                    async def _animate() -> None:
+                        nonlocal frame_index
+                        while True:
+                            await asyncio.sleep(0.1)
+                            frame_index += 1
+                            live.update(make_spinner_display(frame_index, token_count))
+
+                    spinner_task = asyncio.create_task(_animate())
                     try:
-                        await spinner_task
-                    except asyncio.CancelledError:
-                        pass
+                        async for chunk in agent.process_stream(session, segments):
+                            chunks.append(chunk)
+                            token_count += 1
+                            live.update(make_spinner_display(frame_index, token_count))
+                    finally:
+                        spinner_task.cancel()
+                        try:
+                            await spinner_task
+                        except asyncio.CancelledError:
+                            pass
 
-            render_operation_summary(time.monotonic() - start)
-            console.print()
-            render_response("".join(chunks))
-            console.print()
+                return "".join(chunks)
+
+            interact_task = asyncio.create_task(_interact())
+            esc_future = loop.run_in_executor(None, _block_until_esc, stop_esc)
+
+            done, _ = await asyncio.wait(
+                {interact_task, esc_future},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            stop_esc.set()
+
+            if interact_task in done:
+                reply = interact_task.result()
+                render_operation_summary(time.monotonic() - start)
+                console.print()
+                render_response(reply)
+                console.print()
+            else:
+                interact_task.cancel()
+                try:
+                    await interact_task
+                except asyncio.CancelledError:
+                    pass
+                console.print("\n[dim]cancelled[/dim]")
 
         except Exception as exc:
             console.print(f"[red]error:[/red] {exc}")
