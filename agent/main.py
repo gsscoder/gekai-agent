@@ -1,34 +1,20 @@
 import argparse
 import asyncio
 import logging
+import time
 
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 
-import pyfiglet
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
-from rich.console import Console
 from rich.live import Live
-from rich.text import Text
 
 from . import __version__
 from .agent import GekaiAgent
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
-
-console = Console()
-
-
-def _render_response(text: str) -> None:
-    console.print(f"[bold cyan]●[/bold cyan] {text}")
-
-
-def _print_banner() -> None:
-    banner = pyfiglet.figlet_format("gekai", font="small_slant").rstrip()
-    console.print(f"[cyan]{banner}[/cyan]")
-    console.print(f"[bold white]gekai[/bold white] [grey50]v{__version__}[/grey50]")
-    console.print()
+from .ui import console, make_spinner_display, print_banner, render_operation_summary, render_response
 
 
 async def _run(debug: bool = False) -> None:
@@ -40,7 +26,7 @@ async def _run(debug: bool = False) -> None:
 
     pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
 
-    _print_banner()
+    print_banner(__version__)
 
     prompt_message = FormattedText([("ansicyan bold", "❯ ")])
 
@@ -63,50 +49,39 @@ async def _run(debug: bool = False) -> None:
             continue
 
         try:
-            import time
             chunks: list[str] = []
             token_count = 0
             frame_index = 0
-            _spinner = ["|", "/", "-", "\\"]
-            _start = time.monotonic()
-
-            def _make_display() -> Text:
-                _t = Text()
-                _t.append(f"{_spinner[frame_index]} Operating...", style="yellow")
-                _count = str(token_count) if token_count < 1000 else f"{token_count / 1000:.1f}k"
-                _t.append(f" (↑ {_count} tokens)", style="medium_orchid")
-                return _t
+            start = time.monotonic()
 
             with Live(console=console, refresh_per_second=12, transient=True) as live:
-                live.update(_make_display())
+                live.update(make_spinner_display(frame_index, token_count))
 
                 async def _animate() -> None:
                     nonlocal frame_index
                     while True:
                         await asyncio.sleep(0.1)
-                        frame_index = (frame_index + 1) % len(_spinner)
-                        live.update(_make_display())
+                        frame_index += 1
+                        live.update(make_spinner_display(frame_index, token_count))
 
                 spinner_task = asyncio.create_task(_animate())
                 try:
                     async for chunk in agent.process_stream(session, stripped):
                         chunks.append(chunk)
                         token_count += 1
-                        live.update(_make_display())
+                        live.update(make_spinner_display(frame_index, token_count))
                 finally:
                     spinner_task.cancel()
                     try:
                         await spinner_task
                     except asyncio.CancelledError:
                         pass
-            _elapsed = time.monotonic() - _start
-            _duration = f"{_elapsed:.0f}s" if _elapsed < 60 else f"{_elapsed / 60:.1f}m"
+
+            render_operation_summary(time.monotonic() - start)
             console.print()
-            console.print(f"[grey50]* Operated for {_duration}[/grey50]")
-            reply = "".join(chunks)
+            render_response("".join(chunks))
             console.print()
-            _render_response(reply)
-            console.print()
+
         except Exception as exc:
             console.print(f"[red]error:[/red] {exc}")
 
