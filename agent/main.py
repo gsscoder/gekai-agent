@@ -1,17 +1,24 @@
+import asyncio
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 
+from .agent import GekaiAgent
+
 console = Console()
 
 
-def _render_echo(user_input: str) -> None:
-    console.print(f"[bold cyan]◆[/bold cyan] {user_input}")
+def _render_response(text: str) -> None:
+    console.print(f"[bold cyan]◆[/bold cyan] {text}")
 
 
-def main() -> None:
-    session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+async def _run() -> None:
+    agent = GekaiAgent()
+    session = agent.start_session()
+
+    pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
 
     console.print(
         "[bold cyan]gekai[/bold cyan] [dim]— type your prompt, Ctrl+D to exit[/dim]"
@@ -22,7 +29,7 @@ def main() -> None:
 
     while True:
         try:
-            user_input = session.prompt(prompt_message)
+            user_input = await pt_session.prompt_async(prompt_message)
         except (EOFError, KeyboardInterrupt):
             break
 
@@ -30,9 +37,17 @@ def main() -> None:
         if not stripped:
             continue
 
-        _render_echo(stripped)
+        try:
+            reply = await agent.chat(session, stripped)
+            _render_response(reply)
+        except Exception as exc:
+            console.print(f"[red]error:[/red] {exc}")
 
     console.print("\n[dim]bye[/dim]")
+
+
+def main() -> None:
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
