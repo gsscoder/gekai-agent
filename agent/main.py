@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 
 from prompt_toolkit import PromptSession
@@ -14,8 +15,8 @@ def _render_response(text: str) -> None:
     console.print(f"[bold cyan]◆[/bold cyan] {text}")
 
 
-async def _run() -> None:
-    agent = GekaiAgent()
+async def _run(debug: bool = False) -> None:
+    agent = GekaiAgent(debug=debug)
     session = agent.start_session()
 
     pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
@@ -38,7 +39,7 @@ async def _run() -> None:
             continue
 
         try:
-            reply = await agent.chat(session, stripped)
+            reply = await agent.process(session, stripped)
             _render_response(reply)
         except Exception as exc:
             console.print(f"[red]error:[/red] {exc}")
@@ -47,7 +48,10 @@ async def _run() -> None:
 
 
 def main() -> None:
-    asyncio.run(_run())
+    parser = argparse.ArgumentParser(prog="gekai")
+    parser.add_argument("--debug", action="store_true", help="show intent classification")
+    args = parser.parse_args()
+    asyncio.run(_run(debug=args.debug))
 
 
 if __name__ == "__main__":
