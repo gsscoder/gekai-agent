@@ -16,7 +16,7 @@ from .agent import GekaiAgent
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .settings import load_permissions, prompt_permissions
-from .ui import console, make_spinner_display, print_banner, render_operation_summary, render_response
+from .ui import console, make_spinner_display, print_banner, random_operative_verb, render_operation_summary, render_response
 from .workspace import get_git_branch, scan_workspace
 
 
@@ -95,6 +95,7 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
             start = time.monotonic()
             stop_esc = threading.Event()
             loop = asyncio.get_running_loop()
+            verb = random_operative_verb()
             state = {"frame": 0, "tokens": 0}
             chunks: list[str] = []
 
@@ -106,16 +107,16 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
                 async for chunk in agent.process_stream(session, segments):
                     chunks.append(chunk)
                     state["tokens"] += 1
-                    live.update(make_spinner_display(state["frame"], state["tokens"]))
+                    live.update(make_spinner_display(state["frame"], state["tokens"], verb))
 
             with Live(console=console, refresh_per_second=12, transient=True) as live:
-                live.update(make_spinner_display(state["frame"], state["tokens"]))
+                live.update(make_spinner_display(state["frame"], state["tokens"], verb))
 
                 async def _animate() -> None:
                     while True:
                         await asyncio.sleep(0.1)
                         state["frame"] += 1
-                        live.update(make_spinner_display(state["frame"], state["tokens"]))
+                        live.update(make_spinner_display(state["frame"], state["tokens"], verb))
 
                 spinner_task = asyncio.create_task(_animate())
                 interact_task = asyncio.create_task(_interact(live))
