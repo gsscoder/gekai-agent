@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pyfiglet
 from rich.console import Console
 from rich.text import Text
@@ -9,10 +11,14 @@ console = Console()
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
 
 
-def print_banner(version: str) -> None:
+def print_banner(version: str, working_dir: Path, branch: str | None = None) -> None:
     banner = pyfiglet.figlet_format("gekai", font="small_slant").rstrip()
     console.print(f"[cyan]{banner}[/cyan]")
     console.print(f"[bold white]gekai[/bold white] [grey50]v{version}[/grey50]")
+    if branch:
+        console.print(f"[dim]{working_dir.name}[/dim] [grey50]| {branch}[/grey50]")
+    else:
+        console.print(f"[dim]{working_dir.name}[/dim]")
     console.print()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import litellm
 from dotenv import load_dotenv
@@ -12,6 +13,7 @@ from .handlers.base import Handler
 from .handlers.chat import ChatHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
+from .settings import Permissions
 
 litellm.suppress_debug_info = True
 
@@ -20,18 +22,18 @@ load_dotenv()
 
 def _validate_config() -> None:
     errors: list[str] = []
-    model = os.environ.get("GEKAI_DEFAULT_MODEL", "")
-    api_key = os.environ.get("GEKAI_API_KEY", "")
-    if not model:
+    if not os.environ.get("GEKAI_DEFAULT_MODEL", ""):
         errors.append("GEKAI_DEFAULT_MODEL is not set")
-    if not api_key:
+    if not os.environ.get("GEKAI_API_KEY", ""):
         errors.append("GEKAI_API_KEY is not set")
     if errors:
         raise RuntimeError("missing configuration:\n" + "\n".join(f"  - {e}" for e in errors))
 
 
 class GekaiAgent:
-    def __init__(self, *, debug: bool = False) -> None:
+    def __init__(self, *, working_dir: Path, permissions: Permissions, debug: bool = False) -> None:
+        self.working_dir = working_dir
+        self.permissions = permissions
         self.debug = debug
         if debug:
             logging.getLogger("LiteLLM").setLevel(logging.WARNING)
@@ -56,7 +58,7 @@ class GekaiAgent:
         }
 
     def start_session(self) -> Session:
-        return Session()
+        return Session(working_dir=self.working_dir, permissions=self.permissions)
 
     async def process(self, session: Session, user_input: str) -> str:
         intent = await self._classifier.classify(user_input)

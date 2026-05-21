@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 
@@ -14,19 +15,29 @@ from . import __version__
 from .agent import GekaiAgent
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
+from .settings import load_permissions, prompt_permissions
 from .ui import console, make_spinner_display, print_banner, render_operation_summary, render_response
+from .workspace import get_git_branch
 
 
-async def _run(debug: bool = False) -> None:
-    agent = GekaiAgent(debug=debug)
+async def _run(working_dir: Path, debug: bool = False) -> None:
+    branch = get_git_branch(working_dir)
+    print_banner(__version__, working_dir, branch)
+
+    permissions = load_permissions(working_dir)
+    if permissions is None:
+        permissions = await prompt_permissions(working_dir)
+        if permissions is None:
+            console.print("\n[dim]access denied, exiting[/dim]")
+            return
+
+    agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=debug)
     session = agent.start_session()
 
     registry = CommandRegistry()
     registry.register(ExitCommand())
 
     pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
-
-    print_banner(__version__)
 
     prompt_message = FormattedText([("ansicyan bold", "❯ ")])
 
@@ -90,9 +101,16 @@ async def _run(debug: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="gekai")
+    parser.add_argument(
+        "-d", "--working-dir",
+        type=Path,
+        default=Path.cwd(),
+        metavar="DIR",
+        help="working directory (default: current directory)",
+    )
     parser.add_argument("--debug", action="store_true", help="show intent classification")
     args = parser.parse_args()
-    asyncio.run(_run(debug=args.debug))
+    asyncio.run(_run(working_dir=args.working_dir.resolve(), debug=args.debug))
 
 
 if __name__ == "__main__":
