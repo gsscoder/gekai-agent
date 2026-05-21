@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 
 from dotenv import load_dotenv
 
@@ -48,3 +49,22 @@ class GekaiAgent:
 
         handler = self._handlers[intent]
         return await handler.handle(session, user_input)
+
+    async def process_stream(
+        self, session: Session, user_input: str
+    ) -> AsyncIterator[str]:
+        intent = await self._classifier.classify(user_input)
+
+        if self.debug:
+            from rich.console import Console
+            Console(stderr=True).print(
+                f"[grey50]debug: intent={intent.value}[/grey50]"
+            )
+
+        handler = self._handlers[intent]
+        if hasattr(handler, "stream"):
+            async for chunk in handler.stream(session, user_input):
+                yield chunk
+        else:
+            result = await handler.handle(session, user_input)
+            yield result

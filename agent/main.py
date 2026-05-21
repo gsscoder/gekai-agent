@@ -5,6 +5,8 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
+from rich.live import Live
+from rich.text import Text
 
 from .agent import GekaiAgent
 from .commands.exit import ExitCommand
@@ -14,7 +16,7 @@ console = Console()
 
 
 def _render_response(text: str) -> None:
-    console.print(f"[bold cyan]◆[/bold cyan] {text}")
+    console.print(f"[bold cyan]●[/bold cyan] {text}")
 
 
 async def _run(debug: bool = False) -> None:
@@ -52,8 +54,30 @@ async def _run(debug: bool = False) -> None:
             continue
 
         try:
-            reply = await agent.process(session, stripped)
+            import time
+            chunks: list[str] = []
+            token_count = 0
+            frame_index = 0
+            _spinner = ["|", "/", "-", "\\"]
+            _start = time.monotonic()
+            with Live(console=console, refresh_per_second=12, transient=True) as live:
+                async for chunk in agent.process_stream(session, stripped):
+                    chunks.append(chunk)
+                    token_count += 1
+                    frame_index = (frame_index + 1) % len(_spinner)
+                    _t = Text()
+                    _t.append(f"{_spinner[frame_index]} Thinking...", style="yellow")
+                    _count = str(token_count) if token_count < 1000 else f"{token_count / 1000:.1f}k"
+                    _t.append(f" (↓ {_count} tokens)", style="medium_orchid")
+                    live.update(_t)
+            _elapsed = time.monotonic() - _start
+            _duration = f"{_elapsed:.0f}s" if _elapsed < 60 else f"{_elapsed / 60:.1f}m"
+            console.print()
+            console.print(f"[grey50]* Thought for {_duration}[/grey50]")
+            reply = "".join(chunks)
+            console.print()
             _render_response(reply)
+            console.print()
         except Exception as exc:
             console.print(f"[red]error:[/red] {exc}")
 
