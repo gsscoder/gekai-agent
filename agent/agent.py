@@ -13,8 +13,23 @@ from .handlers.chat import ChatHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
+from toon import encode as toon_encode
+
+from .workspace import scan_workspace
 
 load_dotenv()
+
+
+def _format_workspace_context(workspace: dict) -> str:
+    subset: dict = {
+        "repo_name": workspace.get("repo_name", "unknown"),
+        "branch": workspace.get("branch"),
+        "primary_languages": workspace.get("primary_languages", []),
+        "projects": workspace.get("projects", []),
+    }
+    if not subset["projects"]:
+        subset["extensions"] = workspace.get("extensions", {})
+    return f"<workspace>\n{toon_encode(subset)}\n</workspace>"
 
 
 def _validate_config() -> None:
@@ -55,8 +70,10 @@ class GekaiAgent:
             Intent.ACTION: ActionHandler(),
         }
 
-    def start_session(self) -> Session:
-        return Session(working_dir=self.working_dir, permissions=self.permissions)
+    def start_session(self, workspace: dict) -> Session:
+        session = Session(working_dir=self.working_dir, permissions=self.permissions)
+        session.messages.append({"role": "system", "content": _format_workspace_context(workspace)})
+        return session
 
     async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
         return await self._classifier.classify(user_input)

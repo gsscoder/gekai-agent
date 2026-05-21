@@ -9,6 +9,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from rich.live import Live
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from . import __version__
 from .agent import GekaiAgent
@@ -16,7 +17,7 @@ from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .settings import load_permissions, prompt_permissions
 from .ui import console, make_spinner_display, print_banner, render_operation_summary, render_response
-from .workspace import get_git_branch
+from .workspace import get_git_branch, scan_workspace
 
 
 def _block_until_esc(stop: threading.Event) -> None:
@@ -53,7 +54,17 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
             return
 
     agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=debug)
-    session = agent.start_session()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[dim]{task.description}[/dim]"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("initializing workspace", total=None)
+        workspace = scan_workspace(working_dir, on_step=lambda msg: progress.update(task, description=msg))
+
+    session = agent.start_session(workspace)
 
     registry = CommandRegistry()
     registry.register(ExitCommand())

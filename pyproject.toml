@@ -9,6 +9,7 @@ dependencies = [
     "llmstitch[openai]",
     "python-dotenv>=1.0",
     "pyfiglet>=1.0",
+    "python-toon",
 ]
 
 [project.scripts]

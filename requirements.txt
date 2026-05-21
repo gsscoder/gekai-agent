@@ -3,3 +3,4 @@ rich==15.0.0
 llmstitch[openai]
 python-dotenv==1.2.2
 pyfiglet==1.0.4
+python-toon
