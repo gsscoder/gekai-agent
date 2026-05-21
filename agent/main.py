@@ -1,6 +1,10 @@
 import argparse
 import asyncio
+import logging
 
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+
+import pyfiglet
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
@@ -8,6 +12,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
+from . import __version__
 from .agent import GekaiAgent
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
@@ -19,6 +24,13 @@ def _render_response(text: str) -> None:
     console.print(f"[bold cyan]●[/bold cyan] {text}")
 
 
+def _print_banner() -> None:
+    banner = pyfiglet.figlet_format("gekai", font="small_slant").rstrip()
+    console.print(f"[cyan]{banner}[/cyan]")
+    console.print(f"[bold white]gekai[/bold white] [grey50]v{__version__}[/grey50]")
+    console.print()
+
+
 async def _run(debug: bool = False) -> None:
     agent = GekaiAgent(debug=debug)
     session = agent.start_session()
@@ -28,10 +40,7 @@ async def _run(debug: bool = False) -> None:
 
     pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
 
-    console.print(
-        "[bold cyan]gekai[/bold cyan] [dim]— type your prompt, Ctrl+D to exit[/dim]"
-    )
-    console.print()
+    _print_banner()
 
     prompt_message = FormattedText([("ansicyan bold", "❯ ")])
 

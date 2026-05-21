@@ -2,3 +2,4 @@ prompt-toolkit==3.0.52
 rich==15.0.0
 litellm==1.85.0
 python-dotenv==1.2.2
+pyfiglet==1.0.4

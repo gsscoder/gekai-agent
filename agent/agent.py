@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncIterator
 
@@ -17,6 +18,8 @@ load_dotenv()
 class GekaiAgent:
     def __init__(self, *, debug: bool = False) -> None:
         self.debug = debug
+        if debug:
+            logging.getLogger("LiteLLM").setLevel(logging.WARNING)
         self.model: str = os.environ["GEKAI_DEFAULT_MODEL"]
         self._api_key: str | None = os.environ.get("GEKAI_API_KEY")
         self._api_base: str | None = os.environ.get("GEKAI_BASE_URL")
