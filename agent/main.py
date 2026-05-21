@@ -84,57 +84,48 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
             start = time.monotonic()
             stop_esc = threading.Event()
             loop = asyncio.get_running_loop()
+            state = {"frame": 0, "tokens": 0}
+            chunks: list[str] = []
 
-            async def _interact() -> str:
+            async def _interact(live: Live) -> None:
                 segments = await agent.classify(stripped)
-
                 if debug:
                     for intent, sub in segments:
                         console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
+                async for chunk in agent.process_stream(session, segments):
+                    chunks.append(chunk)
+                    state["tokens"] += 1
+                    live.update(make_spinner_display(state["frame"], state["tokens"]))
 
-                chunks: list[str] = []
-                token_count = 0
-                frame_index = 0
+            with Live(console=console, refresh_per_second=12, transient=True) as live:
+                live.update(make_spinner_display(state["frame"], state["tokens"]))
 
-                with Live(console=console, refresh_per_second=12, transient=True) as live:
-                    live.update(make_spinner_display(frame_index, token_count))
+                async def _animate() -> None:
+                    while True:
+                        await asyncio.sleep(0.1)
+                        state["frame"] += 1
+                        live.update(make_spinner_display(state["frame"], state["tokens"]))
 
-                    async def _animate() -> None:
-                        nonlocal frame_index
-                        while True:
-                            await asyncio.sleep(0.1)
-                            frame_index += 1
-                            live.update(make_spinner_display(frame_index, token_count))
+                spinner_task = asyncio.create_task(_animate())
+                interact_task = asyncio.create_task(_interact(live))
+                esc_future = loop.run_in_executor(None, _block_until_esc, stop_esc)
 
-                    spinner_task = asyncio.create_task(_animate())
-                    try:
-                        async for chunk in agent.process_stream(session, segments):
-                            chunks.append(chunk)
-                            token_count += 1
-                            live.update(make_spinner_display(frame_index, token_count))
-                    finally:
-                        spinner_task.cancel()
-                        try:
-                            await spinner_task
-                        except asyncio.CancelledError:
-                            pass
-
-                return "".join(chunks)
-
-            interact_task = asyncio.create_task(_interact())
-            esc_future = loop.run_in_executor(None, _block_until_esc, stop_esc)
-
-            done, _ = await asyncio.wait(
-                {interact_task, esc_future},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            stop_esc.set()
+                done, _ = await asyncio.wait(
+                    {interact_task, esc_future},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                stop_esc.set()
+                spinner_task.cancel()
+                try:
+                    await spinner_task
+                except asyncio.CancelledError:
+                    pass
 
             if interact_task in done:
-                reply = interact_task.result()
+                interact_task.result()
                 render_operation_summary(time.monotonic() - start)
                 console.print()
-                render_response(reply)
+                render_response("".join(chunks))
                 console.print()
             else:
                 interact_task.cancel()
