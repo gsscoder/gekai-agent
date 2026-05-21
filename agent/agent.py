@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 
+import litellm
 from dotenv import load_dotenv
 
 from .handlers.action import ActionHandler
@@ -12,7 +13,21 @@ from .handlers.chat import ChatHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
 
+litellm.suppress_debug_info = True
+
 load_dotenv()
+
+
+def _validate_config() -> None:
+    errors: list[str] = []
+    model = os.environ.get("GEKAI_DEFAULT_MODEL", "")
+    api_key = os.environ.get("GEKAI_API_KEY", "")
+    if not model:
+        errors.append("GEKAI_DEFAULT_MODEL is not set")
+    if not api_key:
+        errors.append("GEKAI_API_KEY is not set")
+    if errors:
+        raise RuntimeError("missing configuration:\n" + "\n".join(f"  - {e}" for e in errors))
 
 
 class GekaiAgent:
@@ -20,6 +35,8 @@ class GekaiAgent:
         self.debug = debug
         if debug:
             logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+            litellm.set_verbose = True
+        _validate_config()
         self.model: str = os.environ["GEKAI_DEFAULT_MODEL"]
         self._api_key: str | None = os.environ.get("GEKAI_API_KEY")
         self._api_base: str | None = os.environ.get("GEKAI_BASE_URL")
