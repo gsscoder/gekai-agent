@@ -5,7 +5,6 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-import litellm
 from dotenv import load_dotenv
 
 from .handlers.action import ActionHandler
@@ -14,12 +13,6 @@ from .handlers.chat import ChatHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
-from .ui import console
-
-litellm.suppress_debug_info = True
-litellm.success_callback = []
-litellm._async_success_callback = []
-litellm.callbacks = []
 
 load_dotenv()
 
@@ -54,7 +47,11 @@ class GekaiAgent:
                 api_key=self._api_key,
                 api_base=self._api_base,
             ),
-            Intent.QUERY: QueryHandler(),
+            Intent.QUERY: QueryHandler(
+                model=self.model,
+                api_key=self._api_key,
+                api_base=self._api_base,
+            ),
             Intent.ACTION: ActionHandler(),
         }
 

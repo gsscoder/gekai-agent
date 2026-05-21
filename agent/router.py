@@ -5,9 +5,9 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .settings import Permissions
+from openai import AsyncOpenAI
 
-import litellm
+from .settings import Permissions
 
 
 class Intent(enum.Enum):
@@ -66,18 +66,15 @@ class IntentClassifier:
         api_base: str | None = None,
     ) -> None:
         self._model = model
-        self._api_key = api_key
-        self._api_base = api_base
+        self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
     async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
-        response = await litellm.acompletion(
+        response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": CLASSIFIER_PROMPT},
                 {"role": "user", "content": user_input},
             ],
-            api_key=self._api_key,
-            api_base=self._api_base,
         )
         raw: str = response.choices[0].message.content.strip()
         segments: list[tuple[Intent, str]] = []

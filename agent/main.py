@@ -1,12 +1,7 @@
 import argparse
 import asyncio
-import logging
 import time
 from pathlib import Path
-
-logging.getLogger("LiteLLM").setLevel(logging.ERROR)
-logging.getLogger("LiteLLM.utils").setLevel(logging.ERROR)
-logging.getLogger("litellm").setLevel(logging.ERROR)
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
