@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import enum
+import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import AsyncOpenAI
+
+_log = logging.getLogger(__name__)
 
 from .settings import Permissions
 
@@ -42,17 +45,22 @@ class Session:
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output one line per task: {label}: {sub-prompt}\n\n"
+    "output format: each line must be exactly `label: text` where label is one of chat, query, action, memorize, clarify\n"
+    "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "labels:\n"
     "  chat      — general coding question, explanation, or conversation; answer from knowledge\n"
     "  query     — needs to inspect the repository: read files, search code, understand structure\n"
     "  action    — modifies repository files (create, edit, delete, refactor)\n"
-    "  memorize  — user states a rule, preference, or constraint to remember (e.g. 'remember...', 'always...', 'never...')\n"
-    "  clarify   — genuinely unresolvable without more info; cannot assume a coding context\n\n"
+    "  memorize  — any rule, constraint, or preference that should persist across future turns: coding style,\n"
+    "              project conventions, off-limits files or directories, tool preferences, or any instruction\n"
+    "              that applies beyond the current request\n"
+    "              (e.g. 'from now on use spaces instead of tabs', 'this project follows Google style guide',\n"
+    "              'don't touch the migrations folder')\n"
+    "  clarify   — only use clarify if you cannot determine which files, feature area, or domain the request relates to\n\n"
     "rules:\n"
     "  assume all requests relate to the current codebase unless clearly otherwise\n"
-    "  prefer chat or query over clarify — only clarify if truly blocked\n"
-    "  output only the labeled lines, no extra text\n\n"
+    "  when a message could fit multiple labels, prefer the least destructive: chat over query, query over action\n"
+    "  prefer chat or query over clarify — only clarify if truly blocked\n\n"
     "example input: refactor auth error handling and tell me if GET /users returns JSON\n"
     "example output:\n"
     "action: refactor auth error handling\n"
@@ -95,4 +103,7 @@ class IntentClassifier:
             except ValueError:
                 intent = Intent.CHAT
             segments.append((intent, sub_prompt.strip()))
-        return segments if segments else [(Intent.CHAT, user_input)]
+        if not segments:
+            _log.warning("classifier parse failure — no valid segments; raw output: %r", raw)
+            return [(Intent.CHAT, user_input)]
+        return segments
