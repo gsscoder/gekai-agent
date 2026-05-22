@@ -1,10 +1,11 @@
 # Project Progress
 
 ## Status
-Early development
+Active development
 
 ## Current Focus
-Project scaffolding
+Intent routing refinement and streaming UX
 
 ## Recent Changes
-- Added AI instruction files
+- Refined intent routing (`display`, `memorize`, `clarify`) and hardened classifier prompt
+- Added token usage tracking and user input highlight in the streaming UX

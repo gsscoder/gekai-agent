@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
 from ..router import Session
+
+
+@dataclass(frozen=True)
+class UsageInfo:
+    prompt_tokens: int
+    completion_tokens: int
 
 
 class ChatHandler:
@@ -17,19 +24,27 @@ class ChatHandler:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
-    async def stream(self, session: Session, user_input: str) -> AsyncIterator[str]:
+    async def stream(
+        self, session: Session, user_input: str
+    ) -> AsyncIterator[str | UsageInfo]:
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=session.messages,
             stream=True,
+            stream_options={"include_usage": True},
         )
         async for chunk in response:
-            content = chunk.choices[0].delta.content
-            if content is not None:
-                yield content
+            if chunk.choices and chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+            if chunk.usage is not None:
+                yield UsageInfo(
+                    prompt_tokens=chunk.usage.prompt_tokens,
+                    completion_tokens=chunk.usage.completion_tokens,
+                )
 
     async def handle(self, session: Session, user_input: str) -> str:
         chunks: list[str] = []
-        async for chunk in self.stream(session, user_input):
-            chunks.append(chunk)
+        async for item in self.stream(session, user_input):
+            if isinstance(item, str):
+                chunks.append(item)
         return "".join(chunks)

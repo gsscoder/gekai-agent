@@ -19,7 +19,8 @@ from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .persistence import load_session, save_session
 from .settings import load_permissions, prompt_permissions
-from .ui import console, make_spinner_display, print_banner, random_operative_verb, render_operation_summary, render_response
+from .handlers.chat import UsageInfo
+from .ui import console, make_spinner_display, print_banner, random_operative_verb, render_operation_summary, render_response, restyle_user_input
 from .workspace import get_git_branch, scan_workspace
 
 
@@ -113,6 +114,8 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
         if not stripped:
             continue
 
+        restyle_user_input(stripped)
+
         if stripped.startswith("/"):
             result = await registry.dispatch(stripped)
             if result.output:
@@ -126,7 +129,7 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
             stop_esc = threading.Event()
             loop = asyncio.get_running_loop()
             verb = random_operative_verb()
-            state = {"frame": 0, "tokens": 0}
+            state: dict[str, object] = {"frame": 0, "tokens": 0, "usage": None}
             chunks: list[str] = []
 
             async def _interact(live: Live) -> None:
@@ -134,8 +137,11 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
                 if debug:
                     for intent, sub in segments:
                         console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
-                async for chunk in agent.process_stream(session, stripped, segments):
-                    chunks.append(chunk)
+                async for item in agent.process_stream(session, stripped, segments):
+                    if isinstance(item, UsageInfo):
+                        state["usage"] = item
+                        continue
+                    chunks.append(item)
                     state["tokens"] += 1
                     live.update(make_spinner_display(state["frame"], state["tokens"], verb))
 
@@ -165,7 +171,11 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
 
             if interact_task in done:
                 interact_task.result()
-                render_operation_summary(time.monotonic() - start, verb)
+                usage = state["usage"]
+                render_operation_summary(
+                    time.monotonic() - start,
+                    verb,
+                )
                 console.print()
                 render_response("".join(chunks))
                 save_session(session)
@@ -176,7 +186,7 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
                     await interact_task
                 except asyncio.CancelledError:
                     pass
-                console.print("\n[dim]cancelled[/dim]")
+                console.print("\n[dim]Cancelled — What should Gekai do instead?[/dim]")
 
         except Exception as exc:
             console.print(f"[red]error:[/red] {exc}")
@@ -184,7 +194,7 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
     console.print()
     render_response("Goodbye.")
     console.print()
-    console.print(f"[grey50]Resume this session with:\ngekai --resume {session.id}[/grey50]")
+    console.print(f"[grey50]Resume this session with:\n  gekai --resume {session.id}[/grey50]")
 
 
 def main() -> None:

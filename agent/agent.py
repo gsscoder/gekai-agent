@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from .handlers.action import ActionHandler
 from .handlers.base import Handler
-from .handlers.chat import ChatHandler
+from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.display import DisplayHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
@@ -91,7 +91,7 @@ class GekaiAgent:
 
     async def process_stream(
         self, session: Session, user_input: str, segments: list[tuple[Intent, str]]
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | UsageInfo]:
         session.messages.append({"role": "user", "content": user_input})
         all_chunks: list[str] = []
         first = True
@@ -112,9 +112,10 @@ class GekaiAgent:
             elif intent == Intent.CLARIFY:
                 handler = self._handlers[Intent.CHAT]
                 if hasattr(handler, "stream"):
-                    async for chunk in handler.stream(session, user_input):
-                        all_chunks.append(chunk)
-                        yield chunk
+                    async for item in handler.stream(session, user_input):
+                        if isinstance(item, str):
+                            all_chunks.append(item)
+                        yield item
                 else:
                     result = await handler.handle(session, user_input)
                     all_chunks.append(result)
@@ -123,9 +124,10 @@ class GekaiAgent:
             else:
                 handler = self._handlers[intent]
                 if hasattr(handler, "stream"):
-                    async for chunk in handler.stream(session, sub_prompt):
-                        all_chunks.append(chunk)
-                        yield chunk
+                    async for item in handler.stream(session, sub_prompt):
+                        if isinstance(item, str):
+                            all_chunks.append(item)
+                        yield item
                 else:
                     result = await handler.handle(session, sub_prompt)
                     all_chunks.append(result)
