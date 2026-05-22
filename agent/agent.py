@@ -86,17 +86,17 @@ class GekaiAgent:
             session.messages.extend(restored_messages)
         return session
 
-    async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
+    async def classify(self, user_input: str) -> list[tuple[Intent, str, bool]]:
         return await self._classifier.classify(user_input)
 
     async def process_stream(
-        self, session: Session, user_input: str, segments: list[tuple[Intent, str]]
+        self, session: Session, user_input: str, segments: list[tuple[Intent, str, bool]]
     ) -> AsyncIterator[str | UsageInfo]:
         session.messages.append({"role": "user", "content": user_input})
         all_chunks: list[str] = []
         first = True
 
-        for intent, sub_prompt in segments:
+        for intent, sub_prompt, _plan in segments:
             if not first:
                 sep = "\n\n"
                 all_chunks.append(sep)

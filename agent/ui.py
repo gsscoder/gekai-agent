@@ -47,7 +47,8 @@ def print_banner(version: str, working_dir: Path, branch: str | None = None) -> 
 
 
 def render_response(text: str) -> None:
-    console.print(Markdown(f"● {text}"))
+    console.print("[cyan]●[/cyan] ", end="")
+    console.print(Markdown(text))
 
 
 def render_operation_summary(

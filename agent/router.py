@@ -47,32 +47,50 @@ CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
     "output format: each line must be exactly `label: text` where label is one of chat, query, display, action, memorize, clarify\n"
+    "labels can optionally carry a +plan suffix (e.g. query+plan, action+plan) — see rules below\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "labels:\n"
-    "  chat      — general coding question, explanation, or conversation; answer from knowledge\n"
-    "  query     — needs to inspect the repository: read files, search code, understand structure\n"
-    "  display   — user wants to see raw file contents printed verbatim: no summarization, no explanation, no analysis\n"
-    "              trigger phrases: 'show me', 'print', 'display', 'cat', 'dump', or any request to output a file or specific section\n"
-    "  action    — modifies repository files (create, edit, delete, refactor)\n"
-    "  memorize  — any rule, constraint, or preference that should persist across future turns: coding style,\n"
-    "              project conventions, off-limits files or directories, tool preferences, or any instruction\n"
-    "              that applies beyond the current request\n"
-    "              (e.g. 'from now on use spaces instead of tabs', 'this project follows Google style guide',\n"
-    "              'don't touch the migrations folder')\n"
-    "  clarify   — only use clarify if you cannot determine which files, feature area, or domain the request relates to\n\n"
+    " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
+    " query     — needs to inspect the repository: read files, search code, understand structure\n"
+    " display   — user wants to see raw file contents printed verbatim: no summarization, no explanation, no analysis\n"
+    "             trigger phrases: 'show me', 'print', 'display', 'cat', 'dump', or any request to output a file or specific section\n"
+    " action    — modifies repository files (create, edit, delete, refactor)\n"
+    " memorize  — any rule, constraint, or preference that should persist across future turns: coding style,\n"
+    "             project conventions, off-limits files or directories, tool preferences, or any instruction\n"
+    "             that applies beyond the current request\n"
+    "             (e.g. 'from now on use spaces instead of tabs', 'this project follows Google style guide',\n"
+    "             'don't touch the migrations folder')\n"
+    " clarify   — only use clarify if you cannot determine which files, feature area, or domain the request relates to\n"
     "rules:\n"
-    "  assume all requests relate to the current codebase unless clearly otherwise\n"
-    "  when the user asks to see, show, print, or display a file or part of a file, use display — do not use query\n"
-    "  when a message could fit multiple labels, prefer the least destructive: chat over query, query over action\n"
-    "  prefer chat or query over clarify — only clarify if truly blocked\n\n"
+    " assume all requests relate to the current codebase unless clearly otherwise\n"
+    " when the user asks to see, show, print, or display a file or part of a file, use display — do not use query\n"
+    " when a message could fit multiple labels, prefer the least destructive: chat over query, query over action\n"
+    " prefer chat or query over clarify — only clarify if truly blocked\n"
+    " use +plan when the request is broad, architectural, spans multiple files, or cannot be answered with a single targeted tool call\n"
+    " do not use +plan for specific file reads, simple questions, or narrowly scoped requests\n"
     "example input: refactor auth error handling and tell me if GET /users returns JSON\n"
-    "example output:\n"
-    "action: refactor auth error handling\n"
-    "query: does GET /users return JSON\n\n"
+    " example output:\n"
+    "  action: refactor auth error handling\n"
+    "  query: does GET /users return JSON\n"
     "example input: show me main.py and explain how the auth module works\n"
-    "example output:\n"
-    "display: show me main.py\n"
-    "query: explain how the auth module works"
+    " example output:\n"
+    "  display: show me main.py\n"
+    "  query: explain how the auth module works\n"
+    "example input: describe the project\n"
+    " example output:\n"
+    "  query+plan: describe the project\n"
+    "example input: how does the auth system work\n"
+    " example output:\n"
+    "  query+plan: explain how the auth system works\n"
+    "example input: what's on line 10 of main.py\n"
+    " example output:\n"
+    "  query: what is on line 10 of main.py\n"
+    "example input: refactor error handling across all modules\n"
+    " example output:\n"
+    "  action+plan: refactor error handling across all modules\n"
+    "example input: rename the variable on line 5 of utils.py\n"
+    " example output:\n"
+    "  action: rename the variable on line 5 of utils.py"
 )
 
 
@@ -86,7 +104,7 @@ class IntentClassifier:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
-    async def classify(self, user_input: str, history: list[dict] | None = None) -> list[tuple[Intent, str]]:
+    async def classify(self, user_input: str, history: list[dict] | None = None) -> list[tuple[Intent, str, bool]]:
         context_msgs: list[dict] = []
         if history:
             turns = [m for m in history if m["role"] in ("user", "assistant")][-6:]
@@ -100,18 +118,21 @@ class IntentClassifier:
             ],
         )
         raw: str = response.choices[0].message.content.strip()
-        segments: list[tuple[Intent, str]] = []
+        segments: list[tuple[Intent, str, bool]] = []
         for line in raw.splitlines():
             line = line.strip()
             if not line or ": " not in line:
                 continue
             label, _, sub_prompt = line.partition(": ")
+            label = label.strip().lower()
+            plan = label.endswith("+plan")
+            label = label.removesuffix("+plan")
             try:
-                intent = Intent(label.strip().lower())
+                intent = Intent(label)
             except ValueError:
                 intent = Intent.CHAT
-            segments.append((intent, sub_prompt.strip()))
+            segments.append((intent, sub_prompt.strip(), plan))
         if not segments:
             _log.warning("classifier parse failure — no valid segments; raw output: %r", raw)
-            return [(Intent.CHAT, user_input)]
+            return [(Intent.CHAT, user_input, False)]
         return segments

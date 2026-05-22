@@ -135,8 +135,9 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
             async def _interact(live: Live) -> None:
                 segments = await agent.classify(stripped)
                 if debug:
-                    for intent, sub in segments:
-                        console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
+                    for intent, sub, plan in segments:
+                        label = f"{intent.value}+plan" if plan else intent.value
+                        console.print(f"[grey50]debug: {label}: {sub}[/grey50]")
                 async for item in agent.process_stream(session, stripped, segments):
                     if isinstance(item, UsageInfo):
                         state["usage"] = item
