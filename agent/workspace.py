@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 import json
 import os
 import subprocess
@@ -38,6 +36,38 @@ _EXT_TO_LANG: dict[str, str] = {
 _SKIP_DIRS: frozenset[str] = frozenset(
     {".git", "node_modules", ".venv", "__pycache__", "bin", "obj"}
 )
+
+_AI_INSTRUCTION_FILES: list[str] = [
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    "SYSTEM_PROMPT.md",
+    ".aider.conf.yml",
+    "copilot-instructions.md",
+]
+
+_AI_INSTRUCTION_SPECIAL: list[str] = [
+    ".github/copilot-instructions.md",
+]
+
+
+def _scan_ai_instructions(working_dir: Path) -> list[str]:
+    found: list[str] = []
+    for fname in _AI_INSTRUCTION_FILES:
+        if (working_dir / fname).exists():
+            found.append(fname)
+    for special in _AI_INSTRUCTION_SPECIAL:
+        if (working_dir / special).exists():
+            found.append(special)
+    for subdir in working_dir.iterdir():
+        if subdir.is_dir() and not subdir.name.startswith(".") and subdir.name not in _SKIP_DIRS:
+            for fname in _AI_INSTRUCTION_FILES:
+                p = subdir / fname
+                if p.exists():
+                    found.append(str(p.relative_to(working_dir)).replace("\\", "/"))
+    return found
 
 
 def _get_repo_name(working_dir: Path) -> str:
@@ -129,6 +159,9 @@ def scan_workspace(
     if on_step:
         on_step("counting file extensions")
     extensions = _scan_extensions(working_dir)
+    if on_step:
+        on_step("scanning AI instruction files")
+    ai_instructions = _scan_ai_instructions(working_dir)
 
     if projects:
         seen: set[str] = set()
@@ -152,6 +185,7 @@ def scan_workspace(
         "projects": projects,
         "extensions": extensions,
         "primary_languages": primary_languages,
+        "ai_instructions": ai_instructions,
     }
 
     try:
