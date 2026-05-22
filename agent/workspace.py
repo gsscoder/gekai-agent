@@ -5,6 +5,7 @@ import os
 import subprocess
 from collections import Counter
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Manifest files → language, in priority order (highest first)
@@ -179,6 +180,14 @@ def scan_workspace(
                 seen_langs.add(lang)
                 primary_languages.append(lang)
 
+    cache_path = working_dir / ".gekai" / "workspace.json"
+    try:
+        existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        created_at = existing.get("created_at")
+    except (FileNotFoundError, json.JSONDecodeError):
+        created_at = None
+    created_at = created_at or datetime.now(timezone.utc).isoformat()
+
     result: dict = {
         "repo_name": repo_name,
         "branch": branch,
@@ -186,6 +195,7 @@ def scan_workspace(
         "extensions": extensions,
         "primary_languages": primary_languages,
         "ai_instructions": ai_instructions,
+        "created_at": created_at,
     }
 
     try:

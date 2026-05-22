@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -67,8 +68,12 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
             restored_id, restored_messages = result
 
     cache_path = working_dir / ".gekai" / "workspace.json"
-    if restored_id and cache_path.exists():
-        import json as _json
+    max_age = 30 * 60 if restored_id else 15 * 60
+    cache_age = (
+        (datetime.now(timezone.utc).timestamp() - cache_path.stat().st_mtime)
+        if cache_path.exists() else float("inf")
+    )
+    if cache_age < max_age:
         workspace = json.loads(cache_path.read_text(encoding="utf-8"))
     else:
         with Progress(
