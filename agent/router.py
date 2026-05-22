@@ -14,6 +14,7 @@ class Intent(enum.Enum):
     CHAT = "chat"
     QUERY = "query"
     ACTION = "action"
+    MEMORIZE = "memorize"
     CLARIFY = "clarify"
 
 
@@ -39,22 +40,23 @@ class Session:
 
 
 CLASSIFIER_PROMPT = (
+    "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output one line per task in the format: {label}: {sub-prompt}\n"
+    "output one line per task: {label}: {sub-prompt}\n\n"
     "labels:\n"
-    "  chat    — answer from model knowledge, no external data needed\n"
-    "  query   — needs external data: web search, docs, repo file reads\n"
-    "  action  — modifies repository files (create, edit, delete)\n"
-    "  clarify — the request is too ambiguous to act on; state what is unclear\n\n"
+    "  chat      — general coding question, explanation, or conversation; answer from knowledge\n"
+    "  query     — needs to inspect the repository: read files, search code, understand structure\n"
+    "  action    — modifies repository files (create, edit, delete, refactor)\n"
+    "  memorize  — user states a rule, preference, or constraint to remember (e.g. 'remember...', 'always...', 'never...')\n"
+    "  clarify   — genuinely unresolvable without more info; cannot assume a coding context\n\n"
     "rules:\n"
-    "  output only the labeled lines, no extra text\n"
-    "  use clarify for any part that cannot be confidently categorized\n"
-    "  when in doubt between chat and query, use query\n"
-    "  when in doubt between query and action, use query\n\n"
-    "example input: refactor auth error handling and tell me if GET /users returns JSON or YAML\n"
+    "  assume all requests relate to the current codebase unless clearly otherwise\n"
+    "  prefer chat or query over clarify — only clarify if truly blocked\n"
+    "  output only the labeled lines, no extra text\n\n"
+    "example input: refactor auth error handling and tell me if GET /users returns JSON\n"
     "example output:\n"
     "action: refactor auth error handling\n"
-    "query: does GET /users return JSON or YAML"
+    "query: does GET /users return JSON"
 )
 
 
@@ -68,11 +70,16 @@ class IntentClassifier:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
-    async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
+    async def classify(self, user_input: str, history: list[dict] | None = None) -> list[tuple[Intent, str]]:
+        context_msgs: list[dict] = []
+        if history:
+            turns = [m for m in history if m["role"] in ("user", "assistant")][-6:]
+            context_msgs = turns
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": CLASSIFIER_PROMPT},
+                *context_msgs,
                 {"role": "user", "content": user_input},
             ],
         )

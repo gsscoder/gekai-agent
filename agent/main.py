@@ -15,6 +15,7 @@ from . import __version__
 from .agent import GekaiAgent
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
+from .persistence import load_session, save_session
 from .settings import load_permissions, prompt_permissions
 from .ui import console, make_spinner_display, print_banner, random_operative_verb, render_operation_summary, render_response
 from .workspace import get_git_branch, scan_workspace
@@ -42,7 +43,7 @@ def _block_until_esc(stop: threading.Event) -> None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-async def _run(working_dir: Path, debug: bool = False) -> None:
+async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = None) -> None:
     branch = get_git_branch(working_dir)
     print_banner(__version__, working_dir, branch)
 
@@ -64,7 +65,25 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
         task = progress.add_task("initializing workspace", total=None)
         workspace = scan_workspace(working_dir, on_step=lambda msg: progress.update(task, description=msg))
 
-    session = agent.start_session(workspace)
+    restored_id = None
+    restored_messages = None
+    if resume_id:
+        result = load_session(resume_id, working_dir)
+        if result is None:
+            console.print(f"[yellow]session {resume_id} not found, starting fresh[/yellow]")
+        else:
+            restored_id, restored_messages = result
+
+    session = agent.start_session(workspace, restored_messages=restored_messages, session_id=restored_id)
+
+    if restored_messages:
+        console.print("[dim]— resuming session —[/dim]\n")
+        for msg in restored_messages:
+            if msg["role"] == "user":
+                console.print(f"[bold cyan]❯[/bold cyan] {msg['content']}")
+            else:
+                render_response(msg["content"])
+                console.print()
 
     registry = CommandRegistry()
     registry.register(ExitCommand())
@@ -104,7 +123,7 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
                 if debug:
                     for intent, sub in segments:
                         console.print(f"[grey50]debug: {intent.value}: {sub}[/grey50]")
-                async for chunk in agent.process_stream(session, segments):
+                async for chunk in agent.process_stream(session, stripped, segments):
                     chunks.append(chunk)
                     state["tokens"] += 1
                     live.update(make_spinner_display(state["frame"], state["tokens"], verb))
@@ -135,9 +154,10 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
 
             if interact_task in done:
                 interact_task.result()
-                render_operation_summary(time.monotonic() - start)
+                render_operation_summary(time.monotonic() - start, verb)
                 console.print()
                 render_response("".join(chunks))
+                save_session(session)
                 console.print()
             else:
                 interact_task.cancel()
@@ -150,7 +170,10 @@ async def _run(working_dir: Path, debug: bool = False) -> None:
         except Exception as exc:
             console.print(f"[red]error:[/red] {exc}")
 
-    console.print("\n[dim]bye[/dim]")
+    console.print()
+    render_response("Goodbye.")
+    console.print()
+    console.print(f"[grey50]Resume this session with:\ngekai --resume {session.id}[/grey50]")
 
 
 def main() -> None:
@@ -163,8 +186,13 @@ def main() -> None:
         help="working directory (default: current directory)",
     )
     parser.add_argument("--debug", action="store_true", help="show intent classification")
+    parser.add_argument(
+        "-r", "--resume",
+        metavar="SESSION_ID",
+        help="resume a previous session by ID",
+    )
     args = parser.parse_args()
-    asyncio.run(_run(working_dir=args.working_dir.resolve(), debug=args.debug))
+    asyncio.run(_run(working_dir=args.working_dir.resolve(), debug=args.debug, resume_id=args.resume))
 
 
 if __name__ == "__main__":

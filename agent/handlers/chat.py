@@ -18,20 +18,15 @@ class ChatHandler:
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
     async def stream(self, session: Session, user_input: str) -> AsyncIterator[str]:
-        session.messages.append({"role": "user", "content": user_input})
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=session.messages,
             stream=True,
         )
-        chunks: list[str] = []
         async for chunk in response:
             content = chunk.choices[0].delta.content
             if content is not None:
-                chunks.append(content)
                 yield content
-        reply = "".join(chunks)
-        session.messages.append({"role": "assistant", "content": reply})
 
     async def handle(self, session: Session, user_input: str) -> str:
         chunks: list[str] = []
