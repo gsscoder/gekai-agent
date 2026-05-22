@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -56,15 +57,6 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
 
     agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=debug)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[dim]{task.description}[/dim]"),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("initializing workspace", total=None)
-        workspace = scan_workspace(working_dir, on_step=lambda msg: progress.update(task, description=msg))
-
     restored_id = None
     restored_messages = None
     if resume_id:
@@ -73,6 +65,20 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
             console.print(f"[yellow]session {resume_id} not found, starting fresh[/yellow]")
         else:
             restored_id, restored_messages = result
+
+    cache_path = working_dir / ".gekai" / "workspace.json"
+    if restored_id and cache_path.exists():
+        import json as _json
+        workspace = json.loads(cache_path.read_text(encoding="utf-8"))
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[dim]{task.description}[/dim]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("initializing workspace", total=None)
+            workspace = scan_workspace(working_dir, on_step=lambda msg: progress.update(task, description=msg))
 
     session = agent.start_session(workspace, restored_messages=restored_messages, session_id=restored_id)
 

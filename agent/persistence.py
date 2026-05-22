@@ -1,8 +1,13 @@
 from __future__ import annotations
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from .router import Session
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _normalize_path(p: Path) -> str:
@@ -22,12 +27,21 @@ def session_file(session: Session) -> Path:
 
 
 def save_session(session: Session) -> None:
+    path = session_file(session)
+    now = _now()
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        created_at = existing.get("created_at", now)
+    except (FileNotFoundError, json.JSONDecodeError):
+        created_at = now
     data = {
         "session_id": session.id,
         "working_dir": str(session.working_dir),
+        "created_at": created_at,
+        "last_accessed_at": now,
         "messages": session.messages,
     }
-    session_file(session).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] | None:
