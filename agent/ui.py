@@ -62,6 +62,22 @@ def render_operation_summary(
     console.print(f"[grey50]{line}[/grey50]")
 
 
+def render_enrichment_step(message: str) -> None:
+    sys.stdout.write(f"\r\033[K")
+    sys.stdout.flush()
+    console.print(f"[cyan]●[/cyan] [dim]{message}...[/dim]", end="")
+    console.file.flush()
+
+
+def render_enrichment_done(prompt_tokens: int | None, completion_tokens: int | None) -> None:
+    sys.stdout.write(f"\r\033[K")
+    sys.stdout.flush()
+    if prompt_tokens is not None and completion_tokens is not None:
+        console.print(f"[cyan]●[/cyan] Project context enriched  [medium_orchid]↑ {prompt_tokens}  ↓ {completion_tokens}[/medium_orchid]")
+    else:
+        console.print(f"[cyan]●[/cyan] Project context enriched")
+
+
 def make_spinner_display(frame_index: int, token_count: int, verb: tuple[str, str] | None = None) -> Text:
     t = Text()
     t.append(f"{_SPINNER_FRAMES[frame_index % len(_SPINNER_FRAMES)]} {verb[0] if verb else 'Operating'}...", style="yellow")

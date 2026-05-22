@@ -23,7 +23,8 @@ load_dotenv()
 
 def _format_workspace_context(workspace: dict) -> str:
     subset: dict = {
-        "repo_name": workspace.get("repo_name", "unknown"),
+        "workspace_name": workspace.get("workspace_name", "unknown"),
+        "workspace_type": workspace.get("workspace_type", "files"),
         "branch": workspace.get("branch"),
         "primary_languages": workspace.get("primary_languages", []),
         "projects": workspace.get("projects", []),

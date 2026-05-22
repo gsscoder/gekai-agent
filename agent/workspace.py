@@ -152,7 +152,7 @@ def scan_workspace(
     """Scan the workspace and return a summary dict. Also writes .gekai/workspace.json."""
     if on_step:
         on_step("reading repo info")
-    repo_name = _get_repo_name(working_dir)
+    workspace_name = _get_repo_name(working_dir)
     branch = get_git_branch(working_dir)
     if on_step:
         on_step("scanning manifests")
@@ -180,6 +180,16 @@ def scan_workspace(
                 seen_langs.add(lang)
                 primary_languages.append(lang)
 
+    _DOC_EXTS = {"md", "rst", "txt", "adoc", "mdx"}
+    if not extensions:
+        workspace_type = "empty"
+    elif projects:
+        workspace_type = "code"
+    elif next(iter(extensions), "").lstrip(".") in _DOC_EXTS:
+        workspace_type = "docs"
+    else:
+        workspace_type = "files"
+
     cache_path = working_dir / ".gekai" / "workspace.json"
     try:
         existing = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -189,7 +199,8 @@ def scan_workspace(
     created_at = created_at or datetime.now(timezone.utc).isoformat()
 
     result: dict = {
-        "repo_name": repo_name,
+        "workspace_name": workspace_name,
+        "workspace_type": workspace_type,
         "branch": branch,
         "projects": projects,
         "extensions": extensions,
