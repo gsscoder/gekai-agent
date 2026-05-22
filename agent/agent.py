@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from .handlers.action import ActionHandler
 from .handlers.base import Handler
 from .handlers.chat import ChatHandler
+from .handlers.display import DisplayHandler
 from .handlers.query import QueryHandler
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
@@ -67,6 +68,7 @@ class GekaiAgent:
                 api_key=self._api_key,
                 api_base=self._api_base,
             ),
+            Intent.DISPLAY: DisplayHandler(working_dir=working_dir),
             Intent.ACTION: ActionHandler(),
         }
 
