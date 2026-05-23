@@ -15,6 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from . import __version__
 from .agent import GekaiAgent
+from .commands.completer import SlashCommandCompleter
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .persistence import load_session
@@ -100,7 +101,11 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
     registry = CommandRegistry()
     registry.register(ExitCommand())
 
-    pt_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+    pt_session: PromptSession[str] = PromptSession(
+        history=InMemoryHistory(),
+        completer=SlashCommandCompleter(registry),
+        complete_while_typing=True,
+    )
 
     prompt_message = FormattedText([("ansicyan bold", "❯ ")])
 

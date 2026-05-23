@@ -8,6 +8,9 @@ class CommandRegistry:
     def register(self, command: Command) -> None:
         self._commands[command.name] = command
 
+    def commands(self) -> list[Command]:
+        return list(self._commands.values())
+
     async def dispatch(self, raw: str) -> CommandResult:
         parts = raw.lstrip("/").split()
         name = parts[0] if parts else ""

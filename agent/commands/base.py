@@ -10,5 +10,6 @@ class CommandResult:
 
 class Command(Protocol):
     name: str
+    description: str
 
     async def execute(self, args: list[str]) -> CommandResult: ...
