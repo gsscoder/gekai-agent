@@ -20,7 +20,7 @@ from .commands.registry import CommandRegistry
 from .persistence import load_session, save_session
 from .settings import load_permissions, prompt_permissions
 from .handlers.chat import UsageInfo
-from .ui import console, make_spinner_display, print_banner, random_operative_verb, render_operation_summary, render_response, restyle_user_input
+from .ui import console, make_spinner_display, print_banner, random_accent_color, random_farewell, random_operative_verb, render_farewell, render_operation_summary, render_response, restyle_user_input
 from .workspace import get_git_branch, scan_workspace
 
 
@@ -129,6 +129,7 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
             stop_esc = threading.Event()
             loop = asyncio.get_running_loop()
             verb = random_operative_verb()
+            spinner_color = random_accent_color()
             state: dict[str, object] = {"frame": 0, "tokens": 0, "usage": None}
             chunks: list[str] = []
 
@@ -144,16 +145,16 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
                         continue
                     chunks.append(item)
                     state["tokens"] += 1
-                    live.update(make_spinner_display(state["frame"], state["tokens"], verb))
+                    live.update(make_spinner_display(state["frame"], state["tokens"], verb, spinner_color))
 
             with Live(console=console, refresh_per_second=12, transient=True) as live:
-                live.update(make_spinner_display(state["frame"], state["tokens"], verb))
+                live.update(make_spinner_display(state["frame"], state["tokens"], verb, spinner_color))
 
                 async def _animate() -> None:
                     while True:
                         await asyncio.sleep(0.1)
                         state["frame"] += 1
-                        live.update(make_spinner_display(state["frame"], state["tokens"], verb))
+                        live.update(make_spinner_display(state["frame"], state["tokens"], verb, spinner_color))
 
                 spinner_task = asyncio.create_task(_animate())
                 interact_task = asyncio.create_task(_interact(live))
@@ -193,7 +194,7 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
             console.print(f"[red]error:[/red] {exc}")
 
     console.print()
-    render_response("Goodbye.")
+    render_farewell(random_farewell())
     console.print()
     console.print(f"[grey50]Resume this session with:\n  gekai --resume {session.id}[/grey50]")
 

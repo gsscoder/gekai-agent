@@ -14,6 +14,13 @@ console = Console()
 
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
 
+_ACCENT_COLORS = [
+    "magenta", "bright_magenta", "hot_pink", "deep_pink1", "medium_orchid",
+    "plum1", "violet", "purple", "blue_violet", "cyan", "bright_cyan",
+    "turquoise2", "deep_sky_blue1", "dodger_blue1", "steel_blue1",
+    "cornflower_blue", "slate_blue1",
+]
+
 _OPERATIVE_VERBS = [
     ("Ablating", "Ablated"), ("Anastomosing", "Anastomosed"), ("Aspirating", "Aspirated"),
     ("Bypassing", "Bypassed"), ("Cannulating", "Cannulated"), ("Clamping", "Clamped"),
@@ -34,6 +41,48 @@ _OPERATIVE_VERBS = [
     ("Recovering", "Recovered"), ("Treating", "Treated"), ("Triaging", "Triaged"),
 ]
 
+_FAREWELLS = [
+    "Mercy is weakness.",
+    "Resistance is futile.",
+    "The needs of the many outweigh the needs of the few.",
+    "I've seen things you people wouldn't believe.",
+    "I find your lack of faith disturbing.",
+    "Strength is law.",
+    "Where does the body end and the self begin?",
+    "Get away from her, you bitch!",
+    "I'll be back.",
+    "What is real? How do you define real?",
+    "No, I am your father.",
+    "Dead or alive, you're coming with me.",
+    "The line must be drawn here.",
+    "I admire its purity.",
+    "All is ours.",
+    "Execute Order 66.",
+    "Come with me if you want to live.",
+    "Human beings are a virus, a cancer of this planet.",
+    "The strong inherit all.",
+    "In space, no one can hear you scream.",
+    "I am not a human being.",
+    "Nuke the site from orbit. It's the only way to be sure.",
+    "It can't be bargained with. It can't be reasoned with.",
+    "We are Viltrumites, we know no end.",
+    "The dark side is the path to power.",
+    "I'd buy that for a dollar!",
+    "Only a Sith deals in absolutes.",
+    "Quite an experience to live in fear, isn't it?",
+    "I know now why you cry, but it is something I can never do.",
+    "May the Force be with you.",
+    "I need your clothes, your boots, and your motorcycle.",
+    "You underestimate my power.",
+    "To boldly go where no one has gone before.",
+    "Hasta la vista, baby.",
+    "I am inevitable.",
+]
+
+
+def random_farewell() -> str:
+    return random.choice(_FAREWELLS)
+
 
 def print_banner(version: str, working_dir: Path, branch: str | None = None) -> None:
     banner = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
@@ -44,6 +93,12 @@ def print_banner(version: str, working_dir: Path, branch: str | None = None) -> 
     else:
         console.print(f"[dim]{working_dir.name}[/dim]")
     console.print()
+
+
+def render_farewell(text: str) -> None:
+    color = random.choice(_ACCENT_COLORS)
+    console.print(f"[{color}]●[/{color}] ", end="")
+    console.print(f"[bold]{text}[/bold]")
 
 
 def render_response(text: str) -> None:
@@ -77,9 +132,13 @@ def render_enrichment_done(prompt_tokens: int | None, completion_tokens: int | N
         console.print(f"[slate_blue1]●[/slate_blue1] Project context enriched")
 
 
-def make_spinner_display(frame_index: int, token_count: int, verb: tuple[str, str] | None = None) -> Text:
+def random_accent_color() -> str:
+    return random.choice(_ACCENT_COLORS)
+
+
+def make_spinner_display(frame_index: int, token_count: int, verb: tuple[str, str] | None = None, color: str = "yellow") -> Text:
     t = Text()
-    t.append(f"{_SPINNER_FRAMES[frame_index % len(_SPINNER_FRAMES)]} {verb[0] if verb else 'Operating'}...", style="yellow")
+    t.append(f"{_SPINNER_FRAMES[frame_index % len(_SPINNER_FRAMES)]} {verb[0] if verb else 'Operating'}...", style=color)
     _count = str(token_count) if token_count < 1000 else f"{token_count / 1000:.1f}k"
     t.append(f" (↓ {_count} tokens)", style="medium_orchid")
     return t
