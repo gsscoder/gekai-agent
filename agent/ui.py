@@ -173,4 +173,4 @@ def restyle_user_input(user_input: str) -> None:
     lines_used = max(1, math.ceil((2 + len(user_input)) / term_width))
     sys.stdout.write(f"\033[{lines_used}A\r\033[J")
     sys.stdout.flush()
-    console.print(f"[bold cyan]❯[/bold cyan] [on grey23]{user_input}[/on grey23]")
+    console.print(f"[bold cyan]❯[/bold cyan] [white on grey23]{user_input}[/white on grey23]")
