@@ -18,6 +18,7 @@ from .agent import GekaiAgent
 from .commands.completer import SlashCommandCompleter
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
+from .commands.workspace import WorkspaceRebuildCommand
 from .persistence import load_session
 from .settings import load_permissions, prompt_permissions
 from .handlers.chat import UsageInfo
@@ -100,6 +101,11 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
 
     registry = CommandRegistry()
     registry.register(ExitCommand())
+    registry.register(WorkspaceRebuildCommand(
+        working_dir=working_dir,
+        client=agent.client,
+        model=agent.model,
+    ))
 
     pt_session: PromptSession[str] = PromptSession(
         history=InMemoryHistory(),

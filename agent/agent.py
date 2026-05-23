@@ -78,6 +78,10 @@ class GekaiAgent:
             Intent.ACTION: ActionHandler(),
         }
 
+    @property
+    def client(self) -> AsyncOpenAI:
+        return self._client
+
     def start_session(
         self,
         workspace: dict,
