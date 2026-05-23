@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 from .handlers.action import ActionHandler
 from .handlers.base import Handler
@@ -17,6 +18,8 @@ from .settings import Permissions
 from toon import encode as toon_encode
 
 from .workspace import scan_workspace
+from .enrichment import enrich_workspace
+from .ui import render_enrichment_header, render_enrichment_file, render_enrichment_done
 
 load_dotenv()
 
@@ -53,6 +56,7 @@ class GekaiAgent:
         self.model: str = os.environ["GEKAI_DEFAULT_MODEL"]
         self._api_key: str | None = os.environ.get("GEKAI_API_KEY")
         self._api_base: str | None = os.environ.get("GEKAI_BASE_URL")
+        self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
         self._classifier = IntentClassifier(
             model=self.model,
             api_key=self._api_key,
@@ -90,6 +94,17 @@ class GekaiAgent:
     async def classify(self, user_input: str) -> list[tuple[Intent, str, bool]]:
         return await self._classifier.classify(user_input)
 
+    async def _enrich_if_needed(self, session: Session, intent: Intent, plan: bool) -> None:
+        if intent == Intent.QUERY and plan:
+            render_enrichment_header()
+            result = await enrich_workspace(
+                session.working_dir,
+                self._client,
+                self.model,
+                on_file=render_enrichment_file,
+            )
+            render_enrichment_done(result.prompt_tokens, result.completion_tokens)
+
     async def process_stream(
         self, session: Session, user_input: str, segments: list[tuple[Intent, str, bool]]
     ) -> AsyncIterator[str | UsageInfo]:
@@ -97,7 +112,7 @@ class GekaiAgent:
         all_chunks: list[str] = []
         first = True
 
-        for intent, sub_prompt, _plan in segments:
+        for intent, sub_prompt, plan in segments:
             if not first:
                 sep = "\n\n"
                 all_chunks.append(sep)
@@ -123,6 +138,7 @@ class GekaiAgent:
                     yield result
 
             else:
+                await self._enrich_if_needed(session, intent, plan)
                 handler = self._handlers[intent]
                 if hasattr(handler, "stream"):
                     async for item in handler.stream(session, sub_prompt):

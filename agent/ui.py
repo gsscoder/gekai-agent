@@ -62,20 +62,19 @@ def render_operation_summary(
     console.print(f"[grey50]{line}[/grey50]")
 
 
-def render_enrichment_step(message: str) -> None:
-    sys.stdout.write(f"\r\033[K")
-    sys.stdout.flush()
-    console.print(f"[cyan]●[/cyan] [dim]{message}...[/dim]", end="")
-    console.file.flush()
+def render_enrichment_header() -> None:
+    console.print("[slate_blue1]●[/slate_blue1] ws-explorer [dim](metadata enrichment)[/dim]")
+
+
+def render_enrichment_file(filename: str, line_count: int) -> None:
+    console.print(f"[dim]⎿ Read {filename} ({line_count} lines)[/dim]")
 
 
 def render_enrichment_done(prompt_tokens: int | None, completion_tokens: int | None) -> None:
-    sys.stdout.write(f"\r\033[K")
-    sys.stdout.flush()
     if prompt_tokens is not None and completion_tokens is not None:
-        console.print(f"[cyan]●[/cyan] Project context enriched  [medium_orchid]↑ {prompt_tokens}  ↓ {completion_tokens}[/medium_orchid]")
+        console.print(f"[slate_blue1]●[/slate_blue1] Project context enriched  [medium_orchid](↑ {prompt_tokens}  ↓ {completion_tokens})[/medium_orchid]")
     else:
-        console.print(f"[cyan]●[/cyan] Project context enriched")
+        console.print(f"[slate_blue1]●[/slate_blue1] Project context enriched")
 
 
 def make_spinner_display(frame_index: int, token_count: int, verb: tuple[str, str] | None = None) -> Text:

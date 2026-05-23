@@ -148,15 +148,22 @@ def _extract_doc_snippets(path: Path) -> str | None:
     return combined if combined else None
 
 
+def _count_lines(path: Path) -> int:
+    try:
+        return len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return 0
+
+
 async def enrich_workspace(
     working_dir: Path,
     client: AsyncOpenAI,
     model: str,
-    on_step: Callable[[str], None] | None = None,
+    on_file: Callable[[str, int], None] | None = None,
 ) -> EnrichmentResult:
-    def _step(msg: str) -> None:
-        if on_step:
-            on_step(msg)
+    def _notify(path: Path) -> None:
+        if on_file:
+            on_file(str(path.relative_to(working_dir)), _count_lines(path))
 
     workspace_json_path = working_dir / ".gekai" / "workspace.json"
     try:
@@ -166,37 +173,33 @@ async def enrich_workspace(
 
     snippets: list[str] = []
 
-    _step("Reading manifests")
     for proj in workspace.get("projects", []):
         manifest = proj.get("manifest")
         proj_path = proj.get("path", ".")
         if not manifest:
             continue
-        if proj_path == ".":
-            manifest_path = working_dir / manifest
-        else:
-            manifest_path = working_dir / proj_path / manifest
+        manifest_path = working_dir / manifest if proj_path == "." else working_dir / proj_path / manifest
         snippet = _extract_manifest_snippet(manifest_path)
         if snippet:
+            _notify(manifest_path)
             snippets.append(f"[{manifest}]\n{snippet}")
 
-    _step("Reading instruction files")
     for rel in workspace.get("ai_instructions", []):
         doc_path = working_dir / rel
         snippet = _extract_doc_snippets(doc_path)
         if snippet:
+            _notify(doc_path)
             snippets.append(f"[{rel}]\n{snippet}")
 
-    _step("Reading README")
     readme_path = working_dir / "README.md"
     if readme_path.exists():
         snippet = _extract_doc_snippets(readme_path)
         if snippet:
+            _notify(readme_path)
             snippets.append(f"[README.md]\n{snippet}")
 
     combined_snippets = "\n\n".join(snippets) if snippets else "no project files found"
 
-    _step("Synthesizing")
     prompt = (
         "given the following project excerpts, return exactly two lines with no preamble:\n"
         "proj_brief: <one concise sentence describing the project>\n"
@@ -228,7 +231,6 @@ async def enrich_workspace(
 
     enriched_at = datetime.now(timezone.utc).isoformat()
 
-    _step("Saving")
     try:
         existing = json.loads(workspace_json_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
