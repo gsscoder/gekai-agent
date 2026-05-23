@@ -6,6 +6,15 @@ from pathlib import Path
 from .router import Session
 
 
+def _serialize(data: dict) -> str:
+    header = {k: v for k, v in data.items() if k != "messages"}
+    base = json.dumps(header, indent=2).rstrip()[:-1]  # strip closing }
+    messages_str = ",\n    ".join(
+        json.dumps(m, separators=(",", ":")) for m in data.get("messages", [])
+    )
+    return f'{base},\n  "messages": [\n    {messages_str}\n  ]\n}}'
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -15,15 +24,10 @@ def _normalize_path(p: Path) -> str:
     return re.sub(r"[^a-z0-9]", "", str(p).lower())
 
 
-def _short_id(session_id: str) -> str:
-    """c2f27e2b-eb5c-48aa-9078-2f6e0df1b7b4 -> 2f6e0df1b7b4"""
-    return session_id.split("-")[-1]
-
-
 def session_file(session: Session) -> Path:
-    base = Path.home() / ".gekai" / "sessions" / _normalize_path(session.working_dir)
+    base = Path.home() / ".gekai" / "workspaces" / _normalize_path(session.working_dir)
     base.mkdir(parents=True, exist_ok=True)
-    return base / f"{_short_id(session.id)}.json"
+    return base / f"{session.id}.json"
 
 
 def save_session(session: Session) -> None:
@@ -41,7 +45,7 @@ def save_session(session: Session) -> None:
         "last_accessed_at": now,
         "messages": session.messages,
     }
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(_serialize(data), encoding="utf-8")
 
 
 def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] | None:
@@ -49,8 +53,7 @@ def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] |
     Returns (session_id, user/assistant messages). System messages are re-injected
     fresh on startup. Returns None if not found.
     """
-    short = session_id.split("-")[-1]
-    path = Path.home() / ".gekai" / "sessions" / _normalize_path(working_dir) / f"{short}.json"
+    path = Path.home() / ".gekai" / "workspaces" / _normalize_path(working_dir) / f"{session_id}.json"
     if not path.exists():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
