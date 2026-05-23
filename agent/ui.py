@@ -8,9 +8,12 @@ from pathlib import Path
 import pyfiglet
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.text import Text
 
 console = Console()
+
+_infer_progress: Progress | None = None
 
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
 
@@ -121,6 +124,25 @@ def render_enrichment_header() -> None:
 
 def render_enrichment_file(filename: str, line_count: int) -> None:
     console.print(f"[dim]⎿ Read {filename} ({line_count} lines)[/dim]")
+
+
+def render_enrichment_infer_start() -> None:
+    global _infer_progress
+    _infer_progress = Progress(
+        SpinnerColumn(style="medium_orchid"),
+        TextColumn("[medium_orchid]Inferring project context…[/medium_orchid]"),
+        console=console,
+        transient=True,
+    )
+    _infer_progress.add_task("", total=None)
+    _infer_progress.start()
+
+
+def render_enrichment_infer_end() -> None:
+    global _infer_progress
+    if _infer_progress:
+        _infer_progress.stop()
+        _infer_progress = None
 
 
 def render_enrichment_done(prompt_tokens: int | None, completion_tokens: int | None) -> None:

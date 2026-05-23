@@ -19,7 +19,7 @@ from toon import encode as toon_encode
 
 from .workspace import scan_workspace
 from .enrichment import enrich_workspace
-from .ui import render_enrichment_header, render_enrichment_file, render_enrichment_done
+from .ui import render_enrichment_header, render_enrichment_file, render_enrichment_infer_start, render_enrichment_infer_end, render_enrichment_done
 from .persistence import append_message, append_debug
 
 load_dotenv()
@@ -110,6 +110,8 @@ class GekaiAgent:
                 self._client,
                 self.model,
                 on_file=render_enrichment_file,
+                on_infer_start=render_enrichment_infer_start,
+                on_infer_end=render_enrichment_infer_end,
             )
             render_enrichment_done(result.prompt_tokens, result.completion_tokens)
 

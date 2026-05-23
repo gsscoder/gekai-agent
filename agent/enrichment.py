@@ -279,6 +279,8 @@ async def enrich_workspace(
     client: AsyncOpenAI,
     model: str,
     on_file: Callable[[str, int], None] | None = None,
+    on_infer_start: Callable[[], None] | None = None,
+    on_infer_end: Callable[[], None] | None = None,
 ) -> EnrichmentResult:
     def _notify(path: Path) -> None:
         if on_file:
@@ -350,11 +352,15 @@ async def enrich_workspace(
         f"{combined_snippets}"
     )
 
+    if on_infer_start:
+        on_infer_start()
     response = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         stream=False,
     )
+    if on_infer_end:
+        on_infer_end()
 
     response_text = response.choices[0].message.content or ""
     proj_brief = ""

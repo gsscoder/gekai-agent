@@ -8,7 +8,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .base import CommandResult
 from ..enrichment import enrich_workspace
-from ..ui import console, render_enrichment_done, render_enrichment_file, render_enrichment_header
+from ..ui import console, render_enrichment_done, render_enrichment_file, render_enrichment_header, render_enrichment_infer_start, render_enrichment_infer_end
 from ..workspace import scan_workspace
 
 
@@ -40,6 +40,8 @@ class WorkspaceRebuildCommand:
             self._client,
             self._model,
             on_file=render_enrichment_file,
+            on_infer_start=render_enrichment_infer_start,
+            on_infer_end=render_enrichment_infer_end,
         )
         render_enrichment_done(result.prompt_tokens, result.completion_tokens)
         return CommandResult()
