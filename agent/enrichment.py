@@ -9,6 +9,125 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+# ---------------------------------------------------------------------------
+# Algorithmic tech_stack extraction
+# ---------------------------------------------------------------------------
+
+_VERSION_SPECIFIERS = re.compile(r"(>=|<=|!=|==|~=|>|<|@\s*https?://).+")
+_EXTRAS = re.compile(r"\[.*?\]")
+_INLINE_COMMENT = re.compile(r"\s+#.*$")
+
+
+def _parse_requirements_txt(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    packages: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if re.match(r"^-[rce]\s", line):
+            continue
+        line = _INLINE_COMMENT.sub("", line)
+        line = _VERSION_SPECIFIERS.sub("", line)
+        line = _EXTRAS.sub("", line)
+        line = line.strip()
+        if line:
+            packages.append(line)
+    return packages
+
+
+def _parse_package_json(path: Path) -> list[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    deps: list[str] = []
+    deps.extend(data.get("dependencies", {}).keys())
+    deps.extend(data.get("devDependencies", {}).keys())
+    return deps
+
+
+def _strip_toml_version(value: str) -> str:
+    value = _INLINE_COMMENT.sub("", value)
+    value = _VERSION_SPECIFIERS.sub("", value)
+    value = _EXTRAS.sub("", value)
+    return value.strip()
+
+
+def _parse_pyproject_toml(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    deps: list[str] = []
+    in_deps = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_deps = stripped.lower() in (
+                "[project.dependencies]",
+                "[tool.poetry.dependencies]",
+            )
+            continue
+        if not in_deps or not stripped or stripped.startswith("#"):
+            continue
+        if "=" in stripped:
+            name = stripped.split("=")[0].strip().strip('"').strip("'")
+        else:
+            name = _strip_toml_version(stripped.strip('"').strip("'"))
+        name = _EXTRAS.sub("", name).strip()
+        if name:
+            deps.append(name)
+    return deps
+
+
+def _parse_cargo_toml(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    deps: list[str] = []
+    in_deps = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_deps = stripped.lower() == "[dependencies]"
+            continue
+        if not in_deps or not stripped or stripped.startswith("#"):
+            continue
+        name = stripped.split("=")[0].strip().strip('"').strip("'")
+        if name:
+            deps.append(name)
+    return deps
+
+
+_MANIFEST_PARSERS: dict[str, Callable[[Path], list[str]]] = {
+    "requirements.txt": _parse_requirements_txt,
+    "package.json": _parse_package_json,
+    "pyproject.toml": _parse_pyproject_toml,
+    "cargo.toml": _parse_cargo_toml,
+}
+
+
+def extract_tech_stack(manifest_path: Path, lang: str) -> list[str]:
+    parser = _MANIFEST_PARSERS.get(manifest_path.name.lower())
+    deps = parser(manifest_path) if parser is not None else []
+    seen: set[str] = set()
+    result: list[str] = [lang]
+    seen.add(lang.lower())
+    for dep in deps:
+        if dep.lower() not in seen:
+            seen.add(dep.lower())
+            result.append(dep)
+    return result
+
 
 @dataclass
 class EnrichmentResult:
@@ -172,6 +291,7 @@ async def enrich_workspace(
         workspace = {}
 
     snippets: list[str] = []
+    notified: set[Path] = set()
 
     for proj in workspace.get("projects", []):
         manifest = proj.get("manifest")
@@ -182,6 +302,7 @@ async def enrich_workspace(
         snippet = _extract_manifest_snippet(manifest_path)
         if snippet:
             _notify(manifest_path)
+            notified.add(manifest_path)
             snippets.append(f"[{manifest}]\n{snippet}")
 
     for rel in workspace.get("ai_instructions", []):
@@ -198,12 +319,33 @@ async def enrich_workspace(
             _notify(readme_path)
             snippets.append(f"[README.md]\n{snippet}")
 
+    tech_stack: list[str] = []
+    seen_langs: set[str] = set()
+    for proj in workspace.get("projects", []):
+        manifest = proj.get("manifest")
+        lang = proj.get("lang", "")
+        proj_path = proj.get("path", ".")
+        if not manifest or not lang:
+            continue
+        manifest_path = (
+            working_dir / manifest
+            if proj_path == "."
+            else working_dir / proj_path / manifest
+        )
+        if manifest_path not in notified:
+            _notify(manifest_path)
+            notified.add(manifest_path)
+        for entry in extract_tech_stack(manifest_path, lang):
+            key = entry.lower()
+            if key not in seen_langs:
+                seen_langs.add(key)
+                tech_stack.append(entry)
+
     combined_snippets = "\n\n".join(snippets) if snippets else "no project files found"
 
     prompt = (
-        "given the following project excerpts, return exactly two lines with no preamble:\n"
+        "given the following project excerpts, return exactly one line with no preamble:\n"
         "proj_brief: <one concise sentence describing the project>\n"
-        "tech_stack: <comma-separated list of core technologies>\n"
         "excerpts:\n"
         f"{combined_snippets}"
     )
@@ -216,14 +358,9 @@ async def enrich_workspace(
 
     response_text = response.choices[0].message.content or ""
     proj_brief = ""
-    tech_stack_raw = ""
     for line in response_text.splitlines():
         if line.startswith("proj_brief:"):
             proj_brief = line[len("proj_brief:"):].strip()
-        elif line.startswith("tech_stack:"):
-            tech_stack_raw = line[len("tech_stack:"):].strip()
-
-    tech_stack = [item.strip() for item in tech_stack_raw.split(",") if item.strip()]
 
     usage = response.usage
     prompt_tokens: int | None = usage.prompt_tokens if usage else None

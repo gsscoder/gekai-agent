@@ -36,7 +36,7 @@ _OPERATIVE_VERBS = [
 
 
 def print_banner(version: str, working_dir: Path, branch: str | None = None) -> None:
-    banner = pyfiglet.figlet_format("gekai", font="small_slant").rstrip()
+    banner = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
     console.print(f"[cyan]{banner}[/cyan]")
     console.print(f"[bold white]gekai[/bold white] [grey50]v{version}[/grey50]")
     if branch:
