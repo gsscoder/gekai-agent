@@ -20,6 +20,7 @@ from toon import encode as toon_encode
 from .workspace import scan_workspace
 from .enrichment import enrich_workspace
 from .ui import render_enrichment_header, render_enrichment_file, render_enrichment_done
+from .persistence import append_message, append_debug
 
 load_dotenv()
 
@@ -87,6 +88,9 @@ class GekaiAgent:
         if session_id:
             session.id = session_id
         session.messages.append({"role": "system", "content": _format_workspace_context(workspace)})
+        if self.debug:
+            append_debug(session, session.messages[0])
+            append_debug(session, session.messages[-1])
         if restored_messages:
             session.messages.extend(restored_messages)
         return session
@@ -109,6 +113,7 @@ class GekaiAgent:
         self, session: Session, user_input: str, segments: list[tuple[Intent, str, bool]]
     ) -> AsyncIterator[str | UsageInfo]:
         session.messages.append({"role": "user", "content": user_input})
+        append_message(session, session.messages[-1])
         all_chunks: list[str] = []
         first = True
 
@@ -121,6 +126,7 @@ class GekaiAgent:
 
             if intent == Intent.MEMORIZE:
                 session.messages.append({"role": "system", "content": f"[preference] {sub_prompt}"})
+                append_message(session, session.messages[-1])
                 ack = "noted."
                 all_chunks.append(ack)
                 yield ack
@@ -151,3 +157,4 @@ class GekaiAgent:
                     yield result
 
         session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
+        append_message(session, session.messages[-1])

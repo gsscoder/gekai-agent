@@ -17,7 +17,7 @@ from . import __version__
 from .agent import GekaiAgent
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
-from .persistence import load_session, save_session
+from .persistence import load_session
 from .settings import load_permissions, prompt_permissions
 from .handlers.chat import UsageInfo
 from .ui import console, make_spinner_display, print_banner, random_accent_color, random_farewell, random_operative_verb, render_farewell, render_operation_summary, render_response, restyle_user_input
@@ -180,7 +180,6 @@ async def _run(working_dir: Path, debug: bool = False, resume_id: str | None = N
                 )
                 console.print()
                 render_response("".join(chunks))
-                save_session(session)
                 console.print()
             else:
                 interact_task.cancel()
