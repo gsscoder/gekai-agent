@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,140 +9,7 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-# ---------------------------------------------------------------------------
-# Algorithmic tech_stack extraction
-# ---------------------------------------------------------------------------
-
-_VERSION_SPECIFIERS = re.compile(r"(>=|<=|!=|==|~=|>|<|@\s*https?://).+")
-_EXTRAS = re.compile(r"\[.*?\]")
-_INLINE_COMMENT = re.compile(r"\s+#.*$")
-
-
-def _parse_requirements_txt(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-
-    packages: list[str] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if re.match(r"^-[rce]\s", line):
-            continue
-        line = _INLINE_COMMENT.sub("", line)
-        line = _VERSION_SPECIFIERS.sub("", line)
-        line = _EXTRAS.sub("", line)
-        line = line.strip()
-        if line:
-            packages.append(line)
-    return packages
-
-
-def _parse_package_json(path: Path) -> list[str]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-
-    deps: list[str] = []
-    deps.extend(data.get("dependencies", {}).keys())
-    deps.extend(data.get("devDependencies", {}).keys())
-    return deps
-
-
-def _strip_toml_version(value: str) -> str:
-    value = _INLINE_COMMENT.sub("", value)
-    value = _VERSION_SPECIFIERS.sub("", value)
-    value = _EXTRAS.sub("", value)
-    return value.strip()
-
-
-def _parse_pyproject_toml(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-
-    deps: list[str] = []
-    in_deps = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_deps = stripped.lower() in (
-                "[project.dependencies]",
-                "[tool.poetry.dependencies]",
-            )
-            continue
-        if not in_deps or not stripped or stripped.startswith("#"):
-            continue
-        if "=" in stripped:
-            name = stripped.split("=")[0].strip().strip('"').strip("'")
-        else:
-            name = _strip_toml_version(stripped.strip('"').strip("'"))
-        name = _EXTRAS.sub("", name).strip()
-        if name:
-            deps.append(name)
-    return deps
-
-
-def _parse_cargo_toml(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-
-    deps: list[str] = []
-    in_deps = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_deps = stripped.lower() == "[dependencies]"
-            continue
-        if not in_deps or not stripped or stripped.startswith("#"):
-            continue
-        name = stripped.split("=")[0].strip().strip('"').strip("'")
-        if name:
-            deps.append(name)
-    return deps
-
-
-def _parse_csproj(path: Path) -> list[str]:
-    try:
-        tree = ET.parse(path)
-    except (OSError, ET.ParseError):
-        return []
-
-    packages: list[str] = []
-    for elem in tree.iter():
-        if elem.tag.split("}")[-1] == "PackageReference":
-            name = elem.get("Include")
-            if name:
-                packages.append(name)
-    return packages
-
-
-_MANIFEST_PARSERS: dict[str, Callable[[Path], list[str]]] = {
-    "requirements.txt": _parse_requirements_txt,
-    "package.json": _parse_package_json,
-    "pyproject.toml": _parse_pyproject_toml,
-    "cargo.toml": _parse_cargo_toml,
-    ".csproj": _parse_csproj,
-}
-
-
-def extract_tech_stack(manifest_path: Path, lang: str) -> list[str]:
-    parser = _MANIFEST_PARSERS.get(manifest_path.name.lower()) or _MANIFEST_PARSERS.get(manifest_path.suffix.lower())
-    deps = parser(manifest_path) if parser is not None else []
-    seen: set[str] = set()
-    result: list[str] = [lang]
-    seen.add(lang.lower())
-    for dep in deps:
-        if dep.lower() not in seen:
-            seen.add(dep.lower())
-            result.append(dep)
-    return result
+from agent.manifest_parsers import extract_tech_stack, _parse_csproj
 
 
 @dataclass
