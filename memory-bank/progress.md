@@ -4,7 +4,7 @@
 Active development
 
 ## Current Focus
-TUI stabilization and UX polish
+Complete query handler and core agent functionality
 
 ## Recent Changes
 - Refined intent routing (`display`, `memorize`, `clarify`) and hardened classifier prompt

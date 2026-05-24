@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -108,16 +109,32 @@ def _parse_cargo_toml(path: Path) -> list[str]:
     return deps
 
 
+def _parse_csproj(path: Path) -> list[str]:
+    try:
+        tree = ET.parse(path)
+    except (OSError, ET.ParseError):
+        return []
+
+    packages: list[str] = []
+    for elem in tree.iter():
+        if elem.tag.split("}")[-1] == "PackageReference":
+            name = elem.get("Include")
+            if name:
+                packages.append(name)
+    return packages
+
+
 _MANIFEST_PARSERS: dict[str, Callable[[Path], list[str]]] = {
     "requirements.txt": _parse_requirements_txt,
     "package.json": _parse_package_json,
     "pyproject.toml": _parse_pyproject_toml,
     "cargo.toml": _parse_cargo_toml,
+    ".csproj": _parse_csproj,
 }
 
 
 def extract_tech_stack(manifest_path: Path, lang: str) -> list[str]:
-    parser = _MANIFEST_PARSERS.get(manifest_path.name.lower())
+    parser = _MANIFEST_PARSERS.get(manifest_path.name.lower()) or _MANIFEST_PARSERS.get(manifest_path.suffix.lower())
     deps = parser(manifest_path) if parser is not None else []
     seen: set[str] = set()
     result: list[str] = [lang]
@@ -159,6 +176,10 @@ def _extract_manifest_snippet(path: Path) -> str | None:
         if deps:
             parts.append(f"dependencies: {', '.join(deps)}")
         return "\n".join(parts) if parts else None
+
+    if path.suffix.lower() == ".csproj":
+        pkgs = _parse_csproj(path)
+        return f"dependencies: {', '.join(pkgs)}" if pkgs else None
 
     if name in ("pyproject.toml", "cargo.toml"):
         lines = text.splitlines()

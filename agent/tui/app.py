@@ -334,12 +334,12 @@ class GekaiApp(App[None]):
                     self._tick_status(_verb_status(), color)
                 elif isinstance(item, EnrichmentEvent):
                     if item.kind == "start":
-                        self._set_status("enriching workspace...", color)
+                        self._set_status("Enriching workspace...", color)
                     elif item.kind == "done":
                         tokens = ""
                         if item.prompt_tokens is not None and item.completion_tokens is not None:
-                            tokens = f"  ↑ {item.prompt_tokens}  ↓ {item.completion_tokens}"
-                        self._set_status(f"workspace enriched{tokens}", color)
+                            tokens = f"  (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
+                        self._set_status(f"Workspace enriched{tokens}", color)
                 elif isinstance(item, UsageInfo):
                     completion_tokens = item.completion_tokens
                     self._tick_status(_verb_status(), color)
