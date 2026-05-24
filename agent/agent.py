@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -114,6 +116,17 @@ class GekaiAgent:
     ) -> AsyncIterator[EnrichmentEvent]:
         if intent != Intent.QUERY or not plan:
             return
+        cache_path = session.working_dir / ".gekai" / "workspace.json"
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            enriched_at_str = cached.get("enriched_at")
+            if enriched_at_str:
+                enriched_at = datetime.fromisoformat(enriched_at_str)
+                age = datetime.now(timezone.utc).timestamp() - enriched_at.timestamp()
+                if age < 30 * 60:
+                    return
+        except (OSError, ValueError):
+            pass
         async def _noop_file(f: str, n: int) -> None: pass
         async def _noop() -> None: pass
 
