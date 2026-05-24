@@ -42,7 +42,8 @@ agent/
 - `memorize` segments append an additional `{"role": "system", "content": "[preference] ..."}` inline
 
 ## Intent Routing
-`IntentClassifier` decomposes user input into `list[tuple[Intent, str]]` via one LLM call
+`IntentClassifier` decomposes user input into `list[tuple[Intent, str, bool]]` via one LLM call
+Third element is a `plan` boolean flag (whether enrichment planning is needed)
 Returns `[(Intent.CHAT, user_input)]` on unparseable output
 
 Intents:
@@ -60,7 +61,7 @@ Classifier is stateless (no session history passed); context continuity is the h
 Env vars:
 - `GEKAI_DEFAULT_MODEL` — model id, e.g. `deepseek-chat`
 - `GEKAI_API_KEY`
-- `GEKAI_BASE_URL` — e.g. `https://api.deepseek.com/v1`
+- `GEKAI_MODEL_BASE_URL` — e.g. `https://api.deepseek.com/v1`
 
 ## Workspace Scan
 `scan_workspace(working_dir)` runs at startup; writes `.gekai/workspace.json`
@@ -90,9 +91,10 @@ Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.
 ## Commands
 Slash-prefixed input intercepted by `CommandPalette` then dispatched via `CommandRegistry`.
 - `/exit` — exit to terminal (with farewell message + delay)
+- `/clear` — clears chat and starts a new session (resets session ID)
 - `/workspace:rebuild` — re-scan + AI-enrich workspace; handled directly in `GekaiApp._rebuild_workspace()`, not via registry dispatch
 
 ## CLI Flags
-- `--debug` / `-d` — prints `debug: {intent}: {sub_prompt}` per segment in grey50
+- `--debug` — prints `[classifier: INTENT+plan, ...]` in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
 - `--resume` / `-r` — resume a previous session by ID
-- `--working-dir` — override working directory (default: cwd)
+- `--working-dir` / `-d` — override working directory (default: cwd)

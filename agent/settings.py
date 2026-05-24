@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +45,24 @@ def save_permissions(working_dir: Path, permissions: Permissions) -> None:
         }
     }
     path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def bootstrap_global_settings() -> None:
+    path = Path.home() / ".gekai" / "settings.json"
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"env": {}}, indent=2) + "\n")
+
+
+def load_global_settings() -> None:
+    try:
+        path = Path.home() / ".gekai" / "settings.json"
+        data = json.loads(path.read_text())
+        for key, value in data.get("env", {}).items():
+            os.environ[key] = value
+    except (OSError, ValueError):
+        pass
 
 
 def resolve_permissions(choice: str) -> Permissions | None:

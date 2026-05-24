@@ -65,7 +65,7 @@ class GekaiAgent:
         _validate_config()
         self.model: str = os.environ["GEKAI_DEFAULT_MODEL"]
         self._api_key: str | None = os.environ.get("GEKAI_API_KEY")
-        self._api_base: str | None = os.environ.get("GEKAI_BASE_URL")
+        self._api_base: str | None = os.environ.get("GEKAI_MODEL_BASE_URL")
         self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
         self._classifier = IntentClassifier(
             model=self.model,

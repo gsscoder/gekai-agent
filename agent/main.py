@@ -10,12 +10,15 @@ from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .commands.workspace import WorkspaceRebuildCommand
 from .persistence import load_session
-from .settings import Permissions, load_permissions
+from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions
 from .tui.app import GekaiApp
 from .workspace import get_git_branch
 
 
 def main() -> None:
+    bootstrap_global_settings()
+    load_global_settings()
+
     parser = argparse.ArgumentParser(prog="gekai")
     parser.add_argument(
         "-d", "--working-dir",
