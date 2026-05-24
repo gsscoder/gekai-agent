@@ -351,24 +351,24 @@ class GekaiApp(App[None]):
             return f"{verb[0]}...{tokens_part}"
 
         try:
-            self._tick_status(_verb_status(), color)
+            await self._start_status_animation(_verb_status(), color)
             segments = await self._agent.classify(user_input)
             async for item in self._agent.process_stream(self._session, user_input, segments):
                 if isinstance(item, str):
                     answer_chunks.append(item)
                     completion_tokens = _estimate_tokens("".join(answer_chunks))
-                    self._tick_status(_verb_status(), color)
+                    self._status_text = _verb_status()
                 elif isinstance(item, EnrichmentEvent):
                     if item.kind == "start":
-                        self._set_status("Enriching workspace...", color)
+                        self._status_text = "Enriching workspace..."
                     elif item.kind == "done":
                         tokens = ""
                         if item.prompt_tokens is not None and item.completion_tokens is not None:
                             tokens = f"  (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
-                        self._set_status(f"Workspace enriched{tokens}", color)
+                        self._status_text = f"Workspace enriched{tokens}"
                 elif isinstance(item, UsageInfo):
                     completion_tokens = item.completion_tokens
-                    self._tick_status(_verb_status(), color)
+                    self._status_text = _verb_status()
             answer = "".join(answer_chunks).rstrip("\n")
             self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
             await conversation.mount(self._assistant_widget)
@@ -385,7 +385,7 @@ class GekaiApp(App[None]):
             await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"error: {error}"))
             conversation.scroll_end(animate=False)
         finally:
-            self._clear_status()
+            await self._stop_status_animation()
             self._worker = None
             self._focus_prompt()
 
@@ -479,8 +479,9 @@ class GekaiApp(App[None]):
         status = self.query_one("#status-line", Static)
         status.update(text)
         status.styles.color = color
-        status.display = True
-        self.query_one("#status-spacer", Static).display = True
+        if not status.display:
+            status.display = True
+            self.query_one("#status-spacer", Static).display = True
 
     def _clear_status(self) -> None:
         status = self.query_one("#status-line", Static)
