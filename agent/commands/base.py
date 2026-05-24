@@ -6,6 +6,7 @@ from typing import Protocol
 class CommandResult:
     output: str | None = None
     exit_app: bool = False
+    clear_session: bool = False
 
 
 class Command(Protocol):

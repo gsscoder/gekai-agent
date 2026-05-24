@@ -155,6 +155,7 @@ class GekaiApp(App[None]):
         self._restored_messages = restored_messages
         self._needs_permissions = needs_permissions
         self._worker: Worker | None = None
+        self._workspace: dict | None = None
         self._assistant_widget: MessageWidget | None = None
         self._status_task: asyncio.Task[None] | None = None
         self._status_stop: asyncio.Event | None = None
@@ -221,6 +222,8 @@ class GekaiApp(App[None]):
             workspace = await asyncio.to_thread(scan_workspace, self._working_dir, on_step=_on_step)
             await scan_widget.remove()
 
+        self._workspace = workspace
+
         # Start session
         self._session = self._agent.start_session(
             workspace,
@@ -241,9 +244,29 @@ class GekaiApp(App[None]):
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
 
+    async def _clear_session(self) -> None:
+        conversation = self.query_one("#conversation", ScrollableContainer)
+        await conversation.remove_children()
+        self._session = self._agent.start_session(self._workspace)
+        self._assistant_widget = None
+        banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
+        await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
+        await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"gekai v{self._version}"))
+        if self._branch:
+            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"{self._working_dir.name} | {self._branch}"))
+        else:
+            await conversation.mount(MessageWidget(MessageKind.SYSTEM, self._working_dir.name))
+        self._focus_prompt()
+
     @property
     def session_id(self) -> str | None:
         return self._session.id if self._session else None
+
+    @property
+    def session_has_interactions(self) -> bool:
+        if self._session is None:
+            return False
+        return any(m.get("role") == "user" for m in self._session.messages)
 
     def _focus_prompt(self) -> None:
         self.query_one("#prompt", Input).focus(scroll_visible=False)
@@ -300,6 +323,9 @@ class GekaiApp(App[None]):
             result = await self._command_registry.dispatch(stripped)
             if result.output:
                 await conversation.mount(MessageWidget(MessageKind.SYSTEM, result.output))
+            if result.clear_session:
+                await self._clear_session()
+                return
             if result.exit_app:
                 farewell = random_farewell()
                 await conversation.mount(MessageWidget(MessageKind.ASSISTANT, farewell))

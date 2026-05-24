@@ -5,6 +5,7 @@ from pathlib import Path
 
 from . import __version__
 from .agent import GekaiAgent
+from .commands.clear import ClearCommand
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .commands.workspace import WorkspaceRebuildCommand
@@ -51,6 +52,7 @@ def main() -> None:
             restored_id, restored_messages = result
 
     registry = CommandRegistry()
+    registry.register(ClearCommand())
     registry.register(ExitCommand())
     registry.register(WorkspaceRebuildCommand())
 
@@ -67,7 +69,7 @@ def main() -> None:
     app.run()
 
     session_id = app.session_id
-    if session_id:
+    if session_id and app.session_has_interactions:
         from .ui import console
         console.print()
         console.print(f"[dim]Resume session:[/dim]\n[grey50]gekai --resume {session_id}[/grey50]")
