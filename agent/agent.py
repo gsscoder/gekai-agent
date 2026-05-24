@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,10 +20,16 @@ from toon import encode as toon_encode
 
 from .workspace import scan_workspace
 from .enrichment import enrich_workspace
-from .ui import render_enrichment_header, render_enrichment_file, render_enrichment_infer_start, render_enrichment_infer_end, render_enrichment_done
 from .persistence import append_message, append_debug
 
 load_dotenv()
+
+
+@dataclass
+class EnrichmentEvent:
+    kind: str  # "start" | "done"
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 def _format_workspace_context(workspace: dict) -> str:
@@ -102,22 +109,32 @@ class GekaiAgent:
     async def classify(self, user_input: str) -> list[tuple[Intent, str, bool]]:
         return await self._classifier.classify(user_input)
 
-    async def _enrich_if_needed(self, session: Session, intent: Intent, plan: bool) -> None:
-        if intent == Intent.QUERY and plan:
-            render_enrichment_header()
-            result = await enrich_workspace(
-                session.working_dir,
-                self._client,
-                self.model,
-                on_file=render_enrichment_file,
-                on_infer_start=render_enrichment_infer_start,
-                on_infer_end=render_enrichment_infer_end,
-            )
-            render_enrichment_done(result.prompt_tokens, result.completion_tokens)
+    async def _enrich_if_needed(
+        self, session: Session, intent: Intent, plan: bool
+    ) -> AsyncIterator[EnrichmentEvent]:
+        if intent != Intent.QUERY or not plan:
+            return
+        async def _noop_file(f: str, n: int) -> None: pass
+        async def _noop() -> None: pass
+
+        yield EnrichmentEvent(kind="start")
+        result = await enrich_workspace(
+            session.working_dir,
+            self._client,
+            self.model,
+            on_file=_noop_file,
+            on_infer_start=_noop,
+            on_infer_end=_noop,
+        )
+        yield EnrichmentEvent(
+            kind="done",
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+        )
 
     async def process_stream(
         self, session: Session, user_input: str, segments: list[tuple[Intent, str, bool]]
-    ) -> AsyncIterator[str | UsageInfo]:
+    ) -> AsyncIterator[str | UsageInfo | EnrichmentEvent]:
         session.messages.append({"role": "user", "content": user_input})
         append_message(session, session.messages[-1])
         all_chunks: list[str] = []
@@ -150,7 +167,8 @@ class GekaiAgent:
                     yield result
 
             else:
-                await self._enrich_if_needed(session, intent, plan)
+                async for event in self._enrich_if_needed(session, intent, plan):
+                    yield event
                 handler = self._handlers[intent]
                 if hasattr(handler, "stream"):
                     async for item in handler.stream(session, sub_prompt):

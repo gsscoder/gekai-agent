@@ -4,3 +4,4 @@ llmstitch[openai]
 python-dotenv==1.2.2
 pyfiglet==1.0.4
 python-toon
+textual>=0.70

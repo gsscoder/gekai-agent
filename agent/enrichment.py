@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -278,13 +278,13 @@ async def enrich_workspace(
     working_dir: Path,
     client: AsyncOpenAI,
     model: str,
-    on_file: Callable[[str, int], None] | None = None,
-    on_infer_start: Callable[[], None] | None = None,
-    on_infer_end: Callable[[], None] | None = None,
+    on_file: Callable[[str, int], Awaitable[None]] | None = None,
+    on_infer_start: Callable[[], Awaitable[None]] | None = None,
+    on_infer_end: Callable[[], Awaitable[None]] | None = None,
 ) -> EnrichmentResult:
-    def _notify(path: Path) -> None:
+    async def _notify(path: Path) -> None:
         if on_file:
-            on_file(str(path.relative_to(working_dir)), _count_lines(path))
+            await on_file(str(path.relative_to(working_dir)), _count_lines(path))
 
     workspace_json_path = working_dir / ".gekai" / "workspace.json"
     try:
@@ -303,7 +303,7 @@ async def enrich_workspace(
         manifest_path = working_dir / manifest if proj_path == "." else working_dir / proj_path / manifest
         snippet = _extract_manifest_snippet(manifest_path)
         if snippet:
-            _notify(manifest_path)
+            await _notify(manifest_path)
             notified.add(manifest_path)
             snippets.append(f"[{manifest}]\n{snippet}")
 
@@ -311,14 +311,14 @@ async def enrich_workspace(
         doc_path = working_dir / rel
         snippet = _extract_doc_snippets(doc_path)
         if snippet:
-            _notify(doc_path)
+            await _notify(doc_path)
             snippets.append(f"[{rel}]\n{snippet}")
 
     readme_path = working_dir / "README.md"
     if readme_path.exists():
         snippet = _extract_doc_snippets(readme_path)
         if snippet:
-            _notify(readme_path)
+            await _notify(readme_path)
             snippets.append(f"[README.md]\n{snippet}")
 
     tech_stack: list[str] = []
@@ -335,7 +335,7 @@ async def enrich_workspace(
             else working_dir / proj_path / manifest
         )
         if manifest_path not in notified:
-            _notify(manifest_path)
+            await _notify(manifest_path)
             notified.add(manifest_path)
         for entry in extract_tech_stack(manifest_path, lang):
             key = entry.lower()
@@ -353,14 +353,14 @@ async def enrich_workspace(
     )
 
     if on_infer_start:
-        on_infer_start()
+        await on_infer_start()
     response = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         stream=False,
     )
     if on_infer_end:
-        on_infer_end()
+        await on_infer_end()
 
     response_text = response.choices[0].message.content or ""
     proj_brief = ""

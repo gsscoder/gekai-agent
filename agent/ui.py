@@ -1,27 +1,14 @@
 from __future__ import annotations
 
-import math
 import random
-import sys
-from pathlib import Path
 
-import pyfiglet
 from rich.console import Console
-from rich.markdown import Markdown
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.text import Text
 
 console = Console()
 
-_infer_progress: Progress | None = None
-
-_SPINNER_FRAMES = ["|", "/", "-", "\\"]
-
 _ACCENT_COLORS = [
-    "magenta", "bright_magenta", "hot_pink", "deep_pink1", "medium_orchid",
-    "plum1", "violet", "purple", "blue_violet", "cyan", "bright_cyan",
-    "turquoise2", "deep_sky_blue1", "dodger_blue1", "steel_blue1",
-    "cornflower_blue", "slate_blue1",
+    "yellow", "ansi_bright_yellow", "gold", "orange", "darkorange",
+    "red", "ansi_bright_red", "indianred", "salmon",
 ]
 
 _OPERATIVE_VERBS = [
@@ -85,92 +72,9 @@ def random_farewell() -> str:
     return random.choice(_FAREWELLS)
 
 
-def print_banner(version: str, working_dir: Path, branch: str | None = None) -> None:
-    banner = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
-    console.print(f"[cyan]{banner}[/cyan]")
-    console.print(f"[bold white]gekai[/bold white] [grey50]v{version}[/grey50]")
-    if branch:
-        console.print(f"[dim]{working_dir.name}[/dim] [grey50]| {branch}[/grey50]")
-    else:
-        console.print(f"[dim]{working_dir.name}[/dim]")
-    console.print()
-
-
-def render_farewell(text: str) -> None:
-    color = random.choice(_ACCENT_COLORS)
-    console.print(f"[{color}]●[/{color}] ", end="")
-    console.print(f"[bold]{text}[/bold]")
-
-
-def render_response(text: str) -> None:
-    console.print("[cyan]●[/cyan] ", end="")
-    console.print(Markdown(text))
-
-
-def render_operation_summary(
-    elapsed: float,
-    verb: tuple[str, str] | None = None,
-) -> None:
-    duration = f"{elapsed:.0f}s" if elapsed < 60 else f"{elapsed / 60:.1f}m"
-    past = verb[1] if verb else "Operated"
-    line = f"* {past} for {duration}"
-    console.print()
-    console.print(f"[grey50]{line}[/grey50]")
-
-
-def render_enrichment_header() -> None:
-    console.print("[slate_blue1]●[/slate_blue1] ws-explorer [dim](metadata enrichment)[/dim]")
-
-
-def render_enrichment_file(filename: str, line_count: int) -> None:
-    console.print(f"[dim]⎿ Read {filename} ({line_count} lines)[/dim]")
-
-
-def render_enrichment_infer_start() -> None:
-    global _infer_progress
-    _infer_progress = Progress(
-        SpinnerColumn(style="medium_orchid"),
-        TextColumn("[medium_orchid]Inferring project context…[/medium_orchid]"),
-        console=console,
-        transient=True,
-    )
-    _infer_progress.add_task("", total=None)
-    _infer_progress.start()
-
-
-def render_enrichment_infer_end() -> None:
-    global _infer_progress
-    if _infer_progress:
-        _infer_progress.stop()
-        _infer_progress = None
-
-
-def render_enrichment_done(prompt_tokens: int | None, completion_tokens: int | None) -> None:
-    if prompt_tokens is not None and completion_tokens is not None:
-        console.print(f"[slate_blue1]●[/slate_blue1] Project context enriched  [medium_orchid](↑ {prompt_tokens}  ↓ {completion_tokens})[/medium_orchid]")
-    else:
-        console.print(f"[slate_blue1]●[/slate_blue1] Project context enriched")
-
-
 def random_accent_color() -> str:
     return random.choice(_ACCENT_COLORS)
 
 
-def make_spinner_display(frame_index: int, token_count: int, verb: tuple[str, str] | None = None, color: str = "yellow") -> Text:
-    t = Text()
-    t.append(f"{_SPINNER_FRAMES[frame_index % len(_SPINNER_FRAMES)]} {verb[0] if verb else 'Operating'}...", style=color)
-    _count = str(token_count) if token_count < 1000 else f"{token_count / 1000:.1f}k"
-    t.append(f" (↓ {_count} tokens)", style="medium_orchid")
-    return t
-
-
 def random_operative_verb() -> tuple[str, str]:
     return random.choice(_OPERATIVE_VERBS)
-
-
-def restyle_user_input(user_input: str) -> None:
-    term_width = console.width or 80
-    lines_used = max(1, math.ceil((2 + len(user_input)) / term_width))
-    sys.stdout.write(f"\033[{lines_used}A\r\033[J")
-    sys.stdout.flush()
-    console.print(f"[bold cyan]❯[/bold cyan] [white on grey23]{user_input}[/white on grey23]")

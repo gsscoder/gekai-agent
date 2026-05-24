@@ -4,15 +4,16 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 ## Package Layout
 ```
 agent/
-  main.py          — REPL entry point, CLI flags, streaming loop, ESC cancellation
+  main.py          — CLI entry point: arg parsing, GekaiApp launch, post-exit session ID print
   agent.py         — GekaiAgent: classifies intent, routes to handler, owns session writes
   router.py        — Intent enum, Session dataclass, IntentClassifier (LLM call)
-  router.py        — SYSTEM_PROMPT, CLASSIFIER_PROMPT constants
+                     SYSTEM_PROMPT, CLASSIFIER_PROMPT constants
   persistence.py   — save_session / load_session (JSON, ~/.gekai/sessions/)
   workspace.py     — scan_workspace, get_git_branch, AI instruction file detection
+  enrichment.py    — enrich_workspace: AI-backed project context inference
   tools.py         — make_tools() factory: read_file, list_files, grep (llmstitch @tool)
-  ui.py            — console, render_response (Markdown), spinner, banner, operative verbs
-  settings.py      — Permissions dataclass, load/prompt helpers
+  ui.py            — random_accent_color, random_farewell, random_operative_verb (pure data helpers)
+  settings.py      — Permissions dataclass, PERMISSION_CHOICES, load/save/resolve helpers
   handlers/
     base.py        — Handler protocol
     chat.py        — ChatHandler: LLM streaming, yields chunks only (no session writes)
@@ -21,7 +22,13 @@ agent/
   commands/
     base.py        — Command protocol, CommandResult dataclass
     registry.py    — CommandRegistry: /name dispatch
-    exit.py        — ExitCommand: /exit
+    exit.py        — ExitCommand: /exit → exit_app
+    workspace.py   — WorkspaceRebuildCommand: /workspace:rebuild (handled in app, not dispatch)
+  tui/             — see tui-layout.md
+    app.py
+    widgets.py
+    permissions.py
+    palette.py
 ```
 
 ## Session
@@ -75,14 +82,15 @@ Fields: `session_id`, `working_dir`, `created_at`, `last_accessed_at`, `messages
 On resume (`--resume <session-id>`): restores session ID and user/assistant messages; re-injects fresh system messages; prints conversation history to terminal; skips workspace scan if cache valid
 
 ## Streaming UX
-`Rich.Live(transient=True)` during each turn:
-- spinner `| / - \` + random operative verb (surgical/medical terms) + token count
-- ESC cancels in-flight interaction via `threading.Event` + `asyncio.wait(FIRST_COMPLETED)`
-- on completion: spinner clears, operation summary (`* {PastVerb} for {duration}`), response rendered as Markdown with `●` prefix
+Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.
+- spinner `| / - \` + random operative verb + token count in `#status-line` (accent color via `styles.color`)
+- ESC cancels worker; `Ctrl+C` quits app
+- on completion: ASSISTANT widget (Markdown) + OPERATION widget (`* {PastVerb} for {duration}`)
 
 ## Commands
-Slash-prefixed input dispatched via `CommandRegistry` before agent routing
-Current: `/exit`
+Slash-prefixed input intercepted by `CommandPalette` then dispatched via `CommandRegistry`.
+- `/exit` — exit to terminal (with farewell message + delay)
+- `/workspace:rebuild` — re-scan + AI-enrich workspace; handled directly in `GekaiApp._rebuild_workspace()`, not via registry dispatch
 
 ## CLI Flags
 - `--debug` / `-d` — prints `debug: {intent}: {sub_prompt}` per segment in grey50
