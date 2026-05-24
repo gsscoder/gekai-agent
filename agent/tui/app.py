@@ -353,6 +353,17 @@ class GekaiApp(App[None]):
         try:
             await self._start_status_animation(_verb_status(), color)
             segments = await self._agent.classify(user_input)
+            if self._agent.debug:
+                labels = []
+                for intent, _sub, plan in segments:
+                    label = intent.name
+                    if plan:
+                        label += "+plan"
+                    labels.append(label)
+                debug_text = f"\\[classifier: {', '.join(labels)}]"
+                await conversation.mount(
+                    MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3")
+                )
             async for item in self._agent.process_stream(self._session, user_input, segments):
                 if isinstance(item, str):
                     answer_chunks.append(item)
