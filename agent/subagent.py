@@ -14,6 +14,8 @@ class SubAgentEvent:
 class SubAgentStartEvent(SubAgentEvent):
     """Always the first event. Carries the subagent name for the TUI header."""
     name: str = ""
+    description: str = ""
+    color: str = ""
 
 
 @dataclass
@@ -26,6 +28,12 @@ class LogEvent(SubAgentEvent):
 class InferStartEvent(SubAgentEvent):
     """An LLM call is about to start. TUI should show verb+spinner."""
     pass
+
+
+@dataclass
+class InferDeltaEvent(SubAgentEvent):
+    """A streamed chunk arrived mid-LLM-call. Carries running completion-token estimate."""
+    completion_tokens: int | None = None
 
 
 @dataclass
@@ -43,6 +51,11 @@ class DoneEvent(SubAgentEvent):
 
 class SubAgent(ABC):
     name: str
+    color: str = ""
+
+    @property
+    def description(self) -> str:
+        return ""
 
     @abstractmethod
     def run(self) -> AsyncIterator[SubAgentEvent]:

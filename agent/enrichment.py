@@ -207,7 +207,8 @@ async def enrich_workspace(
     model: str,
     on_file: Callable[[str, int], Awaitable[None]] | None = None,
     on_infer_start: Callable[[], Awaitable[None]] | None = None,
-    on_infer_end: Callable[[], Awaitable[None]] | None = None,
+    on_infer_delta: Callable[[int], Awaitable[None]] | None = None,
+    on_infer_end: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> EnrichmentResult:
     async def _notify(path: Path) -> None:
         if on_file:
@@ -281,23 +282,30 @@ async def enrich_workspace(
 
     if on_infer_start:
         await on_infer_start()
-    response = await client.chat.completions.create(
+    stream = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        stream=False,
+        stream=True,
+        stream_options={"include_usage": True},
     )
-    if on_infer_end:
-        await on_infer_end()
-
-    response_text = response.choices[0].message.content or ""
+    response_text = ""
+    call1_prompt = 0
+    call1_completion = 0
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            response_text += chunk.choices[0].delta.content
+            if on_infer_delta:
+                await on_infer_delta(max(0, round(len(response_text) / 4)))
+        if chunk.usage:
+            call1_prompt = chunk.usage.prompt_tokens or 0
+            call1_completion = chunk.usage.completion_tokens or 0
     proj_brief = ""
     for line in response_text.splitlines():
         if line.startswith("proj_brief:"):
             proj_brief = line[len("proj_brief:"):].strip()
 
-    usage = response.usage
-    prompt_tokens: int | None = usage.prompt_tokens if usage else None
-    completion_tokens: int | None = usage.completion_tokens if usage else None
+    if on_infer_end:
+        await on_infer_end(call1_prompt, call1_completion)
 
     # --- domain_map call ---
     file_list = _collect_file_list(working_dir)
@@ -313,15 +321,27 @@ async def enrich_workspace(
     )
     if on_infer_start:
         await on_infer_start()
-    domain_response = await client.chat.completions.create(
+    domain_stream = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": domain_prompt}],
-        stream=False,
+        stream=True,
+        stream_options={"include_usage": True},
     )
+    domain_text = ""
+    call2_prompt = 0
+    call2_completion = 0
+    async for chunk in domain_stream:
+        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            domain_text += chunk.choices[0].delta.content
+            if on_infer_delta:
+                await on_infer_delta(max(0, round(len(domain_text) / 4)))
+        if chunk.usage:
+            call2_prompt = chunk.usage.prompt_tokens or 0
+            call2_completion = chunk.usage.completion_tokens or 0
     if on_infer_end:
-        await on_infer_end()
+        await on_infer_end(call2_prompt, call2_completion)
 
-    domain_map = _parse_domain_map(domain_response.choices[0].message.content or "")
+    domain_map = _parse_domain_map(domain_text)
 
     enriched_at = datetime.now(timezone.utc).isoformat()
 
@@ -344,7 +364,7 @@ async def enrich_workspace(
         proj_brief=proj_brief,
         tech_stack=tech_stack,
         enriched_at=enriched_at,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
+        prompt_tokens=call1_prompt + call2_prompt,
+        completion_tokens=call1_completion + call2_completion,
         domain_map=domain_map,
     )

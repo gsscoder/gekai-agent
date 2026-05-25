@@ -8,7 +8,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from .enrichment import EnrichmentResult, enrich_workspace
-from .subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferEndEvent, DoneEvent
+from .subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent
 from .workspace import scan_workspace
 
 
@@ -20,6 +20,19 @@ class Mode(enum.Enum):
 
 class WsExplorer(SubAgent):
     name = "ws-explorer"
+    color = "#008000"
+
+    @property
+    def description(self) -> str:
+        match self._mode:
+            case Mode.SCAN:
+                return "Scan workspace"
+            case Mode.UNDERSTAND:
+                return "Understand workspace"
+            case Mode.FULL:
+                return "Scan and understand workspace"
+            case _:
+                return ""
 
     def __init__(
         self,
@@ -36,11 +49,10 @@ class WsExplorer(SubAgent):
         self.enrichment: EnrichmentResult | None = None
 
     async def run(self) -> AsyncIterator[SubAgentEvent]:
-        yield SubAgentStartEvent(name=self.name)
+        yield SubAgentStartEvent(name=self.name, description=self.description, color=self.color)
 
         # --- SCAN phase ---
         if self._mode in (Mode.SCAN, Mode.FULL):
-            yield LogEvent(message="scanning workspace...")
             self.workspace = await asyncio.to_thread(scan_workspace, self._working_dir)
 
         # --- UNDERSTAND phase ---
@@ -53,8 +65,11 @@ class WsExplorer(SubAgent):
             async def on_infer_start() -> None:
                 await queue.put(InferStartEvent())
 
-            async def on_infer_end() -> None:
-                pass  # tokens only available after enrich completes
+            async def on_infer_delta(completion_tokens: int) -> None:
+                await queue.put(InferDeltaEvent(completion_tokens=completion_tokens))
+
+            async def on_infer_end(prompt_tokens: int, completion_tokens: int) -> None:
+                await queue.put(InferEndEvent(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens))
 
             async def _enrich() -> EnrichmentResult:
                 result = await enrich_workspace(
@@ -63,6 +78,7 @@ class WsExplorer(SubAgent):
                     self._model,
                     on_file=on_file,
                     on_infer_start=on_infer_start,
+                    on_infer_delta=on_infer_delta,
                     on_infer_end=on_infer_end,
                 )
                 await queue.put(None)  # sentinel
@@ -77,9 +93,5 @@ class WsExplorer(SubAgent):
 
             result = await task
             self.enrichment = result
-            yield InferEndEvent(
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-            )
 
         yield DoneEvent()

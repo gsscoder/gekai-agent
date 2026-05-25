@@ -15,11 +15,10 @@ from textual.worker import Worker
 
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.handlers.chat import UsageInfo
 from agent.router import Session
 from agent.settings import resolve_permissions, save_permissions
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferEndEvent, DoneEvent
+from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent
 from agent.ws_explorer import Mode
 
 from .palette import CommandPalette
@@ -31,22 +30,44 @@ _SPINNER_FRAMES = ["|", "/", "-", "\\"]
 
 
 class SubAgentRenderer:
-    """Manages header + L-connector state for rendering subagent events into the conversation."""
+    """Manages header, L-connector, token accumulation, and Done line for subagent events."""
 
     def __init__(self, conversation: ScrollableContainer) -> None:
         self._conversation = conversation
         self._first_item = True
+        self._total_tokens: int = 0
+        self._start_time: float = time.monotonic()
 
-    async def start(self, name: str) -> None:
+    async def start(self, name: str, description: str, color: str) -> None:
         await self._conversation.mount(Static("", classes="assistant-spacer"))
-        await self._conversation.mount(MessageWidget(MessageKind.HEADER, name))
+        bg = color or "grey50"
+        header_markup = f"[bold black on {bg}]{name}[/bold black on {bg}][white]({description})[/white]"
+        await self._conversation.mount(MessageWidget(MessageKind.HEADER, header_markup))
 
     async def log(self, message: str) -> None:
-        prefix = "⎿" if self._first_item else " "
+        if message.endswith("..."):
+            return  # suppress in-progress messages — confusing once complete
+        prefix = "  ⎿" if self._first_item else "   "
         self._first_item = False
-        await self._conversation.mount(
-            MessageWidget(MessageKind.SYSTEM, f"{prefix} {message}")
-        )
+        await self._conversation.mount(Static(f"{prefix} {message}"))
+        self._conversation.scroll_end(animate=False)
+
+    def accumulate_tokens(self, event: "InferEndEvent") -> None:
+        if event.prompt_tokens:
+            self._total_tokens += event.prompt_tokens
+        if event.completion_tokens:
+            self._total_tokens += event.completion_tokens
+
+    async def done(self) -> None:
+        elapsed = time.monotonic() - self._start_time
+        parts = [_fmt_duration_verbose(elapsed)]
+        if self._total_tokens > 0:
+            parts.insert(0, f"{_fmt_tokens(self._total_tokens)} tokens")
+        summary = " · ".join(parts)
+        prefix = "  ⎿" if self._first_item else "   "
+        self._first_item = False
+        await self._conversation.mount(Static(f"{prefix} Done ({summary})"))
+        await self._conversation.mount(Static("", classes="assistant-spacer"))
         self._conversation.scroll_end(animate=False)
 
 
@@ -56,9 +77,31 @@ def _fmt_duration(elapsed: float) -> str:
     return f"{elapsed / 60:.1f}m"
 
 
-def _estimate_tokens(text: str) -> int:
-    return max(0, round(len(text) / 4))
+def _fmt_tokens(n: int) -> str:
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
 
+
+def _fmt_duration_verbose(elapsed: float) -> str:
+    if elapsed < 1:
+        return f"{elapsed * 1000:.0f}ms"
+    if elapsed < 60:
+        return f"{elapsed:.0f}s"
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    return f"{minutes}m {seconds}s"
+
+
+def _fmt_elapsed(elapsed: float) -> str:
+    secs = int(elapsed)
+    if secs < 60:
+        return f"{secs}s"
+    return f"{secs // 60}m {secs % 60}s"
+
+
+def _fmt_status(verb: str, elapsed: float) -> str:
+    return f"{verb.capitalize()}... [white]({_fmt_elapsed(elapsed)} · thinking)[/white]"
 
 
 class GekaiApp(App[None]):
@@ -180,7 +223,8 @@ class GekaiApp(App[None]):
         self._status_task: asyncio.Task[None] | None = None
         self._status_stop: asyncio.Event | None = None
         self._status_frame: int = 0
-        self._status_text: str = ""
+        self._status_verb: str = ""
+        self._status_start: float = 0.0
         self._current_lang: str = "EN"
         super().__init__(**kwargs)
         self.ansi_color = True
@@ -235,15 +279,19 @@ class GekaiApp(App[None]):
             workspace = json.loads(cache_path.read_text(encoding="utf-8"))
         else:
             color = random_accent_color()
-            await self._start_status_animation("scanning workspace...", color)
+            await self._start_status_animation("scanning workspace", color)
             explorer = self._agent.create_ws_explorer(self._working_dir, Mode.SCAN)
             renderer: SubAgentRenderer | None = None
             async for event in explorer.run():
                 if isinstance(event, SubAgentStartEvent):
                     renderer = SubAgentRenderer(conversation)
-                    await renderer.start(event.name)
+                    await renderer.start(event.name, event.description, event.color)
                 elif isinstance(event, LogEvent) and renderer:
                     await renderer.log(event.message)
+                elif isinstance(event, InferEndEvent) and renderer:
+                    renderer.accumulate_tokens(event)
+                elif isinstance(event, DoneEvent) and renderer:
+                    await renderer.done()
             await self._stop_status_animation()
             workspace = explorer.workspace
 
@@ -373,12 +421,8 @@ class GekaiApp(App[None]):
         completion_tokens: int = 0
         ws_renderer: SubAgentRenderer | None = None
 
-        def _verb_status() -> str:
-            tokens_part = f" (↓ {completion_tokens})" if completion_tokens > 0 else ""
-            return f"{verb[0]}...{tokens_part}"
-
         try:
-            await self._start_status_animation(_verb_status(), color)
+            await self._start_status_animation(verb[0], color)
             normalized, src_lang = await self._agent.normalize(user_input)
             segments = await self._agent.classify(normalized)
             if self._agent.debug:
@@ -408,25 +452,17 @@ class GekaiApp(App[None]):
             async for item in self._agent.process_stream(self._session, normalized, segments, original_input=user_input):
                 if isinstance(item, str):
                     answer_chunks.append(item)
-                    completion_tokens = _estimate_tokens("".join(answer_chunks))
-                    self._status_text = _verb_status()
                 elif isinstance(item, SubAgentEvent):
                     if isinstance(item, SubAgentStartEvent):
                         ws_renderer = SubAgentRenderer(conversation)
-                        await ws_renderer.start(item.name)
+                        await ws_renderer.start(item.name, item.description, item.color)
                     elif ws_renderer:
                         if isinstance(item, LogEvent):
                             await ws_renderer.log(item.message)
-                        elif isinstance(item, InferStartEvent):
-                            self._status_text = f"{verb[0]}..."
                         elif isinstance(item, InferEndEvent):
-                            if item.prompt_tokens is not None and item.completion_tokens is not None:
-                                self._status_text = f"{verb[0]}... (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
+                            ws_renderer.accumulate_tokens(item)
                         elif isinstance(item, DoneEvent):
-                            self._status_text = _verb_status()
-                elif isinstance(item, UsageInfo):
-                    completion_tokens = item.completion_tokens
-                    self._status_text = _verb_status()
+                            await ws_renderer.done()
             answer = "".join(answer_chunks).rstrip("\n")
             self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
             await conversation.mount(self._assistant_widget)
@@ -449,25 +485,21 @@ class GekaiApp(App[None]):
 
     async def _rebuild_workspace(self) -> None:
         color = random_accent_color()
-        verb = random_operative_verb()
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
             explorer = self._agent.create_ws_explorer(self._working_dir, Mode.FULL)
             renderer: SubAgentRenderer | None = None
             async for event in explorer.run():
                 if isinstance(event, SubAgentStartEvent):
-                    await self._start_status_animation("scanning workspace...", color)
+                    await self._start_status_animation("scanning workspace", color)
                     renderer = SubAgentRenderer(conversation)
-                    await renderer.start(event.name)
+                    await renderer.start(event.name, event.description, event.color)
                 elif isinstance(event, LogEvent) and renderer:
                     await renderer.log(event.message)
-                elif isinstance(event, InferStartEvent):
-                    await self._start_status_animation(f"{verb[0]}...", color)
-                elif isinstance(event, InferEndEvent):
-                    if event.prompt_tokens is not None and event.completion_tokens is not None:
-                        self._status_text = f"{verb[0]}... (↑ {event.prompt_tokens}  ↓ {event.completion_tokens})"
-                elif isinstance(event, DoneEvent):
-                    pass
+                elif isinstance(event, InferEndEvent) and renderer:
+                    renderer.accumulate_tokens(event)
+                elif isinstance(event, DoneEvent) and renderer:
+                    await renderer.done()
             if explorer.workspace:
                 self._workspace = explorer.workspace
             self._session = self._agent.start_session(self._workspace)
@@ -483,7 +515,7 @@ class GekaiApp(App[None]):
     async def _animate_status(self, color: str, stop: asyncio.Event) -> None:
         try:
             while not stop.is_set():
-                self._tick_status(self._status_text, color)
+                self._tick_status(color)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=0.15)
                 except asyncio.TimeoutError:
@@ -491,8 +523,9 @@ class GekaiApp(App[None]):
         finally:
             self._clear_status()
 
-    async def _start_status_animation(self, text: str, color: str) -> None:
-        self._status_text = text
+    async def _start_status_animation(self, verb: str, color: str) -> None:
+        self._status_verb = verb
+        self._status_start = time.monotonic()
         if self._status_task is not None:
             return
         await self._stop_status_animation()
@@ -512,9 +545,11 @@ class GekaiApp(App[None]):
             except asyncio.CancelledError:
                 pass
 
-    def _tick_status(self, text: str, color: str) -> None:
+    def _tick_status(self, color: str) -> None:
         frame = _SPINNER_FRAMES[self._status_frame % len(_SPINNER_FRAMES)]
         self._status_frame += 1
+        elapsed = time.monotonic() - self._status_start
+        text = _fmt_status(self._status_verb, elapsed)
         self._set_status(f"{frame} {text}", color)
 
     def _set_status(self, text: str, color: str) -> None:
