@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from rich.markup import escape as markup_escape
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
@@ -45,12 +46,12 @@ class MessageWidget(Widget):
             yield Static("[cyan]●[/cyan]", classes="header-dot")
             yield Static(self._text, classes="header-text")
         elif self._kind == MessageKind.USER:
-            yield Static(self._as_user_text(), markup=False)
+            yield Static(self._as_user_text())
         else:
             yield Static(self._as_markup())
 
     def _as_user_text(self) -> str:
-        return f"❯ {self._text}"
+        return f"❯ [bold]{markup_escape(self._text)}[/bold]"
 
     @property
     def text(self) -> str:

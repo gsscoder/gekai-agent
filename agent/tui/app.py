@@ -406,6 +406,8 @@ class GekaiApp(App[None]):
         event.input.value = ""
         conversation = self.query_one("#conversation", ScrollableContainer)
         if stripped.startswith("/"):
+            await conversation.mount(MessageWidget(MessageKind.USER, stripped))
+            conversation.scroll_end(animate=False)
             cmd_name = stripped.lstrip("/").split()[0]
             if cmd_name == "workspace:rebuild":
                 self._worker = self.run_worker(self._rebuild_workspace(), exclusive=True)
