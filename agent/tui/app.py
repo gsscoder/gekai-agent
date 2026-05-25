@@ -380,7 +380,7 @@ class GekaiApp(App[None]):
                 self._current_lang = new_lang
                 lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
                 self._session.messages.append({"role": "system", "content": lang_hint})
-            async for item in self._agent.process_stream(self._session, normalized, segments):
+            async for item in self._agent.process_stream(self._session, normalized, segments, original_input=user_input):
                 if isinstance(item, str):
                     answer_chunks.append(item)
                     completion_tokens = _estimate_tokens("".join(answer_chunks))

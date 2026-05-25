@@ -161,9 +161,13 @@ class GekaiAgent:
         )
 
     async def process_stream(
-        self, session: Session, user_input: str, segments: list[tuple[Intent, str, bool]]
+        self,
+        session: Session,
+        user_input: str,
+        segments: list[tuple[Intent, str, bool]],
+        original_input: str | None = None,
     ) -> AsyncIterator[str | UsageInfo | EnrichmentEvent]:
-        session.messages.append({"role": "user", "content": user_input})
+        session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1])
         all_chunks: list[str] = []
         first = True
