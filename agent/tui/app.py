@@ -19,10 +19,8 @@ from agent.handlers.chat import UsageInfo
 from agent.router import Session
 from agent.settings import resolve_permissions, save_permissions
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.ws_explorer import (
-    WsEvent, WsScanStart, WsScanDone, WsFileRead,
-    WsInferStart, WsInferEnd, WsDone, Mode,
-)
+from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferEndEvent, DoneEvent
+from agent.ws_explorer import Mode
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
@@ -30,6 +28,26 @@ from .widgets import MessageKind, MessageWidget
 
 
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
+
+
+class SubAgentRenderer:
+    """Manages header + L-connector state for rendering subagent events into the conversation."""
+
+    def __init__(self, conversation: ScrollableContainer) -> None:
+        self._conversation = conversation
+        self._first_item = True
+
+    async def start(self, name: str) -> None:
+        await self._conversation.mount(Static("", classes="assistant-spacer"))
+        await self._conversation.mount(MessageWidget(MessageKind.HEADER, name))
+
+    async def log(self, message: str) -> None:
+        prefix = "⎿" if self._first_item else " "
+        self._first_item = False
+        await self._conversation.mount(
+            MessageWidget(MessageKind.SYSTEM, f"{prefix} {message}")
+        )
+        self._conversation.scroll_end(animate=False)
 
 
 def _fmt_duration(elapsed: float) -> str:
@@ -219,21 +237,13 @@ class GekaiApp(App[None]):
             color = random_accent_color()
             await self._start_status_animation("scanning workspace...", color)
             explorer = self._agent.create_ws_explorer(self._working_dir, Mode.SCAN)
-            first_item = True
-            await conversation.mount(Static("", classes="assistant-spacer"))
-            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
+            renderer: SubAgentRenderer | None = None
             async for event in explorer.run():
-                if isinstance(event, WsScanStart):
-                    prefix = "⎿" if first_item else " "
-                    first_item = False
-                    await conversation.mount(
-                        MessageWidget(MessageKind.SYSTEM, f"{prefix} scanning workspace...")
-                    )
-                    conversation.scroll_end(animate=False)
-                elif isinstance(event, WsScanDone):
-                    pass
-                elif isinstance(event, WsDone):
-                    pass
+                if isinstance(event, SubAgentStartEvent):
+                    renderer = SubAgentRenderer(conversation)
+                    await renderer.start(event.name)
+                elif isinstance(event, LogEvent) and renderer:
+                    await renderer.log(event.message)
             await self._stop_status_animation()
             workspace = explorer.workspace
 
@@ -361,8 +371,7 @@ class GekaiApp(App[None]):
         conversation = self.query_one("#conversation", ScrollableContainer)
         answer_chunks: list[str] = []
         completion_tokens: int = 0
-        ws_header_shown = False
-        ws_first_item = True
+        ws_renderer: SubAgentRenderer | None = None
 
         def _verb_status() -> str:
             tokens_part = f" (↓ {completion_tokens})" if completion_tokens > 0 else ""
@@ -401,29 +410,20 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                     completion_tokens = _estimate_tokens("".join(answer_chunks))
                     self._status_text = _verb_status()
-                elif isinstance(item, WsEvent):
-                    if isinstance(item, WsFileRead):
-                        if not ws_header_shown:
-                            await conversation.mount(Static("", classes="assistant-spacer"))
-                            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
-                            ws_header_shown = True
-                        prefix = "⎿" if ws_first_item else " "
-                        ws_first_item = False
-                        await conversation.mount(
-                            MessageWidget(MessageKind.SYSTEM, f"{prefix} Read {item.filename} ({item.line_count} lines)")
-                        )
-                        conversation.scroll_end(animate=False)
-                    elif isinstance(item, WsInferStart):
-                        if not ws_header_shown:
-                            await conversation.mount(Static("", classes="assistant-spacer"))
-                            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
-                            ws_header_shown = True
-                        self._status_text = f"{verb[0]}..."
-                    elif isinstance(item, WsInferEnd):
-                        if item.prompt_tokens is not None and item.completion_tokens is not None:
-                            self._status_text = f"{verb[0]}... (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
-                    elif isinstance(item, WsDone):
-                        self._status_text = _verb_status()
+                elif isinstance(item, SubAgentEvent):
+                    if isinstance(item, SubAgentStartEvent):
+                        ws_renderer = SubAgentRenderer(conversation)
+                        await ws_renderer.start(item.name)
+                    elif ws_renderer:
+                        if isinstance(item, LogEvent):
+                            await ws_renderer.log(item.message)
+                        elif isinstance(item, InferStartEvent):
+                            self._status_text = f"{verb[0]}..."
+                        elif isinstance(item, InferEndEvent):
+                            if item.prompt_tokens is not None and item.completion_tokens is not None:
+                                self._status_text = f"{verb[0]}... (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
+                        elif isinstance(item, DoneEvent):
+                            self._status_text = _verb_status()
                 elif isinstance(item, UsageInfo):
                     completion_tokens = item.completion_tokens
                     self._status_text = _verb_status()
@@ -452,34 +452,21 @@ class GekaiApp(App[None]):
         verb = random_operative_verb()
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
-            await conversation.mount(Static("", classes="assistant-spacer"))
-            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
-            first_item = True
             explorer = self._agent.create_ws_explorer(self._working_dir, Mode.FULL)
+            renderer: SubAgentRenderer | None = None
             async for event in explorer.run():
-                if isinstance(event, WsScanStart):
+                if isinstance(event, SubAgentStartEvent):
                     await self._start_status_animation("scanning workspace...", color)
-                    prefix = "⎿" if first_item else " "
-                    first_item = False
-                    await conversation.mount(
-                        MessageWidget(MessageKind.SYSTEM, f"{prefix} scanning workspace...")
-                    )
-                    conversation.scroll_end(animate=False)
-                elif isinstance(event, WsScanDone):
-                    pass
-                elif isinstance(event, WsFileRead):
-                    prefix = "⎿" if first_item else " "
-                    first_item = False
-                    await conversation.mount(
-                        MessageWidget(MessageKind.SYSTEM, f"{prefix} Read {event.filename} ({event.line_count} lines)")
-                    )
-                    conversation.scroll_end(animate=False)
-                elif isinstance(event, WsInferStart):
+                    renderer = SubAgentRenderer(conversation)
+                    await renderer.start(event.name)
+                elif isinstance(event, LogEvent) and renderer:
+                    await renderer.log(event.message)
+                elif isinstance(event, InferStartEvent):
                     await self._start_status_animation(f"{verb[0]}...", color)
-                elif isinstance(event, WsInferEnd):
+                elif isinstance(event, InferEndEvent):
                     if event.prompt_tokens is not None and event.completion_tokens is not None:
                         self._status_text = f"{verb[0]}... (↑ {event.prompt_tokens}  ↓ {event.completion_tokens})"
-                elif isinstance(event, WsDone):
+                elif isinstance(event, DoneEvent):
                     pass
             if explorer.workspace:
                 self._workspace = explorer.workspace

@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import enum
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from .enrichment import EnrichmentResult, enrich_workspace
+from .subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferEndEvent, DoneEvent
 from .workspace import scan_workspace
 
 
@@ -18,38 +18,9 @@ class Mode(enum.Enum):
     FULL = "full"           # /workspace:rebuild: scan + enrich
 
 
-@dataclass
-class WsEvent:
-    pass
+class WsExplorer(SubAgent):
+    name = "ws-explorer"
 
-@dataclass
-class WsScanStart(WsEvent):
-    pass
-
-@dataclass
-class WsScanDone(WsEvent):
-    workspace: dict = field(default_factory=dict)
-
-@dataclass
-class WsFileRead(WsEvent):
-    filename: str = ""
-    line_count: int = 0
-
-@dataclass
-class WsInferStart(WsEvent):
-    pass
-
-@dataclass
-class WsInferEnd(WsEvent):
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-
-@dataclass
-class WsDone(WsEvent):
-    pass
-
-
-class WsExplorer:
     def __init__(
         self,
         working_dir: Path,
@@ -64,25 +35,26 @@ class WsExplorer:
         self.workspace: dict | None = None
         self.enrichment: EnrichmentResult | None = None
 
-    async def run(self) -> AsyncIterator[WsEvent]:
+    async def run(self) -> AsyncIterator[SubAgentEvent]:
+        yield SubAgentStartEvent(name=self.name)
+
         # --- SCAN phase ---
         if self._mode in (Mode.SCAN, Mode.FULL):
-            yield WsScanStart()
+            yield LogEvent(message="scanning workspace...")
             self.workspace = await asyncio.to_thread(scan_workspace, self._working_dir)
-            yield WsScanDone(workspace=self.workspace)
 
         # --- UNDERSTAND phase ---
         if self._mode in (Mode.UNDERSTAND, Mode.FULL):
-            queue: asyncio.Queue[WsEvent | None] = asyncio.Queue()
+            queue: asyncio.Queue[SubAgentEvent | None] = asyncio.Queue()
 
             async def on_file(filename: str, line_count: int) -> None:
-                await queue.put(WsFileRead(filename=filename, line_count=line_count))
+                await queue.put(LogEvent(message=f"Read {filename} ({line_count} lines)"))
 
             async def on_infer_start() -> None:
-                await queue.put(WsInferStart())
+                await queue.put(InferStartEvent())
 
             async def on_infer_end() -> None:
-                await queue.put(WsInferEnd())
+                pass  # tokens only available after enrich completes
 
             async def _enrich() -> EnrichmentResult:
                 result = await enrich_workspace(
@@ -103,6 +75,11 @@ class WsExplorer:
                     break
                 yield event
 
-            self.enrichment = await task
+            result = await task
+            self.enrichment = result
+            yield InferEndEvent(
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+            )
 
-        yield WsDone()
+        yield DoneEvent()

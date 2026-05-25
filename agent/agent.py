@@ -20,7 +20,8 @@ from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
 from toon import encode as toon_encode
 
-from .ws_explorer import WsExplorer, WsEvent, Mode
+from .ws_explorer import WsExplorer, Mode
+from .subagent import SubAgentEvent
 from .persistence import append_message, append_debug
 
 load_dotenv()
@@ -129,7 +130,7 @@ class GekaiAgent:
 
     async def _enrich_if_needed(
         self, session: Session, intent: Intent, plan: bool
-    ) -> AsyncIterator[WsEvent]:
+    ) -> AsyncIterator[SubAgentEvent]:
         if intent != Intent.QUERY or not plan:
             return
         cache_path = session.working_dir / ".gekai" / "workspace.json"
@@ -153,7 +154,7 @@ class GekaiAgent:
         user_input: str,
         segments: list[tuple[Intent, str, bool]],
         original_input: str | None = None,
-    ) -> AsyncIterator[str | UsageInfo | WsEvent]:
+    ) -> AsyncIterator[str | UsageInfo | SubAgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1])
         all_chunks: list[str] = []
