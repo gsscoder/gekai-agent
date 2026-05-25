@@ -45,6 +45,8 @@ def _format_workspace_context(workspace: dict) -> str:
     }
     if not subset["projects"]:
         subset["extensions"] = workspace.get("extensions", {})
+    if workspace.get("domain_map"):
+        subset["domain_map"] = workspace["domain_map"]
     return f"<workspace>\n{toon_encode(subset)}\n</workspace>"
 
 

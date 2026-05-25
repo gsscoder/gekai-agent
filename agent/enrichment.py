@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from agent.manifest_parsers import extract_tech_stack, _parse_csproj
+from agent.workspace import _SKIP_DIRS
 
 
 @dataclass
@@ -19,6 +21,7 @@ class EnrichmentResult:
     enriched_at: str
     prompt_tokens: int | None
     completion_tokens: int | None
+    domain_map: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _extract_manifest_snippet(path: Path) -> str | None:
@@ -154,6 +157,43 @@ def _extract_doc_snippets(path: Path) -> str | None:
     return combined if combined else None
 
 
+def _collect_file_list(working_dir: Path, cap: int = 500) -> list[str]:
+    paths: list[str] = []
+    for root, dirnames, filenames in os.walk(working_dir):
+        root_path = Path(root)
+        rel_root = root_path.relative_to(working_dir)
+        parts = rel_root.parts
+        # skip .gekai and _SKIP_DIRS at any level
+        if any(p in _SKIP_DIRS or p == ".gekai" for p in parts):
+            dirnames.clear()
+            continue
+        dirnames[:] = [
+            d for d in dirnames if d not in _SKIP_DIRS and d != ".gekai"
+        ]
+        for fname in filenames:
+            rel = (rel_root / fname).as_posix()
+            paths.append(rel)
+            if len(paths) >= cap:
+                dirnames.clear()
+                return paths
+    return paths
+
+
+def _parse_domain_map(response_text: str) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for line in response_text.splitlines():
+        if ":" not in line:
+            continue
+        domain, _, rest = line.partition(":")
+        domain = domain.strip()
+        if not domain:
+            continue
+        paths = [p.strip() for p in rest.split(",") if p.strip()]
+        if paths:
+            result[domain] = paths
+    return result
+
+
 def _count_lines(path: Path) -> int:
     try:
         return len(path.read_text(encoding="utf-8", errors="replace").splitlines())
@@ -259,6 +299,30 @@ async def enrich_workspace(
     prompt_tokens: int | None = usage.prompt_tokens if usage else None
     completion_tokens: int | None = usage.completion_tokens if usage else None
 
+    # --- domain_map call ---
+    file_list = _collect_file_list(working_dir)
+    file_list_text = "\n".join(file_list)
+    domain_prompt = (
+        "given this list of files from a software repository, group them into functional domain categories\n"
+        "output format: one line per domain, exactly `domain_name: path1, path2, ...`\n"
+        "use snake_case for domain names (e.g. entry_points, data_access, authentication, tests)\n"
+        "if a directory clearly contains many related files, use the directory path with trailing slash instead of listing every file\n"
+        "no preamble, no explanation, no markdown\n"
+        "files:\n"
+        f"{file_list_text}"
+    )
+    if on_infer_start:
+        await on_infer_start()
+    domain_response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": domain_prompt}],
+        stream=False,
+    )
+    if on_infer_end:
+        await on_infer_end()
+
+    domain_map = _parse_domain_map(domain_response.choices[0].message.content or "")
+
     enriched_at = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -268,6 +332,7 @@ async def enrich_workspace(
 
     existing["proj_brief"] = proj_brief
     existing["tech_stack"] = tech_stack
+    existing["domain_map"] = domain_map
     existing["enriched_at"] = enriched_at
 
     try:
@@ -281,4 +346,5 @@ async def enrich_workspace(
         enriched_at=enriched_at,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        domain_map=domain_map,
     )
