@@ -161,6 +161,7 @@ class GekaiApp(App[None]):
         self._status_stop: asyncio.Event | None = None
         self._status_frame: int = 0
         self._status_text: str = ""
+        self._current_lang: str = "EN"
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -248,6 +249,7 @@ class GekaiApp(App[None]):
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
+        self._current_lang = "EN"
         self._assistant_widget = None
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
@@ -373,6 +375,11 @@ class GekaiApp(App[None]):
                 await conversation.mount(
                     MessageWidget(MessageKind.OPERATION, norm_debug, color="#BA55D3")
                 )
+            new_lang = src_lang or "EN"
+            if new_lang != self._current_lang:
+                self._current_lang = new_lang
+                lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
+                self._session.messages.append({"role": "system", "content": lang_hint})
             async for item in self._agent.process_stream(self._session, normalized, segments):
                 if isinstance(item, str):
                     answer_chunks.append(item)
