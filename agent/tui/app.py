@@ -143,6 +143,15 @@ class GekaiApp(App[None]):
         display: none;
     }
 
+    #hint-area {
+        height: 1;
+        background: ansi_default;
+        color: grey;
+        padding: 0 1 0 0;
+        text-align: right;
+        display: none;
+    }
+
     #input-area {
         height: 3;
         layers: input marker;
@@ -226,6 +235,7 @@ class GekaiApp(App[None]):
         self._status_verb: str = ""
         self._status_start: float = 0.0
         self._current_lang: str = "EN"
+        self._esc_pending: bool = False
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -235,6 +245,7 @@ class GekaiApp(App[None]):
             yield Static("", id="status-line")
             yield Static("", id="status-spacer")
             yield CommandPalette(self._command_registry, id="command-palette")
+            yield Static("", id="hint-area")
             with Container(id="input-area"):
                 yield Input(id="prompt", compact=True)
                 yield Static("❯", id="prompt-marker")
@@ -351,6 +362,8 @@ class GekaiApp(App[None]):
             palette.filter(event.value[1:])
         else:
             palette.hide()
+        if self._esc_pending:
+            self._clear_hint()
 
     def on_key(self, event: events.Key) -> None:
         palette = self.query_one(CommandPalette)
@@ -361,6 +374,9 @@ class GekaiApp(App[None]):
                 palette.move_down()
             event.stop()
             return
+
+        if self._esc_pending and event.key != "escape":
+            self._clear_hint()
 
         prompt = self.query_one("#prompt", Input)
         if prompt.has_focus or not event.is_printable:
@@ -566,14 +582,39 @@ class GekaiApp(App[None]):
         status.display = False
         self.query_one("#status-spacer", Static).display = False
 
+    def _show_hint(self, text: str) -> None:
+        hint = self.query_one("#hint-area", Static)
+        hint.update(text)
+        hint.display = True
+
+    def _clear_hint(self) -> None:
+        self._esc_pending = False
+        hint = self.query_one("#hint-area", Static)
+        hint.update("")
+        hint.display = False
+
     def action_cancel_stream(self) -> None:
         palette = self.query_one(CommandPalette)
         if palette.display:
             self.query_one("#prompt", Input).value = ""
             palette.hide()
+            self._clear_hint()
             return
         if self._worker is not None and not self._worker.is_finished:
             self._worker.cancel()
+            self._clear_hint()
+            self._clear_status()
+            self._focus_prompt()
+            return
+
+        prompt = self.query_one("#prompt", Input)
+        if self._esc_pending:
+            prompt.value = ""
+            self._clear_hint()
+        elif prompt.value:
+            self._esc_pending = True
+            self._show_hint("ESC again to clear input")
+
         self._clear_status()
         self._focus_prompt()
 
