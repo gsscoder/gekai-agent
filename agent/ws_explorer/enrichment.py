@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -10,8 +11,8 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from agent.manifest_parsers import extract_tech_stack, _parse_csproj
-from agent.workspace import _SKIP_DIRS
+from ..manifest_parsers import extract_tech_stack, _parse_csproj
+from ..workspace import _SKIP_DIRS
 
 
 @dataclass
@@ -157,25 +158,78 @@ def _extract_doc_snippets(path: Path) -> str | None:
     return combined if combined else None
 
 
-def _collect_file_list(working_dir: Path, cap: int = 500) -> list[str]:
+_CODE_SUFFIXES: frozenset[str] = frozenset({
+    ".py", ".pyi",
+    ".js", ".mjs", ".cjs", ".jsx",
+    ".ts", ".tsx", ".mts", ".cts",
+    ".css", ".scss", ".sass", ".less",
+    ".html", ".htm",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt", ".kts",
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx",
+    ".rb",
+    ".php",
+    ".swift",
+    ".sh", ".bash",
+    ".sql",
+    ".vue",
+    ".svelte",
+    ".dart",
+    ".ex", ".exs",
+    ".lua",
+    ".scala",
+    ".r",
+})
+_COLLAPSE_THRESHOLD: int = 5
+_DEPTH_CAP: int = 3
+
+
+def _collect_file_list(working_dir: Path) -> list[str]:
     paths: list[str] = []
     for root, dirnames, filenames in os.walk(working_dir):
         root_path = Path(root)
         rel_root = root_path.relative_to(working_dir)
         parts = rel_root.parts
-        # skip .gekai and _SKIP_DIRS at any level
+
         if any(p in _SKIP_DIRS or p == ".gekai" for p in parts):
             dirnames.clear()
             continue
+
+        if len(parts) > _DEPTH_CAP:
+            dirnames.clear()
+            continue
+
         dirnames[:] = [
-            d for d in dirnames if d not in _SKIP_DIRS and d != ".gekai"
+            d for d in dirnames
+            if d not in _SKIP_DIRS and d != ".gekai" and not d.startswith(".")
         ]
+
+        # keep only code files, skip hidden files
+        candidates: list[str] = []
         for fname in filenames:
-            rel = (rel_root / fname).as_posix()
-            paths.append(rel)
-            if len(paths) >= cap:
-                dirnames.clear()
-                return paths
+            if fname.startswith("."):
+                continue
+            if Path(fname).suffix in _CODE_SUFFIXES:
+                candidates.append(fname)
+
+        # auto-collapse: group by extension
+        ext_groups: dict[str, list[str]] = {}
+        for fname in candidates:
+            ext_groups.setdefault(Path(fname).suffix, []).append(fname)
+
+        dir_posix = rel_root.as_posix() if rel_root.parts else ""
+        dir_prefix = (dir_posix + "/") if dir_posix else ""
+
+        for ext, group in ext_groups.items():
+            if len(group) > _COLLAPSE_THRESHOLD:
+                paths.append(f"{dir_prefix}({len(group)} {ext} files)")
+            else:
+                for fname in group:
+                    rel = (rel_root / fname).as_posix() if rel_root.parts else fname
+                    paths.append(rel)
+
     return paths
 
 
@@ -273,75 +327,77 @@ async def enrich_workspace(
 
     combined_snippets = "\n\n".join(snippets) if snippets else "no project files found"
 
-    prompt = (
-        "given the following project excerpts, return exactly one line with no preamble:\n"
-        "proj_brief: <one concise sentence describing the project>\n"
-        "excerpts:\n"
-        f"{combined_snippets}"
-    )
+    async def _infer_brief() -> tuple[str, int, int]:
+        prompt = (
+            "given the following project excerpts, return exactly one line with no preamble:\n"
+            "proj_brief: <one concise sentence describing the project>\n"
+            "excerpts:\n"
+            f"{combined_snippets}"
+        )
+        if on_infer_start:
+            await on_infer_start()
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        text = ""
+        p_tokens = 0
+        c_tokens = 0
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                text += chunk.choices[0].delta.content
+                if on_infer_delta:
+                    await on_infer_delta(max(0, round(len(text) / 4)))
+            if chunk.usage:
+                p_tokens = chunk.usage.prompt_tokens or 0
+                c_tokens = chunk.usage.completion_tokens or 0
+        brief = ""
+        for line in text.splitlines():
+            if line.startswith("proj_brief:"):
+                brief = line[len("proj_brief:"):].strip()
+        if on_infer_end:
+            await on_infer_end(p_tokens, c_tokens)
+        return brief, p_tokens, c_tokens
 
-    if on_infer_start:
-        await on_infer_start()
-    stream = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        stream=True,
-        stream_options={"include_usage": True},
-    )
-    response_text = ""
-    call1_prompt = 0
-    call1_completion = 0
-    async for chunk in stream:
-        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-            response_text += chunk.choices[0].delta.content
-            if on_infer_delta:
-                await on_infer_delta(max(0, round(len(response_text) / 4)))
-        if chunk.usage:
-            call1_prompt = chunk.usage.prompt_tokens or 0
-            call1_completion = chunk.usage.completion_tokens or 0
-    proj_brief = ""
-    for line in response_text.splitlines():
-        if line.startswith("proj_brief:"):
-            proj_brief = line[len("proj_brief:"):].strip()
+    async def _infer_domain() -> tuple[dict[str, list[str]], int, int]:
+        file_list = _collect_file_list(working_dir)
+        file_list_text = "\n".join(file_list)
+        domain_prompt = (
+            "given this list of files from a software repository, group them into functional domain categories\n"
+            "output format: one line per domain, exactly `domain_name: path1, path2, ...`\n"
+            "use snake_case for domain names (e.g. entry_points, data_access, authentication, tests)\n"
+            "no preamble, no explanation, no markdown\n"
+            "files:\n"
+            f"{file_list_text}"
+        )
+        if on_infer_start:
+            await on_infer_start()
+        domain_stream = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": domain_prompt}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        text = ""
+        p_tokens = 0
+        c_tokens = 0
+        async for chunk in domain_stream:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                text += chunk.choices[0].delta.content
+                if on_infer_delta:
+                    await on_infer_delta(max(0, round(len(text) / 4)))
+            if chunk.usage:
+                p_tokens = chunk.usage.prompt_tokens or 0
+                c_tokens = chunk.usage.completion_tokens or 0
+        if on_infer_end:
+            await on_infer_end(p_tokens, c_tokens)
+        return _parse_domain_map(text), p_tokens, c_tokens
 
-    if on_infer_end:
-        await on_infer_end(call1_prompt, call1_completion)
-
-    # --- domain_map call ---
-    file_list = _collect_file_list(working_dir)
-    file_list_text = "\n".join(file_list)
-    domain_prompt = (
-        "given this list of files from a software repository, group them into functional domain categories\n"
-        "output format: one line per domain, exactly `domain_name: path1, path2, ...`\n"
-        "use snake_case for domain names (e.g. entry_points, data_access, authentication, tests)\n"
-        "if a directory clearly contains many related files, use the directory path with trailing slash instead of listing every file\n"
-        "no preamble, no explanation, no markdown\n"
-        "files:\n"
-        f"{file_list_text}"
+    (proj_brief, call1_prompt, call1_completion), (domain_map, call2_prompt, call2_completion) = (
+        await asyncio.gather(_infer_brief(), _infer_domain())
     )
-    if on_infer_start:
-        await on_infer_start()
-    domain_stream = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": domain_prompt}],
-        stream=True,
-        stream_options={"include_usage": True},
-    )
-    domain_text = ""
-    call2_prompt = 0
-    call2_completion = 0
-    async for chunk in domain_stream:
-        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-            domain_text += chunk.choices[0].delta.content
-            if on_infer_delta:
-                await on_infer_delta(max(0, round(len(domain_text) / 4)))
-        if chunk.usage:
-            call2_prompt = chunk.usage.prompt_tokens or 0
-            call2_completion = chunk.usage.completion_tokens or 0
-    if on_infer_end:
-        await on_infer_end(call2_prompt, call2_completion)
-
-    domain_map = _parse_domain_map(domain_text)
 
     enriched_at = datetime.now(timezone.utc).isoformat()
 

@@ -5,11 +5,12 @@ import enum
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import openai
 from openai import AsyncOpenAI
 
 from .enrichment import EnrichmentResult, enrich_workspace
-from .subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent
-from .workspace import scan_workspace
+from ..subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent
+from ..workspace import scan_workspace
 
 
 class Mode(enum.Enum):
@@ -72,17 +73,28 @@ class WsExplorer(SubAgent):
                 await queue.put(InferEndEvent(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens))
 
             async def _enrich() -> EnrichmentResult:
-                result = await enrich_workspace(
-                    self._working_dir,
-                    self._client,
-                    self._model,
-                    on_file=on_file,
-                    on_infer_start=on_infer_start,
-                    on_infer_delta=on_infer_delta,
-                    on_infer_end=on_infer_end,
-                )
-                await queue.put(None)  # sentinel
-                return result
+                try:
+                    return await enrich_workspace(
+                        self._working_dir,
+                        self._client,
+                        self._model,
+                        on_file=on_file,
+                        on_infer_start=on_infer_start,
+                        on_infer_delta=on_infer_delta,
+                        on_infer_end=on_infer_end,
+                    )
+                except openai.APIError as exc:
+                    await queue.put(LogEvent(message=f"enrichment failed: {exc.message}"))
+                    return EnrichmentResult(
+                        proj_brief="",
+                        tech_stack=[],
+                        enriched_at="",
+                        prompt_tokens=None,
+                        completion_tokens=None,
+                        domain_map={},
+                    )
+                finally:
+                    await queue.put(None)  # sentinel always fires
 
             task = asyncio.create_task(_enrich())
             while True:

@@ -50,6 +50,8 @@ def _validate_config() -> None:
         errors.append("GEKAI_CORE_MODEL_KEY is not set")
     if not os.environ.get("GEKAI_SUPPORT_MODEL_NAME", ""):
         errors.append("GEKAI_SUPPORT_MODEL_NAME is not set")
+    if not os.environ.get("GEKAI_SUPPORT_MODEL_KEY", ""):
+        errors.append("GEKAI_SUPPORT_MODEL_KEY is not set")
     if errors:
         raise RuntimeError("missing configuration:\n" + "\n".join(f"  - {e}" for e in errors))
 
