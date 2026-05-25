@@ -352,7 +352,8 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(_verb_status(), color)
-            segments = await self._agent.classify(user_input)
+            normalized, src_lang = await self._agent.normalize(user_input)
+            segments = await self._agent.classify(normalized)
             if self._agent.debug:
                 labels = []
                 for intent, _sub, plan in segments:
@@ -364,7 +365,15 @@ class GekaiApp(App[None]):
                 await conversation.mount(
                     MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3")
                 )
-            async for item in self._agent.process_stream(self._session, user_input, segments):
+                if normalized == user_input:
+                    norm_debug = "\\[OK]"
+                else:
+                    snippet = (normalized[:30] + "...") if len(normalized) > 30 else normalized
+                    norm_debug = f"\\[{snippet}, {src_lang}]" if src_lang else f"\\[{snippet}]"
+                await conversation.mount(
+                    MessageWidget(MessageKind.OPERATION, norm_debug, color="#BA55D3")
+                )
+            async for item in self._agent.process_stream(self._session, normalized, segments):
                 if isinstance(item, str):
                     answer_chunks.append(item)
                     completion_tokens = _estimate_tokens("".join(answer_chunks))

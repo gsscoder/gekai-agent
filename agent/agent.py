@@ -16,6 +16,7 @@ from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.display import DisplayHandler
 from .handlers.query import QueryHandler
+from .normalizer import PromptNormalizer
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
 from toon import encode as toon_encode
@@ -78,6 +79,11 @@ class GekaiAgent:
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
         )
+        self._normalizer = PromptNormalizer(
+            model=self._supp_model,
+            api_key=self._supp_api_key,
+            api_base=self._supp_api_base,
+        )
         self._handlers: dict[Intent, Handler] = {
             Intent.CHAT: ChatHandler(
                 model=self.model,
@@ -116,6 +122,9 @@ class GekaiAgent:
 
     async def classify(self, user_input: str) -> list[tuple[Intent, str, bool]]:
         return await self._classifier.classify(user_input)
+
+    async def normalize(self, user_input: str) -> tuple[str, str | None]:
+        return await self._normalizer.normalize(user_input)
 
     async def _enrich_if_needed(
         self, session: Session, intent: Intent, plan: bool
