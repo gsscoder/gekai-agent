@@ -4,7 +4,6 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,18 +20,10 @@ from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
 from toon import encode as toon_encode
 
-from .workspace import scan_workspace
-from .enrichment import enrich_workspace
+from .ws_explorer import WsExplorer, WsEvent, Mode
 from .persistence import append_message, append_debug
 
 load_dotenv()
-
-
-@dataclass
-class EnrichmentEvent:
-    kind: str  # "start" | "done"
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
 
 
 def _format_workspace_context(workspace: dict) -> str:
@@ -105,6 +96,14 @@ class GekaiAgent:
     def client(self) -> AsyncOpenAI:
         return self._client
 
+    def create_ws_explorer(self, working_dir: Path, mode: Mode) -> WsExplorer:
+        return WsExplorer(
+            working_dir=working_dir,
+            mode=mode,
+            client=self._supp_client,
+            model=self._supp_model,
+        )
+
     def start_session(
         self,
         workspace: dict,
@@ -130,7 +129,7 @@ class GekaiAgent:
 
     async def _enrich_if_needed(
         self, session: Session, intent: Intent, plan: bool
-    ) -> AsyncIterator[EnrichmentEvent]:
+    ) -> AsyncIterator[WsEvent]:
         if intent != Intent.QUERY or not plan:
             return
         cache_path = session.working_dir / ".gekai" / "workspace.json"
@@ -144,23 +143,9 @@ class GekaiAgent:
                     return
         except (OSError, ValueError):
             pass
-        async def _noop_file(f: str, n: int) -> None: pass
-        async def _noop() -> None: pass
-
-        yield EnrichmentEvent(kind="start")
-        result = await enrich_workspace(
-            session.working_dir,
-            self._supp_client,
-            self._supp_model,
-            on_file=_noop_file,
-            on_infer_start=_noop,
-            on_infer_end=_noop,
-        )
-        yield EnrichmentEvent(
-            kind="done",
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-        )
+        explorer = self.create_ws_explorer(session.working_dir, Mode.UNDERSTAND)
+        async for event in explorer.run():
+            yield event
 
     async def process_stream(
         self,
@@ -168,7 +153,7 @@ class GekaiAgent:
         user_input: str,
         segments: list[tuple[Intent, str, bool]],
         original_input: str | None = None,
-    ) -> AsyncIterator[str | UsageInfo | EnrichmentEvent]:
+    ) -> AsyncIterator[str | UsageInfo | WsEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1])
         all_chunks: list[str] = []

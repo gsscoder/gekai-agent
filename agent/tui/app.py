@@ -13,14 +13,16 @@ from textual.containers import Container, ScrollableContainer
 from textual.widgets import Input, Static
 from textual.worker import Worker
 
-from agent.agent import EnrichmentEvent, GekaiAgent
+from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.enrichment import enrich_workspace
 from agent.handlers.chat import UsageInfo
 from agent.router import Session
 from agent.settings import resolve_permissions, save_permissions
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.workspace import scan_workspace
+from agent.ws_explorer import (
+    WsEvent, WsScanStart, WsScanDone, WsFileRead,
+    WsInferStart, WsInferEnd, WsDone, Mode,
+)
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
@@ -214,14 +216,26 @@ class GekaiApp(App[None]):
         if cache_age < max_age:
             workspace = json.loads(cache_path.read_text(encoding="utf-8"))
         else:
-            scan_widget = MessageWidget(MessageKind.SYSTEM, "scanning workspace...")
-            await conversation.mount(scan_widget)
-
-            def _on_step(msg: str) -> None:
-                self.call_from_thread(scan_widget.update, msg)
-
-            workspace = await asyncio.to_thread(scan_workspace, self._working_dir, on_step=_on_step)
-            await scan_widget.remove()
+            color = random_accent_color()
+            await self._start_status_animation("scanning workspace...", color)
+            explorer = self._agent.create_ws_explorer(self._working_dir, Mode.SCAN)
+            first_item = True
+            await conversation.mount(Static("", classes="assistant-spacer"))
+            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
+            async for event in explorer.run():
+                if isinstance(event, WsScanStart):
+                    prefix = "⎿" if first_item else " "
+                    first_item = False
+                    await conversation.mount(
+                        MessageWidget(MessageKind.SYSTEM, f"{prefix} scanning workspace...")
+                    )
+                    conversation.scroll_end(animate=False)
+                elif isinstance(event, WsScanDone):
+                    pass
+                elif isinstance(event, WsDone):
+                    pass
+            await self._stop_status_animation()
+            workspace = explorer.workspace
 
         self._workspace = workspace
 
@@ -347,6 +361,8 @@ class GekaiApp(App[None]):
         conversation = self.query_one("#conversation", ScrollableContainer)
         answer_chunks: list[str] = []
         completion_tokens: int = 0
+        ws_header_shown = False
+        ws_first_item = True
 
         def _verb_status() -> str:
             tokens_part = f" (↓ {completion_tokens})" if completion_tokens > 0 else ""
@@ -385,14 +401,29 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                     completion_tokens = _estimate_tokens("".join(answer_chunks))
                     self._status_text = _verb_status()
-                elif isinstance(item, EnrichmentEvent):
-                    if item.kind == "start":
-                        self._status_text = "Enriching workspace..."
-                    elif item.kind == "done":
-                        tokens = ""
+                elif isinstance(item, WsEvent):
+                    if isinstance(item, WsFileRead):
+                        if not ws_header_shown:
+                            await conversation.mount(Static("", classes="assistant-spacer"))
+                            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
+                            ws_header_shown = True
+                        prefix = "⎿" if ws_first_item else " "
+                        ws_first_item = False
+                        await conversation.mount(
+                            MessageWidget(MessageKind.SYSTEM, f"{prefix} Read {item.filename} ({item.line_count} lines)")
+                        )
+                        conversation.scroll_end(animate=False)
+                    elif isinstance(item, WsInferStart):
+                        if not ws_header_shown:
+                            await conversation.mount(Static("", classes="assistant-spacer"))
+                            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
+                            ws_header_shown = True
+                        self._status_text = f"{verb[0]}..."
+                    elif isinstance(item, WsInferEnd):
                         if item.prompt_tokens is not None and item.completion_tokens is not None:
-                            tokens = f"  (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
-                        self._status_text = f"Workspace enriched{tokens}"
+                            self._status_text = f"{verb[0]}... (↑ {item.prompt_tokens}  ↓ {item.completion_tokens})"
+                    elif isinstance(item, WsDone):
+                        self._status_text = _verb_status()
                 elif isinstance(item, UsageInfo):
                     completion_tokens = item.completion_tokens
                     self._status_text = _verb_status()
@@ -418,46 +449,43 @@ class GekaiApp(App[None]):
 
     async def _rebuild_workspace(self) -> None:
         color = random_accent_color()
+        verb = random_operative_verb()
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
-            await self._start_status_animation("scanning workspace...", color)
-            await asyncio.to_thread(scan_workspace, self._working_dir)
-
             await conversation.mount(Static("", classes="assistant-spacer"))
-            await conversation.mount(
-                MessageWidget(MessageKind.HEADER, "ws-explorer")
-            )
-
-            async def on_file(filename: str, line_count: int) -> None:
-                await conversation.mount(
-                    MessageWidget(MessageKind.SYSTEM, f"⎿ Read {filename} ({line_count} lines)")
-                )
-                conversation.scroll_end(animate=False)
-
-            async def on_infer_start() -> None:
-                await self._start_status_animation("inferring project context...", color)
-
-            async def on_infer_end() -> None:
-                pass
-
-            result = await enrich_workspace(
-                self._working_dir,
-                self._agent.client,
-                self._agent.model,
-                on_file=on_file,
-                on_infer_start=on_infer_start,
-                on_infer_end=on_infer_end,
-            )
-
-            tokens = ""
-            if result.prompt_tokens is not None and result.completion_tokens is not None:
-                tokens = f"  (↑ {result.prompt_tokens}  ↓ {result.completion_tokens})"
-            await conversation.mount(
-                MessageWidget(MessageKind.HEADER, f"Workspace rebuilt{tokens}")
-            )
+            await conversation.mount(MessageWidget(MessageKind.HEADER, "ws-explorer"))
+            first_item = True
+            explorer = self._agent.create_ws_explorer(self._working_dir, Mode.FULL)
+            async for event in explorer.run():
+                if isinstance(event, WsScanStart):
+                    await self._start_status_animation("scanning workspace...", color)
+                    prefix = "⎿" if first_item else " "
+                    first_item = False
+                    await conversation.mount(
+                        MessageWidget(MessageKind.SYSTEM, f"{prefix} scanning workspace...")
+                    )
+                    conversation.scroll_end(animate=False)
+                elif isinstance(event, WsScanDone):
+                    pass
+                elif isinstance(event, WsFileRead):
+                    prefix = "⎿" if first_item else " "
+                    first_item = False
+                    await conversation.mount(
+                        MessageWidget(MessageKind.SYSTEM, f"{prefix} Read {event.filename} ({event.line_count} lines)")
+                    )
+                    conversation.scroll_end(animate=False)
+                elif isinstance(event, WsInferStart):
+                    await self._start_status_animation(f"{verb[0]}...", color)
+                elif isinstance(event, WsInferEnd):
+                    if event.prompt_tokens is not None and event.completion_tokens is not None:
+                        self._status_text = f"{verb[0]}... (↑ {event.prompt_tokens}  ↓ {event.completion_tokens})"
+                elif isinstance(event, WsDone):
+                    pass
+            if explorer.workspace:
+                self._workspace = explorer.workspace
+            self._session = self._agent.start_session(self._workspace)
             conversation.scroll_end(animate=False)
         except Exception as error:
-            await self._stop_status_animation()
             await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"error: {error}"))
             conversation.scroll_end(animate=False)
         finally:
