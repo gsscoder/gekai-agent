@@ -49,10 +49,12 @@ def _format_workspace_context(workspace: dict) -> str:
 
 def _validate_config() -> None:
     errors: list[str] = []
-    if not os.environ.get("GEKAI_DEFAULT_MODEL", ""):
-        errors.append("GEKAI_DEFAULT_MODEL is not set")
-    if not os.environ.get("GEKAI_API_KEY", ""):
-        errors.append("GEKAI_API_KEY is not set")
+    if not os.environ.get("GEKAI_CORE_MODEL_NAME", ""):
+        errors.append("GEKAI_CORE_MODEL_NAME is not set")
+    if not os.environ.get("GEKAI_CORE_MODEL_KEY", ""):
+        errors.append("GEKAI_CORE_MODEL_KEY is not set")
+    if not os.environ.get("GEKAI_SUPPORT_MODEL_NAME", ""):
+        errors.append("GEKAI_SUPPORT_MODEL_NAME is not set")
     if errors:
         raise RuntimeError("missing configuration:\n" + "\n".join(f"  - {e}" for e in errors))
 
@@ -63,14 +65,18 @@ class GekaiAgent:
         self.permissions = permissions
         self.debug = debug
         _validate_config()
-        self.model: str = os.environ["GEKAI_DEFAULT_MODEL"]
-        self._api_key: str | None = os.environ.get("GEKAI_API_KEY")
-        self._api_base: str | None = os.environ.get("GEKAI_MODEL_BASE_URL")
+        self.model: str = os.environ["GEKAI_CORE_MODEL_NAME"]
+        self._api_key: str | None = os.environ.get("GEKAI_CORE_MODEL_KEY")
+        self._api_base: str | None = os.environ.get("GEKAI_CORE_MODEL_URL")
         self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
+        self._supp_model: str = os.environ["GEKAI_SUPPORT_MODEL_NAME"]
+        self._supp_api_key: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_KEY")
+        self._supp_api_base: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_URL")
+        self._supp_client = AsyncOpenAI(api_key=self._supp_api_key, base_url=self._supp_api_base)
         self._classifier = IntentClassifier(
-            model=self.model,
-            api_key=self._api_key,
-            api_base=self._api_base,
+            model=self._supp_model,
+            api_key=self._supp_api_key,
+            api_base=self._supp_api_base,
         )
         self._handlers: dict[Intent, Handler] = {
             Intent.CHAT: ChatHandler(
@@ -133,8 +139,8 @@ class GekaiAgent:
         yield EnrichmentEvent(kind="start")
         result = await enrich_workspace(
             session.working_dir,
-            self._client,
-            self.model,
+            self._supp_client,
+            self._supp_model,
             on_file=_noop_file,
             on_infer_start=_noop,
             on_infer_end=_noop,

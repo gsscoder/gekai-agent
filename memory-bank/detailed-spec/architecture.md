@@ -58,10 +58,15 @@ Classifier is stateless (no session history passed); context continuity is the h
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in QueryHandler
-Env vars:
-- `GEKAI_DEFAULT_MODEL` — model id, e.g. `deepseek-chat`
-- `GEKAI_API_KEY`
-- `GEKAI_MODEL_BASE_URL` — e.g. `https://api.deepseek.com/v1`
+Env vars (CORE — used by ChatHandler, QueryHandler, ActionHandler):
+- `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
+- `GEKAI_CORE_MODEL_KEY`
+- `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
+
+Env vars (SUPP — used by IntentClassifier and `enrich_workspace`; each defaults to its CORE equivalent if unset):
+- `GEKAI_SUPPORT_MODEL_NAME`
+- `GEKAI_SUPPORT_MODEL_KEY`
+- `GEKAI_SUPPORT_MODEL_URL`
 
 ## Workspace Scan
 `scan_workspace(working_dir)` runs at startup; writes `.gekai/workspace.json`
