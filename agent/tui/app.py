@@ -29,24 +29,49 @@ _SPINNER_FRAMES = ["|", "/", "-", "\\"]
 class SubAgentRenderer:
     """Manages header, L-connector, token accumulation, and Done line for subagent events."""
 
-    def __init__(self, conversation: ScrollableContainer) -> None:
+    def __init__(self, conversation: ScrollableContainer, debug: bool = False) -> None:
         self._conversation = conversation
         self._first_item = True
+        self.name: str = ""
         self._total_tokens: int = 0
         self._start_time: float = time.monotonic()
+        self._debug = debug
+        self._current_tool: str = ""
+        self._current_count: int = 0
+        self._current_widget: Static | None = None
+        self._current_prefix: str = ""
 
     async def start(self, name: str, description: str, color: str) -> None:
+        self.name = name
         await self._conversation.mount(Static("", classes="assistant-spacer"))
         bg = color or "grey50"
         header_markup = f"[bold black on {bg}]{name}[/bold black on {bg}][white]({description})[/white]"
         await self._conversation.mount(MessageWidget(MessageKind.HEADER, header_markup))
 
-    async def log(self, message: str) -> None:
+    async def log(self, message: str, tool_name: str = "") -> None:
         if message.endswith("..."):
-            return  # suppress in-progress messages — confusing once complete
+            return
+        if not self._debug and tool_name:
+            if tool_name == self._current_tool and self._current_widget is not None:
+                self._current_count += 1
+                kind = message.split()[0] if message else tool_name
+                self._current_widget.update(f"{self._current_prefix} {kind} ({self._current_count} calls)")
+                self._conversation.scroll_end(animate=False)
+                return
+            self._current_tool = tool_name
+            self._current_count = 1
         prefix = "  ⎿" if self._first_item else "   "
         self._first_item = False
-        await self._conversation.mount(Static(f"{prefix} {message}"))
+        if not self._debug and tool_name:
+            kind = message.split()[0] if message else tool_name
+            widget = Static(f"{prefix} {kind} (1 call)")
+            await self._conversation.mount(widget)
+            self._current_widget = widget
+            self._current_prefix = prefix
+        else:
+            widget = Static(f"{prefix} {message}")
+            await self._conversation.mount(widget)
+            self._current_widget = None
         self._conversation.scroll_end(animate=False)
 
     def accumulate_tokens(self, event: "InferEndEvent") -> None:
@@ -429,6 +454,7 @@ class GekaiApp(App[None]):
         answer_chunks: list[str] = []
         completion_tokens: int = 0
         ws_renderer: SubAgentRenderer | None = None
+        query_tool_count: int = 0
 
         try:
             await self._start_status_animation(verb[0], color)
@@ -463,11 +489,13 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                 elif isinstance(item, SubAgentEvent):
                     if isinstance(item, SubAgentStartEvent):
-                        ws_renderer = SubAgentRenderer(conversation)
+                        ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
                         await ws_renderer.start(item.name, item.description, item.color)
                     elif ws_renderer:
                         if isinstance(item, LogEvent):
-                            await ws_renderer.log(item.message)
+                            await ws_renderer.log(item.message, tool_name=item.tool_name)
+                            if ws_renderer.name == "query":
+                                query_tool_count += 1
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)
                         elif isinstance(item, DoneEvent):
@@ -479,7 +507,7 @@ class GekaiApp(App[None]):
             await conversation.mount(
                 MessageWidget(
                     MessageKind.OPERATION,
-                    f"* {verb[1]} for {_fmt_duration(elapsed)}",
+                    f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({query_tool_count} tools)" if query_tool_count > 0 else ""),
                     color=color,
                 )
             )

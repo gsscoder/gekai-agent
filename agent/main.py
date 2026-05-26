@@ -75,7 +75,7 @@ def main() -> None:
     if session_id and app.session_has_interactions:
         from .ui import console
         console.print()
-        console.print(f"[dim]Resume session:[/dim]\n[grey50]gekai --resume {session_id}[/grey50]")
+        console.print(f"[grey50]resume session:\ngekai --resume {session_id}[/grey50]")
 
 
 if __name__ == "__main__":

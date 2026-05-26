@@ -22,6 +22,7 @@ class SubAgentStartEvent(SubAgentEvent):
 class LogEvent(SubAgentEvent):
     """A timestep worth showing in the conversation (file read, scan step, etc.)."""
     message: str = ""
+    tool_name: str = ""
 
 
 @dataclass
