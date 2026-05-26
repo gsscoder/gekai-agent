@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from llmstitch import Agent
 from llmstitch.events import EventBus, ToolExecutionStarted
 from llmstitch.providers.openai import OpenAIAdapter
-from llmstitch.types import TextBlock, ToolUseBlock
+from llmstitch.types import Message, TextBlock, ToolUseBlock
 
 from ..router import Session, SYSTEM_PROMPT
 from ..subagent import DoneEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
@@ -54,7 +54,9 @@ class QueryHandler:
         )
         for t in make_tools(session.working_dir):
             agent.tools.register(t)
-        history = await agent.run(user_input)
+        prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
+        prior.append(Message(role="user", content=user_input))
+        history = await agent.run(prior)
         last = history[-1]
         if isinstance(last.content, list):
             return "\n".join(b.text for b in last.content if isinstance(b, TextBlock))
@@ -82,7 +84,9 @@ class QueryHandler:
 
         yield SubAgentStartEvent(name="Query", description="Inspecting workspace", color=_QUERY_COLOR)
 
-        agent_task = asyncio.create_task(agent.run(user_input))
+        prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
+        prior.append(Message(role="user", content=user_input))
+        agent_task = asyncio.create_task(agent.run(prior))
         asyncio.create_task(_consume_bus())
 
         while True:
