@@ -145,6 +145,21 @@ def _scan_extensions(working_dir: Path) -> dict[str, int]:
     return dict(counter.most_common(15))
 
 
+def _ensure_gekai_excluded(working_dir: Path) -> None:
+    git_dir = working_dir / ".git"
+    if not git_dir.is_dir():
+        return
+    exclude_file = git_dir / "info" / "exclude"
+    try:
+        content = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+        if ".gekai" in content:
+            return
+        with exclude_file.open("a", encoding="utf-8") as f:
+            f.write("\n.gekai/\n")
+    except OSError:
+        pass
+
+
 def scan_workspace(
     working_dir: Path,
     on_step: Callable[[str], None] | None = None,
@@ -212,6 +227,7 @@ def scan_workspace(
     try:
         gekai_dir = working_dir / ".gekai"
         gekai_dir.mkdir(exist_ok=True)
+        _ensure_gekai_excluded(working_dir)
         (gekai_dir / "workspace.json").write_text(
             json.dumps(result, indent=2), encoding="utf-8"
         )
