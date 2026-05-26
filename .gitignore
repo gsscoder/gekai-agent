@@ -8,4 +8,5 @@ venv/
 dist/
 *.egg-info/
 .claude/
+.claude/agents/
 _agents/

@@ -1,22 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import enum
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import openai
 from openai import AsyncOpenAI
 
-from .enrichment import EnrichmentResult, enrich_workspace
+from .enrichment import EnrichmentResult, enrich_workspace, _get_git_state, _should_run
 from ..subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent
 from ..workspace import scan_workspace
-
-
-class Mode(enum.Enum):
-    SCAN = "scan"           # startup: directory walk only, no LLM
-    UNDERSTAND = "understand"  # mid-session: LLM enrichment only
-    FULL = "full"           # /workspace:rebuild: scan + enrich
 
 
 class WsExplorer(SubAgent):
@@ -25,25 +19,19 @@ class WsExplorer(SubAgent):
 
     @property
     def description(self) -> str:
-        match self._mode:
-            case Mode.SCAN:
-                return "Scan workspace"
-            case Mode.UNDERSTAND:
-                return "Understand workspace"
-            case Mode.FULL:
-                return "Scan and understand workspace"
-            case _:
-                return ""
+        return "Scan and understand workspace" if self._enrich else "Scan workspace"
 
     def __init__(
         self,
         working_dir: Path,
-        mode: Mode,
+        force: bool = False,
+        enrich: bool = True,
         client: AsyncOpenAI | None = None,
         model: str | None = None,
     ) -> None:
         self._working_dir = working_dir
-        self._mode = mode
+        self._force = force
+        self._enrich = enrich
         self._client = client
         self._model = model
         self.workspace: dict | None = None
@@ -52,58 +40,71 @@ class WsExplorer(SubAgent):
     async def run(self) -> AsyncIterator[SubAgentEvent]:
         yield SubAgentStartEvent(name=self.name, description=self.description, color=self.color)
 
-        # --- SCAN phase ---
-        if self._mode in (Mode.SCAN, Mode.FULL):
+        if not self._enrich:
             self.workspace = await asyncio.to_thread(scan_workspace, self._working_dir)
+            yield DoneEvent()
+            return
 
-        # --- UNDERSTAND phase ---
-        if self._mode in (Mode.UNDERSTAND, Mode.FULL):
-            queue: asyncio.Queue[SubAgentEvent | None] = asyncio.Queue()
+        commit_hash, dirty = await asyncio.to_thread(_get_git_state, self._working_dir)
 
-            async def on_file(filename: str, line_count: int) -> None:
-                await queue.put(LogEvent(message=f"Read {filename} ({line_count} lines)"))
+        if not _should_run(self._working_dir, self._force, commit_hash, dirty):
+            cache_path = self._working_dir / ".gekai" / "workspace.json"
+            try:
+                self.workspace = json.loads(cache_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            yield DoneEvent()
+            return
 
-            async def on_infer_start() -> None:
-                await queue.put(InferStartEvent())
+        self.workspace = await asyncio.to_thread(scan_workspace, self._working_dir)
 
-            async def on_infer_delta(completion_tokens: int) -> None:
-                await queue.put(InferDeltaEvent(completion_tokens=completion_tokens))
+        queue: asyncio.Queue[SubAgentEvent | None] = asyncio.Queue()
 
-            async def on_infer_end(prompt_tokens: int, completion_tokens: int) -> None:
-                await queue.put(InferEndEvent(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens))
+        async def on_file(filename: str, line_count: int) -> None:
+            await queue.put(LogEvent(message=f"Read {filename} ({line_count} lines)"))
 
-            async def _enrich() -> EnrichmentResult:
-                try:
-                    return await enrich_workspace(
-                        self._working_dir,
-                        self._client,
-                        self._model,
-                        on_file=on_file,
-                        on_infer_start=on_infer_start,
-                        on_infer_delta=on_infer_delta,
-                        on_infer_end=on_infer_end,
-                    )
-                except openai.APIError as exc:
-                    await queue.put(LogEvent(message=f"enrichment failed: {exc.message}"))
-                    return EnrichmentResult(
-                        proj_brief="",
-                        tech_stack=[],
-                        enriched_at="",
-                        prompt_tokens=None,
-                        completion_tokens=None,
-                        domain_map={},
-                    )
-                finally:
-                    await queue.put(None)  # sentinel always fires
+        async def on_infer_start() -> None:
+            await queue.put(InferStartEvent())
 
-            task = asyncio.create_task(_enrich())
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                yield event
+        async def on_infer_delta(completion_tokens: int) -> None:
+            await queue.put(InferDeltaEvent(completion_tokens=completion_tokens))
 
-            result = await task
-            self.enrichment = result
+        async def on_infer_end(prompt_tokens: int, completion_tokens: int) -> None:
+            await queue.put(InferEndEvent(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens))
+
+        async def _enrich() -> EnrichmentResult:
+            try:
+                return await enrich_workspace(
+                    self._working_dir,
+                    self._client,
+                    self._model,
+                    commit_hash=commit_hash,
+                    dirty=dirty,
+                    on_file=on_file,
+                    on_infer_start=on_infer_start,
+                    on_infer_delta=on_infer_delta,
+                    on_infer_end=on_infer_end,
+                )
+            except openai.APIError as exc:
+                await queue.put(LogEvent(message=f"enrichment failed: {exc.message}"))
+                return EnrichmentResult(
+                    proj_brief="",
+                    tech_stack=[],
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    domain_map={},
+                )
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(_enrich())
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+
+        result = await task
+        self.enrichment = result
 
         yield DoneEvent()

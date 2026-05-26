@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pyfiglet
@@ -19,7 +17,6 @@ from agent.router import Session
 from agent.settings import resolve_permissions, save_permissions
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
 from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent
-from agent.ws_explorer import Mode
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
@@ -279,20 +276,11 @@ class GekaiApp(App[None]):
 
 
         # Workspace cache
-        cache_path = self._working_dir / ".gekai" / "workspace.json"
-        max_age = 30 * 60 if self._restored_id else 15 * 60
-        cache_age = (
-            (datetime.now(timezone.utc).timestamp() - cache_path.stat().st_mtime)
-            if cache_path.exists()
-            else float("inf")
-        )
-        if cache_age < max_age:
-            workspace = json.loads(cache_path.read_text(encoding="utf-8"))
-        else:
-            color = random_accent_color()
-            await self._start_status_animation("scanning workspace", color)
-            explorer = self._agent.create_ws_explorer(self._working_dir, Mode.SCAN)
-            renderer: SubAgentRenderer | None = None
+        color = random_accent_color()
+        await self._start_status_animation("scanning workspace", color)
+        explorer = self._agent.create_ws_explorer(self._working_dir, enrich=False)
+        renderer: SubAgentRenderer | None = None
+        try:
             async for event in explorer.run():
                 if isinstance(event, SubAgentStartEvent):
                     renderer = SubAgentRenderer(conversation)
@@ -303,8 +291,12 @@ class GekaiApp(App[None]):
                     renderer.accumulate_tokens(event)
                 elif isinstance(event, DoneEvent) and renderer:
                     await renderer.done()
+        except Exception as error:
+            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"workspace scan error: {error}"))
+            conversation.scroll_end(animate=False)
+        finally:
             await self._stop_status_animation()
-            workspace = explorer.workspace
+        workspace = explorer.workspace or {}
 
         self._workspace = workspace
 
@@ -505,7 +497,7 @@ class GekaiApp(App[None]):
         color = random_accent_color()
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
-            explorer = self._agent.create_ws_explorer(self._working_dir, Mode.FULL)
+            explorer = self._agent.create_ws_explorer(self._working_dir, force=True)
             renderer: SubAgentRenderer | None = None
             async for event in explorer.run():
                 if isinstance(event, SubAgentStartEvent):

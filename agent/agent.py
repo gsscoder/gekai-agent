@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,7 +18,7 @@ from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
 from toon import encode as toon_encode
 
-from .ws_explorer import WsExplorer, Mode
+from .ws_explorer import WsExplorer
 from .subagent import SubAgentEvent
 from .persistence import append_message, append_debug
 
@@ -99,10 +97,11 @@ class GekaiAgent:
     def client(self) -> AsyncOpenAI:
         return self._client
 
-    def create_ws_explorer(self, working_dir: Path, mode: Mode) -> WsExplorer:
+    def create_ws_explorer(self, working_dir: Path, force: bool = False, enrich: bool = True) -> WsExplorer:
         return WsExplorer(
             working_dir=working_dir,
-            mode=mode,
+            force=force,
+            enrich=enrich,
             client=self._supp_client,
             model=self._supp_model,
         )
@@ -135,18 +134,7 @@ class GekaiAgent:
     ) -> AsyncIterator[SubAgentEvent]:
         if intent != Intent.QUERY or not plan:
             return
-        cache_path = session.working_dir / ".gekai" / "workspace.json"
-        try:
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            enriched_at_str = cached.get("enriched_at")
-            if enriched_at_str:
-                enriched_at = datetime.fromisoformat(enriched_at_str)
-                age = datetime.now(timezone.utc).timestamp() - enriched_at.timestamp()
-                if age < 30 * 60:
-                    return
-        except (OSError, ValueError):
-            pass
-        explorer = self.create_ws_explorer(session.working_dir, Mode.UNDERSTAND)
+        explorer = self.create_ws_explorer(session.working_dir)
         async for event in explorer.run():
             yield event
 

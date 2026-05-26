@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,10 +20,63 @@ from ..workspace import _SKIP_DIRS
 class EnrichmentResult:
     proj_brief: str
     tech_stack: list[str]
-    enriched_at: str
     prompt_tokens: int | None
     completion_tokens: int | None
     domain_map: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _get_git_state(working_dir: Path) -> tuple[str | None, bool]:
+    try:
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=working_dir, capture_output=True, text=True, timeout=5,
+        )
+        if hash_result.returncode != 0:
+            return None, False
+        commit_hash = hash_result.stdout.strip()
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=working_dir, capture_output=True, text=True, timeout=5,
+        )
+        dirty = bool(status_result.stdout.strip())
+        return commit_hash, dirty
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None, False
+
+
+def _should_run(working_dir: Path, force: bool, commit_hash: str | None, dirty: bool) -> bool:
+    if force:
+        return True
+    cache_path = working_dir / ".gekai" / "workspace.json"
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+
+    scan_state = cached.get("scan_state")
+    if not scan_state:
+        return True
+
+    cached_hash = scan_state.get("commit_hash")
+    cached_at_str = scan_state.get("at", "")
+
+    def _age(at_str: str) -> float:
+        try:
+            at = datetime.fromisoformat(at_str)
+            return datetime.now(timezone.utc).timestamp() - at.timestamp()
+        except (ValueError, TypeError):
+            return float("inf")
+
+    if commit_hash is None:
+        return _age(cached_at_str) > 30 * 60
+
+    if cached_hash != commit_hash:
+        return True
+
+    if not dirty:
+        return False
+
+    return _age(cached_at_str) > 15 * 60
 
 
 def _extract_manifest_snippet(path: Path) -> str | None:
@@ -259,6 +313,8 @@ async def enrich_workspace(
     working_dir: Path,
     client: AsyncOpenAI,
     model: str,
+    commit_hash: str | None,
+    dirty: bool,
     on_file: Callable[[str, int], Awaitable[None]] | None = None,
     on_infer_start: Callable[[], Awaitable[None]] | None = None,
     on_infer_delta: Callable[[int], Awaitable[None]] | None = None,
@@ -399,8 +455,6 @@ async def enrich_workspace(
         await asyncio.gather(_infer_brief(), _infer_domain())
     )
 
-    enriched_at = datetime.now(timezone.utc).isoformat()
-
     try:
         existing = json.loads(workspace_json_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -409,7 +463,12 @@ async def enrich_workspace(
     existing["proj_brief"] = proj_brief
     existing["tech_stack"] = tech_stack
     existing["domain_map"] = domain_map
-    existing["enriched_at"] = enriched_at
+    existing["scan_state"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "commit_hash": commit_hash,
+        "dirty": dirty,
+    }
+    existing.pop("enriched_at", None)
 
     try:
         workspace_json_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -419,7 +478,6 @@ async def enrich_workspace(
     return EnrichmentResult(
         proj_brief=proj_brief,
         tech_stack=tech_stack,
-        enriched_at=enriched_at,
         prompt_tokens=call1_prompt + call2_prompt,
         completion_tokens=call1_completion + call2_completion,
         domain_map=domain_map,
