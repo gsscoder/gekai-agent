@@ -276,13 +276,12 @@ class GekaiApp(App[None]):
 
 
         # Workspace cache
-        color = random_accent_color()
-        await self._start_status_animation("scanning workspace", color)
         explorer = self._agent.create_ws_explorer(self._working_dir, enrich=False)
         renderer: SubAgentRenderer | None = None
         try:
             async for event in explorer.run():
                 if isinstance(event, SubAgentStartEvent):
+                    await self._start_status_animation("scanning workspace", random_accent_color())
                     renderer = SubAgentRenderer(conversation)
                     await renderer.start(event.name, event.description, event.color)
                 elif isinstance(event, LogEvent) and renderer:

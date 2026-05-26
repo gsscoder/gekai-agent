@@ -8,7 +8,7 @@ from pathlib import Path
 import openai
 from openai import AsyncOpenAI
 
-from .enrichment import EnrichmentResult, enrich_workspace, _get_git_state, _should_run
+from .enrichment import EnrichmentResult, enrich_workspace, _get_git_state, _should_run, _write_scan_state
 from ..subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent
 from ..workspace import scan_workspace
 
@@ -38,13 +38,6 @@ class WsExplorer(SubAgent):
         self.enrichment: EnrichmentResult | None = None
 
     async def run(self) -> AsyncIterator[SubAgentEvent]:
-        yield SubAgentStartEvent(name=self.name, description=self.description, color=self.color)
-
-        if not self._enrich:
-            self.workspace = await asyncio.to_thread(scan_workspace, self._working_dir)
-            yield DoneEvent()
-            return
-
         commit_hash, dirty = await asyncio.to_thread(_get_git_state, self._working_dir)
 
         if not _should_run(self._working_dir, self._force, commit_hash, dirty):
@@ -53,10 +46,16 @@ class WsExplorer(SubAgent):
                 self.workspace = json.loads(cache_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 pass
-            yield DoneEvent()
             return
 
+        yield SubAgentStartEvent(name=self.name, description=self.description, color=self.color)
+
         self.workspace = await asyncio.to_thread(scan_workspace, self._working_dir)
+
+        if not self._enrich:
+            await asyncio.to_thread(_write_scan_state, self._working_dir, commit_hash, dirty)
+            yield DoneEvent()
+            return
 
         queue: asyncio.Queue[SubAgentEvent | None] = asyncio.Queue()
 

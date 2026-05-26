@@ -79,6 +79,23 @@ def _should_run(working_dir: Path, force: bool, commit_hash: str | None, dirty: 
     return _age(cached_at_str) > 15 * 60
 
 
+def _write_scan_state(working_dir: Path, commit_hash: str | None, dirty: bool) -> None:
+    cache_path = working_dir / ".gekai" / "workspace.json"
+    try:
+        existing = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    existing["scan_state"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "commit_hash": commit_hash,
+        "dirty": dirty,
+    }
+    try:
+        cache_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _extract_manifest_snippet(path: Path) -> str | None:
     try:
         text = path.read_text(encoding="utf-8")
