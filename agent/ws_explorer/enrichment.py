@@ -44,57 +44,6 @@ def _get_git_state(working_dir: Path) -> tuple[str | None, bool]:
         return None, False
 
 
-def _should_run(working_dir: Path, force: bool, commit_hash: str | None, dirty: bool) -> bool:
-    if force:
-        return True
-    cache_path = working_dir / ".gekai" / "workspace.json"
-    try:
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return True
-
-    scan_state = cached.get("scan_state")
-    if not scan_state:
-        return True
-
-    cached_hash = scan_state.get("commit_hash")
-    cached_at_str = scan_state.get("at", "")
-
-    def _age(at_str: str) -> float:
-        try:
-            at = datetime.fromisoformat(at_str)
-            return datetime.now(timezone.utc).timestamp() - at.timestamp()
-        except (ValueError, TypeError):
-            return float("inf")
-
-    if commit_hash is None:
-        return _age(cached_at_str) > 30 * 60
-
-    if cached_hash != commit_hash:
-        return True
-
-    if not dirty:
-        return False
-
-    return _age(cached_at_str) > 15 * 60
-
-
-def _write_scan_state(working_dir: Path, commit_hash: str | None, dirty: bool) -> None:
-    cache_path = working_dir / ".gekai" / "workspace.json"
-    try:
-        existing = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        existing = {}
-    existing["scan_state"] = {
-        "at": datetime.now(timezone.utc).isoformat(),
-        "commit_hash": commit_hash,
-        "dirty": dirty,
-    }
-    try:
-        cache_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    except OSError:
-        pass
-
 
 def _extract_manifest_snippet(path: Path) -> str | None:
     try:
@@ -481,9 +430,9 @@ async def enrich_workspace(
     existing["tech_stack"] = tech_stack
     existing["domain_map"] = domain_map
     existing["scan_state"] = {
-        "at": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "commit_hash": commit_hash,
-        "dirty": dirty,
+        "uncommitted": dirty,
     }
     existing.pop("enriched_at", None)
 

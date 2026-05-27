@@ -97,11 +97,9 @@ class GekaiAgent:
     def client(self) -> AsyncOpenAI:
         return self._client
 
-    def create_ws_explorer(self, working_dir: Path, force: bool = False, enrich: bool = True) -> WsExplorer:
+    def create_ws_explorer(self, working_dir: Path) -> WsExplorer:
         return WsExplorer(
             working_dir=working_dir,
-            force=force,
-            enrich=enrich,
             client=self._supp_client,
             model=self._supp_model,
         )
@@ -129,14 +127,8 @@ class GekaiAgent:
     async def normalize(self, user_input: str) -> tuple[str, str | None]:
         return await self._normalizer.normalize(user_input)
 
-    async def _enrich_if_needed(
-        self, session: Session, intent: Intent, plan: bool
-    ) -> AsyncIterator[SubAgentEvent]:
-        if intent != Intent.QUERY or not plan:
-            return
-        explorer = self.create_ws_explorer(session.working_dir)
-        async for event in explorer.run():
-            yield event
+    def update_workspace_context(self, session: "Session", workspace: dict) -> None:
+        session.messages[1] = {"role": "system", "content": _format_workspace_context(workspace)}
 
     async def process_stream(
         self,
@@ -177,8 +169,6 @@ class GekaiAgent:
                     yield result
 
             else:
-                async for event in self._enrich_if_needed(session, intent, plan):
-                    yield event
                 handler = self._handlers[intent]
                 if hasattr(handler, "stream"):
                     async for item in handler.stream(session, sub_prompt):

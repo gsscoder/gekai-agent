@@ -52,7 +52,7 @@ def bootstrap_global_settings() -> None:
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"env": {}}, indent=2) + "\n")
+    path.write_text(json.dumps({"env": {}, "ws_scan_staleness_min": 30}, indent=2) + "\n")
 
 
 def load_global_settings() -> None:
@@ -71,3 +71,23 @@ def resolve_permissions(choice: str) -> Permissions | None:
     if choice == "full":
         return Permissions(read=True, write=True)
     return None
+
+
+def load_ws_scan_staleness_min(working_dir: Path) -> float:
+    local_path = _settings_path(working_dir)
+    try:
+        data = json.loads(local_path.read_text())
+        val = data.get("ws_scan_staleness_min")
+        if val is not None:
+            return float(val)
+    except (OSError, ValueError):
+        pass
+    global_path = Path.home() / ".gekai" / "settings.json"
+    try:
+        data = json.loads(global_path.read_text())
+        val = data.get("ws_scan_staleness_min")
+        if val is not None:
+            return float(val)
+    except (OSError, ValueError):
+        pass
+    return 30.0

@@ -45,6 +45,13 @@ class InferEndEvent(SubAgentEvent):
 
 
 @dataclass
+class StatusUpdateEvent(SubAgentEvent):
+    """Progress update. TUI shows a determinate ProgressBar; removed on DoneEvent."""
+    progress: int = 0
+    total: int | None = None
+
+
+@dataclass
 class DoneEvent(SubAgentEvent):
     """Always the last event."""
     pass

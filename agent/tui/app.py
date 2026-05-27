@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyfiglet
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, ScrollableContainer
-from textual.widgets import Input, Static
+from textual.widgets import Input, ProgressBar, Static
 from textual.worker import Worker
 
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.router import Session
-from agent.settings import resolve_permissions, save_permissions
+from agent.router import Intent, Session
+from agent.settings import load_ws_scan_staleness_min, resolve_permissions, save_permissions
+from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent
+from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
@@ -24,6 +27,34 @@ from .widgets import MessageKind, MessageWidget
 
 
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
+
+
+def _write_asked_timestamp(cache_path: Path) -> None:
+    try:
+        existing = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = {}
+    scan_state = existing.get("scan_state", {})
+    scan_state["asked_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    existing["scan_state"] = scan_state
+    try:
+        cache_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _refresh_scan_timestamp(cache_path: Path) -> None:
+    try:
+        existing = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = {}
+    scan_state = existing.get("scan_state", {})
+    scan_state["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    existing["scan_state"] = scan_state
+    try:
+        cache_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except OSError:
+        pass
 
 
 class SubAgentRenderer:
@@ -40,6 +71,7 @@ class SubAgentRenderer:
         self._current_count: int = 0
         self._current_widget: Static | None = None
         self._current_prefix: str = ""
+        self._progress_bar: ProgressBar | None = None
 
     async def start(self, name: str, description: str, color: str) -> None:
         self.name = name
@@ -74,6 +106,15 @@ class SubAgentRenderer:
             self._current_widget = None
         self._conversation.scroll_end(animate=False)
 
+    async def status_update(self, event: "StatusUpdateEvent") -> None:
+        if self._progress_bar is None:
+            bar = ProgressBar(total=event.total, show_eta=False, show_percentage=True, classes="subagent-progress")
+            await self._conversation.mount(bar)
+            self._progress_bar = bar
+            self._conversation.scroll_end(animate=False)
+        elif event.total is not None:
+            self._progress_bar.update(total=event.total, progress=event.progress)
+
     def accumulate_tokens(self, event: "InferEndEvent") -> None:
         if event.prompt_tokens:
             self._total_tokens += event.prompt_tokens
@@ -81,6 +122,9 @@ class SubAgentRenderer:
             self._total_tokens += event.completion_tokens
 
     async def done(self) -> None:
+        if self._progress_bar is not None:
+            await self._progress_bar.remove()
+            self._progress_bar = None
         elapsed = time.monotonic() - self._start_time
         parts = [_fmt_duration_verbose(elapsed)]
         if self._total_tokens > 0:
@@ -152,6 +196,14 @@ class GekaiApp(App[None]):
         background: ansi_default;
     }
 
+    #question-bar {
+        height: 1;
+        background: ansi_default;
+        color: orange;
+        padding: 0 1 0 0;
+        display: none;
+    }
+
     #status-line {
         height: 1;
         background: ansi_default;
@@ -219,6 +271,23 @@ class GekaiApp(App[None]):
     MessageWidget {
         background: ansi_default;
     }
+
+    .subagent-progress {
+        width: 40%;
+        height: 1;
+        background: ansi_default;
+        padding: 0;
+        layout: horizontal;
+    }
+
+    .subagent-progress Bar {
+        width: 1fr;
+    }
+
+    .subagent-progress PercentageStatus {
+        width: 5;
+        color: grey;
+    }
     """
 
     BINDINGS = [
@@ -258,12 +327,14 @@ class GekaiApp(App[None]):
         self._status_start: float = 0.0
         self._current_lang: str = "EN"
         self._esc_pending: bool = False
+        self._pending_question: asyncio.Future[str] | None = None
         super().__init__(**kwargs)
         self.ansi_color = True
 
     def compose(self) -> ComposeResult:
         yield ScrollableContainer(id="conversation")
         with Container(id="footer"):
+            yield Static("", id="question-bar")
             yield Static("", id="status-line")
             yield Static("", id="status-spacer")
             yield CommandPalette(self._command_registry, id="command-palette")
@@ -276,7 +347,7 @@ class GekaiApp(App[None]):
         if self._needs_permissions:
             self.push_screen(PermissionScreen(), callback=self._on_permission_selected)
             return
-        await self._init_session()
+        self.run_worker(self._init_session(), exclusive=True)
 
     def _on_permission_selected(self, choice: str | None) -> None:
         perms = resolve_permissions(choice) if choice else None
@@ -290,7 +361,6 @@ class GekaiApp(App[None]):
     async def _init_session(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
 
-        # Banner
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
         await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"gekai v{self._version}"))
@@ -299,39 +369,45 @@ class GekaiApp(App[None]):
         else:
             await conversation.mount(MessageWidget(MessageKind.SYSTEM, self._working_dir.name))
 
+        cache_path = self._working_dir / ".gekai" / "workspace.json"
+        workspace: dict = {}
 
-        # Workspace cache
-        explorer = self._agent.create_ws_explorer(self._working_dir, enrich=False)
-        renderer: SubAgentRenderer | None = None
-        try:
-            async for event in explorer.run():
-                if isinstance(event, SubAgentStartEvent):
-                    await self._start_status_animation("scanning workspace", random_accent_color())
-                    renderer = SubAgentRenderer(conversation)
-                    await renderer.start(event.name, event.description, event.color)
-                elif isinstance(event, LogEvent) and renderer:
-                    await renderer.log(event.message)
-                elif isinstance(event, InferEndEvent) and renderer:
-                    renderer.accumulate_tokens(event)
-                elif isinstance(event, DoneEvent) and renderer:
-                    await renderer.done()
-        except Exception as error:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"workspace scan error: {error}"))
-            conversation.scroll_end(animate=False)
-        finally:
-            await self._stop_status_animation()
-        workspace = explorer.workspace or {}
+        if not cache_path.exists():
+            explorer = self._agent.create_ws_explorer(self._working_dir)
+            renderer: SubAgentRenderer | None = None
+            try:
+                async for event in explorer.run():
+                    if isinstance(event, SubAgentStartEvent):
+                        await self._start_status_animation("scanning workspace", random_accent_color())
+                        renderer = SubAgentRenderer(conversation)
+                        await renderer.start(event.name, event.description, event.color)
+                    elif isinstance(event, StatusUpdateEvent) and renderer:
+                        await renderer.status_update(event)
+                    elif isinstance(event, LogEvent) and renderer:
+                        await renderer.log(event.message)
+                    elif isinstance(event, InferEndEvent) and renderer:
+                        renderer.accumulate_tokens(event)
+                    elif isinstance(event, DoneEvent) and renderer:
+                        await renderer.done()
+            except Exception as error:
+                await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"workspace scan error: {error}"))
+                conversation.scroll_end(animate=False)
+            finally:
+                await self._stop_status_animation()
+            workspace = explorer.workspace or {}
+        else:
+            try:
+                workspace = json.loads(cache_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                workspace = {}
 
         self._workspace = workspace
-
-        # Start session
         self._session = self._agent.start_session(
             workspace,
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
         )
 
-        # Replay history
         if self._restored_messages:
             for msg in self._restored_messages:
                 role = msg.get("role")
@@ -401,7 +477,29 @@ class GekaiApp(App[None]):
         prompt.insert_text_at_cursor(event.character)
         event.stop()
 
+    async def _ask_inline(self, question: str) -> str:
+        loop = asyncio.get_event_loop()
+        self._pending_question = loop.create_future()
+        bar = self.query_one("#question-bar", Static)
+        bar.update(question)
+        bar.display = True
+        return await self._pending_question
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._pending_question is not None and not self._pending_question.done():
+            answer = event.value.strip()
+            event.input.value = ""
+            bar = self.query_one("#question-bar", Static)
+            bar.display = False
+            bar.update("")
+            future = self._pending_question
+            self._pending_question = None
+            conversation = self.query_one("#conversation", ScrollableContainer)
+            await conversation.mount(MessageWidget(MessageKind.USER, answer or "n"))
+            conversation.scroll_end(animate=False)
+            future.set_result(answer or "n")
+            self._focus_prompt()
+            return
         if self._session is None:
             self._focus_prompt()
             return
@@ -446,6 +544,87 @@ class GekaiApp(App[None]):
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(stripped), exclusive=True)
 
+    async def _run_ws_explorer(self, conversation: ScrollableContainer) -> None:
+        """Run WsExplorer and update session workspace context."""
+        explorer = self._agent.create_ws_explorer(self._working_dir)
+        renderer: SubAgentRenderer | None = None
+        try:
+            async for event in explorer.run():
+                if isinstance(event, SubAgentStartEvent):
+                    await self._start_status_animation("scanning workspace", random_accent_color())
+                    renderer = SubAgentRenderer(conversation)
+                    await renderer.start(event.name, event.description, event.color)
+                elif isinstance(event, StatusUpdateEvent) and renderer:
+                    await renderer.status_update(event)
+                elif isinstance(event, LogEvent) and renderer:
+                    await renderer.log(event.message)
+                elif isinstance(event, InferEndEvent) and renderer:
+                    renderer.accumulate_tokens(event)
+                elif isinstance(event, DoneEvent) and renderer:
+                    await renderer.done()
+        except Exception as error:
+            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"workspace scan error: {error}"))
+            conversation.scroll_end(animate=False)
+        finally:
+            await self._stop_status_animation()
+        if explorer.workspace:
+            self._workspace = explorer.workspace
+            if self._session is not None:
+                self._agent.update_workspace_context(self._session, explorer.workspace)
+
+    async def _maybe_rescan_workspace(self, conversation: ScrollableContainer) -> None:
+        """Run workspace re-scan activation logic. Updates session and self._workspace if scan fires."""
+        cache_path = self._working_dir / ".gekai" / "workspace.json"
+        if not cache_path.exists():
+            # Onboarding fallback — should not normally happen here
+            await self._run_ws_explorer(conversation)
+            return
+
+        try:
+            scan_state = json.loads(cache_path.read_text(encoding="utf-8")).get("scan_state", {})
+        except (OSError, ValueError):
+            scan_state = {}
+
+        timestamp_str = scan_state.get("timestamp", "")
+        staleness_min = load_ws_scan_staleness_min(self._working_dir)
+        staleness_sec = staleness_min * 60
+
+        try:
+            ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            elapsed = (datetime.now(timezone.utc) - ts).total_seconds()
+        except (ValueError, TypeError):
+            elapsed = float("inf")
+
+        if elapsed <= staleness_sec:
+            return  # fresh — skip
+
+        # Stale: check git state
+        commit_hash, dirty = await asyncio.to_thread(_get_git_state, self._working_dir)
+        cached_hash = scan_state.get("commit_hash")
+        cached_uncommitted = scan_state.get("uncommitted", False)
+
+        if commit_hash == cached_hash and dirty == cached_uncommitted:
+            # Git unchanged — silently refresh timestamp
+            await asyncio.to_thread(_refresh_scan_timestamp, cache_path)
+            return
+
+        # Git changed — throttle check
+        asked_str = scan_state.get("asked_timestamp", "")
+        if asked_str:
+            try:
+                asked_ts = datetime.fromisoformat(asked_str.replace("Z", "+00:00"))
+                since_asked = (datetime.now(timezone.utc) - asked_ts).total_seconds()
+                if since_asked < staleness_sec:
+                    return  # throttled
+            except (ValueError, TypeError):
+                pass
+
+        # Ask user
+        await asyncio.to_thread(_write_asked_timestamp, cache_path)
+        answer = await self._ask_inline("Workspace may have changed. Scan again? [y/N]")
+        if answer.lower() in ("y", "yes"):
+            await self._run_ws_explorer(conversation)
+
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
         verb = random_operative_verb()
@@ -484,6 +663,10 @@ class GekaiApp(App[None]):
                 self._current_lang = new_lang
                 lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
                 self._session.messages.append({"role": "system", "content": lang_hint})
+            # Activation: check workspace staleness before any QUERY+plan
+            if any(intent == Intent.QUERY and plan for intent, _, plan in segments):
+                await self._maybe_rescan_workspace(conversation)
+                await self._start_status_animation(verb[0], color)
             async for item in self._agent.process_stream(self._session, normalized, segments, original_input=user_input):
                 if isinstance(item, str):
                     answer_chunks.append(item)
@@ -498,6 +681,8 @@ class GekaiApp(App[None]):
                                 query_tool_count += 1
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)
+                        elif isinstance(item, StatusUpdateEvent):
+                            await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):
                             await ws_renderer.done()
             answer = "".join(answer_chunks).rstrip("\n")
@@ -521,31 +706,15 @@ class GekaiApp(App[None]):
             self._focus_prompt()
 
     async def _rebuild_workspace(self) -> None:
-        color = random_accent_color()
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
-            explorer = self._agent.create_ws_explorer(self._working_dir, force=True)
-            renderer: SubAgentRenderer | None = None
-            async for event in explorer.run():
-                if isinstance(event, SubAgentStartEvent):
-                    await self._start_status_animation("scanning workspace", color)
-                    renderer = SubAgentRenderer(conversation)
-                    await renderer.start(event.name, event.description, event.color)
-                elif isinstance(event, LogEvent) and renderer:
-                    await renderer.log(event.message)
-                elif isinstance(event, InferEndEvent) and renderer:
-                    renderer.accumulate_tokens(event)
-                elif isinstance(event, DoneEvent) and renderer:
-                    await renderer.done()
-            if explorer.workspace:
-                self._workspace = explorer.workspace
-            self._session = self._agent.start_session(self._workspace)
+            await self._run_ws_explorer(conversation)
+            self._session = self._agent.start_session(self._workspace or {})
             conversation.scroll_end(animate=False)
         except Exception as error:
             await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"error: {error}"))
             conversation.scroll_end(animate=False)
         finally:
-            await self._stop_status_animation()
             self._worker = None
             self._focus_prompt()
 
