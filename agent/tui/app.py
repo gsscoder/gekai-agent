@@ -133,7 +133,6 @@ class SubAgentRenderer:
         prefix = "  ⎿" if self._first_item else "   "
         self._first_item = False
         await self._conversation.mount(Static(f"{prefix} Done ({summary})"))
-        await self._conversation.mount(Static("", classes="assistant-spacer"))
         self._conversation.scroll_end(animate=False)
 
 
@@ -328,6 +327,7 @@ class GekaiApp(App[None]):
         self._current_lang: str = "EN"
         self._esc_pending: bool = False
         self._pending_question: asyncio.Future[str] | None = None
+        self._pending_yesno: asyncio.Future[bool] | None = None
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -485,7 +485,26 @@ class GekaiApp(App[None]):
         bar.display = True
         return await self._pending_question
 
+    async def _ask_yesno(self, question: str) -> bool:
+        loop = asyncio.get_event_loop()
+        self._pending_yesno = loop.create_future()
+        bar = self.query_one("#question-bar", Static)
+        bar.update(question)
+        bar.display = True
+        return await self._pending_yesno
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._pending_yesno is not None and not self._pending_yesno.done():
+            answer = event.value.strip().lower()
+            event.input.value = ""
+            bar = self.query_one("#question-bar", Static)
+            bar.display = False
+            bar.update("")
+            future = self._pending_yesno
+            self._pending_yesno = None
+            future.set_result(answer in ("y", "yes"))
+            self._focus_prompt()
+            return
         if self._pending_question is not None and not self._pending_question.done():
             answer = event.value.strip()
             event.input.value = ""
@@ -621,8 +640,7 @@ class GekaiApp(App[None]):
 
         # Ask user
         await asyncio.to_thread(_write_asked_timestamp, cache_path)
-        answer = await self._ask_inline("Workspace may have changed. Scan again? [y/N]")
-        if answer.lower() in ("y", "yes"):
+        if await self._ask_yesno("Workspace changed — rescan? [y/N]"):
             await self._run_ws_explorer(conversation)
 
     async def _stream(self, user_input: str) -> None:
@@ -665,6 +683,7 @@ class GekaiApp(App[None]):
                 self._session.messages.append({"role": "system", "content": lang_hint})
             # Activation: check workspace staleness before any QUERY+plan
             if any(intent == Intent.QUERY and plan for intent, _, plan in segments):
+                await self._stop_status_animation()
                 await self._maybe_rescan_workspace(conversation)
                 await self._start_status_animation(verb[0], color)
             async for item in self._agent.process_stream(self._session, normalized, segments, original_input=user_input):
