@@ -10,3 +10,4 @@ dist/
 .claude/
 .claude/agents/
 _agents/
+.vscode/

@@ -13,9 +13,10 @@ from ..subagent import DoneEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
 from ..tools import make_tools
 
 _TOOL_INSTRUCTION = (
-    "if the answer is not already present in this conversation, "
-    "you MUST call the available tools to inspect the repository before responding — "
-    "do not rely on training knowledge about the codebase"
+    "the <workspace> block contains verified metadata about this repository: proj_brief, tech_stack, primary_languages, branch, and domain_map; "
+    "if these fields fully answer the question, respond directly without using tools; "
+    "if the question requires file contents, implementation details, logic, or architecture depth, "
+    "you MUST use tools to read actual files — do not guess or rely on training knowledge"
 )
 
 _QUERY_COLOR = "#4169E1"
