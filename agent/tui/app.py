@@ -19,7 +19,7 @@ from agent.router import Intent, Session
 from agent.settings import load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
+from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
@@ -826,24 +826,3 @@ class GekaiApp(App[None]):
 
         self._clear_status()
         self._focus_prompt()
-
-
-class _PlaceholderApp(App[None]):
-    CSS = GekaiApp.CSS
-
-    def compose(self) -> ComposeResult:
-        yield ScrollableContainer(id="conversation")
-        yield Input(placeholder="Message...", id="prompt")
-
-    async def on_mount(self) -> None:
-        conversation = self.query_one("#conversation", ScrollableContainer)
-        await conversation.mount(Static("gekai TUI — placeholder"))
-        await conversation.mount(Static("Type a message below and press Enter."))
-
-
-def main() -> None:
-    _PlaceholderApp().run()
-
-
-if __name__ == "__main__":
-    main()

@@ -8,7 +8,7 @@ import openai
 from openai import AsyncOpenAI
 
 from .enrichment import EnrichmentResult, enrich_workspace, _get_git_state
-from ..subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferStartEvent, InferDeltaEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
+from ..subagent import SubAgent, SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
 from ..workspace import scan_workspace
 
 
@@ -56,12 +56,6 @@ class WsExplorer(SubAgent):
         async def on_file(filename: str, line_count: int) -> None:
             await queue.put(LogEvent(message=f"Read {filename} ({line_count} lines)"))
 
-        async def on_infer_start() -> None:
-            await queue.put(InferStartEvent())
-
-        async def on_infer_delta(completion_tokens: int) -> None:
-            await queue.put(InferDeltaEvent(completion_tokens=completion_tokens))
-
         async def on_infer_end(prompt_tokens: int, completion_tokens: int) -> None:
             await queue.put(InferEndEvent(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens))
 
@@ -74,8 +68,6 @@ class WsExplorer(SubAgent):
                     commit_hash=commit_hash,
                     dirty=dirty,
                     on_file=on_file,
-                    on_infer_start=on_infer_start,
-                    on_infer_delta=on_infer_delta,
                     on_infer_end=on_infer_end,
                 )
             except openai.APIError as exc:

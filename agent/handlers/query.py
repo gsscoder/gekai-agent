@@ -46,23 +46,6 @@ class QueryHandler:
         self._api_key = api_key
         self._api_base = api_base
 
-    async def handle(self, session: Session, user_input: str) -> str:
-        adapter = OpenAIAdapter(api_key=self._api_key, base_url=self._api_base)
-        agent = Agent(
-            provider=adapter,
-            model=self._model,
-            system=f"{SYSTEM_PROMPT}\n\n{_TOOL_INSTRUCTION}",
-        )
-        for t in make_tools(session.working_dir):
-            agent.tools.register(t)
-        prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
-        prior.append(Message(role="user", content=user_input))
-        history = await agent.run(prior)
-        last = history[-1]
-        if isinstance(last.content, list):
-            return "\n".join(b.text for b in last.content if isinstance(b, TextBlock))
-        return last.content or ""
-
     async def stream(self, session: Session, user_input: str) -> AsyncIterator[SubAgentEvent | str]:
         bus = EventBus()
         adapter = OpenAIAdapter(api_key=self._api_key, base_url=self._api_base)

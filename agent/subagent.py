@@ -26,18 +26,6 @@ class LogEvent(SubAgentEvent):
 
 
 @dataclass
-class InferStartEvent(SubAgentEvent):
-    """An LLM call is about to start. TUI should show verb+spinner."""
-    pass
-
-
-@dataclass
-class InferDeltaEvent(SubAgentEvent):
-    """A streamed chunk arrived mid-LLM-call. Carries running completion-token estimate."""
-    completion_tokens: int | None = None
-
-
-@dataclass
 class InferEndEvent(SubAgentEvent):
     """An LLM call finished. TUI should show token counts."""
     prompt_tokens: int | None = None

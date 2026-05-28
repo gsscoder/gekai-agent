@@ -282,8 +282,6 @@ async def enrich_workspace(
     commit_hash: str | None,
     dirty: bool,
     on_file: Callable[[str, int], Awaitable[None]] | None = None,
-    on_infer_start: Callable[[], Awaitable[None]] | None = None,
-    on_infer_delta: Callable[[int], Awaitable[None]] | None = None,
     on_infer_end: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> EnrichmentResult:
     async def _notify(path: Path) -> None:
@@ -356,8 +354,6 @@ async def enrich_workspace(
             "excerpts:\n"
             f"{combined_snippets}"
         )
-        if on_infer_start:
-            await on_infer_start()
         stream = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -370,8 +366,6 @@ async def enrich_workspace(
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 text += chunk.choices[0].delta.content
-                if on_infer_delta:
-                    await on_infer_delta(max(0, round(len(text) / 4)))
             if chunk.usage:
                 p_tokens = chunk.usage.prompt_tokens or 0
                 c_tokens = chunk.usage.completion_tokens or 0
@@ -394,8 +388,6 @@ async def enrich_workspace(
             "files:\n"
             f"{file_list_text}"
         )
-        if on_infer_start:
-            await on_infer_start()
         domain_stream = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": domain_prompt}],
@@ -408,8 +400,6 @@ async def enrich_workspace(
         async for chunk in domain_stream:
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 text += chunk.choices[0].delta.content
-                if on_infer_delta:
-                    await on_infer_delta(max(0, round(len(text) / 4)))
             if chunk.usage:
                 p_tokens = chunk.usage.prompt_tokens or 0
                 c_tokens = chunk.usage.completion_tokens or 0
