@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyfiglet
-from textual import events
+from textual import events, on
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
+from textual.message import Message
 from textual.widgets import Input, ProgressBar, Static
 from textual.worker import Worker
 
@@ -25,6 +27,17 @@ from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEnd
 from .palette import CommandPalette
 from .permissions import PermissionScreen
 from .widgets import MessageKind, MessageWidget
+
+
+class ConversationContainer(ScrollableContainer):
+    class Scrolled(Message):
+        def __init__(self, at_end: bool) -> None:
+            super().__init__()
+            self.at_end = at_end
+
+    def watch_scroll_y(self, scroll_y: float) -> None:
+        at_end = scroll_y >= self.max_scroll_y or self.max_scroll_y <= 0
+        self.post_message(self.Scrolled(at_end=at_end))
 
 
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
@@ -313,11 +326,28 @@ class GekaiApp(App[None]):
         text-align: left;
         padding: 0 0 0 2;
     }
+
+    #scroll-hint-wrap {
+        height: 1;
+        align-horizontal: center;
+        background: ansi_default;
+        margin-bottom: 1;
+        display: none;
+    }
+
+    #scroll-hint {
+        height: 1;
+        background: #555555;
+        color: white;
+        width: auto;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
         ("escape", "cancel_stream", "Cancel"),
         ("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+down", "scroll_to_end", "Scroll to bottom", priority=True),
     ]
 
     def __init__(
@@ -359,13 +389,15 @@ class GekaiApp(App[None]):
         self.ansi_color = True
 
     def compose(self) -> ComposeResult:
-        yield ScrollableContainer(id="conversation")
+        yield ConversationContainer(id="conversation")
         with Container(id="footer"):
             yield Static("", id="question-bar")
             yield Static("", id="status-line")
             yield Static("", id="status-spacer")
             yield CommandPalette(self._command_registry, id="command-palette")
             yield Static("", id="hint-area")
+            with Container(id="scroll-hint-wrap"):
+                yield Static("Scroll to bottom  ctrl+↓", id="scroll-hint")
             with Container(id="input-area"):
                 yield Input(id="prompt", compact=True)
                 yield Static("❯", id="prompt-marker")
@@ -430,6 +462,7 @@ class GekaiApp(App[None]):
                     await conversation.mount(MessageWidget(MessageKind.USER, content))
                 elif role == "assistant":
                     await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
+            self.call_after_refresh(conversation.scroll_end)
 
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
@@ -821,6 +854,10 @@ class GekaiApp(App[None]):
         hint.update("")
         hint.display = False
 
+    def on_conversation_container_scrolled(self, event: ConversationContainer.Scrolled) -> None:
+        is_streaming = self._worker is not None and not self._worker.is_finished
+        self.query_one("#scroll-hint-wrap", Container).display = not event.at_end and not is_streaming
+
     def action_cancel_stream(self) -> None:
         palette = self.query_one(CommandPalette)
         if palette.display:
@@ -834,6 +871,14 @@ class GekaiApp(App[None]):
             self._clear_status()
             self._focus_prompt()
             return
+
+    def action_scroll_to_end(self) -> None:
+        self.query_one("#conversation", ConversationContainer).scroll_end(animate=False)
+
+    @on(events.Click, "#scroll-hint")
+    def _scroll_hint_clicked(self, event: events.Click) -> None:
+        event.stop()
+        self.action_scroll_to_end()
 
         prompt = self.query_one("#prompt", Input)
         if self._esc_pending:
