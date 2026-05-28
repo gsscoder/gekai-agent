@@ -15,6 +15,7 @@ from textual.message import Message
 from textual.widgets import Input, ProgressBar, Static
 from textual.worker import Worker
 
+from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import now_utc_str
@@ -194,6 +195,14 @@ def _fmt_context_pct(prompt_tokens: int, limit: int) -> str:
     return f"{pct}% context"
 
 
+def _fmt_status_bar(model: str, working_dir: str, branch: str | None, prompt_tokens: int, limit: int) -> str:
+    pct = _fmt_context_pct(prompt_tokens, limit)
+    location = f"📁 {working_dir}"
+    if branch:
+        location += f" [⎇ {branch}]"
+    return f"[dim]\\[{model}][/dim] | {location} | [dim]{pct}[/dim]"
+
+
 def _estimate_session_tokens(session: Session) -> int:
     # Includes transcript + persistent system messages ([preference], [artifact], <lang>).
     # Artifacts from prior Query turns are what make this number grow meaningfully.
@@ -327,6 +336,13 @@ class GekaiApp(App[None]):
         padding: 0 0 0 2;
     }
 
+    #version-bar {
+        height: 1;
+        background: ansi_default;
+        text-align: right;
+        padding: 0 2 0 0;
+    }
+
     #scroll-hint-wrap {
         height: 1;
         align-horizontal: center;
@@ -402,6 +418,7 @@ class GekaiApp(App[None]):
                 yield Input(id="prompt", compact=True)
                 yield Static("❯", id="prompt-marker")
             yield Static("", id="context-bar")
+            yield Static(f"[dim]{__version_core__}[/dim] [bold white]{__version_label__}[/bold white]", id="version-bar")
 
     async def on_mount(self) -> None:
         if self._needs_permissions:
@@ -423,12 +440,6 @@ class GekaiApp(App[None]):
 
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
-        await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"gekai v{self._version}"))
-        if self._branch:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"{self._working_dir.name} | {self._branch}"))
-        else:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, self._working_dir.name))
-
         cache_path = self._working_dir / ".gekai" / "workspace.json"
         workspace: dict = {}
 
@@ -451,7 +462,7 @@ class GekaiApp(App[None]):
         override = load_context_limit(self._working_dir)
         self._context_limit = override if override is not None else _context_limit(self._agent.model)
         self.query_one("#context-bar", Static).update(
-            _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)
+            _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
 
         if self._restored_messages:
@@ -472,17 +483,12 @@ class GekaiApp(App[None]):
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
         self.query_one("#context-bar", Static).update(
-            _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)
+            _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
         self._current_lang = "EN"
         self._assistant_widget = None
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
-        await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"gekai v{self._version}"))
-        if self._branch:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"{self._working_dir.name} | {self._branch}"))
-        else:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, self._working_dir.name))
         self._focus_prompt()
 
     @property
