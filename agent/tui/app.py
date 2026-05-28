@@ -15,6 +15,7 @@ from textual.worker import Worker
 
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
+from agent.persistence import now_utc_str
 from agent.router import Intent, Session
 from agent.settings import load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.ws_explorer.enrichment import _get_git_state
@@ -29,27 +30,13 @@ from .widgets import MessageKind, MessageWidget
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
 
 
-def _write_asked_timestamp(cache_path: Path) -> None:
+def _update_scan_state_key(cache_path: Path, key: str, value: str) -> None:
     try:
         existing = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         existing = {}
     scan_state = existing.get("scan_state", {})
-    scan_state["asked_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    existing["scan_state"] = scan_state
-    try:
-        cache_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    except OSError:
-        pass
-
-
-def _refresh_scan_timestamp(cache_path: Path) -> None:
-    try:
-        existing = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        existing = {}
-    scan_state = existing.get("scan_state", {})
-    scan_state["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    scan_state[key] = value
     existing["scan_state"] = scan_state
     try:
         cache_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -373,28 +360,8 @@ class GekaiApp(App[None]):
         workspace: dict = {}
 
         if not cache_path.exists():
-            explorer = self._agent.create_ws_explorer(self._working_dir)
-            renderer: SubAgentRenderer | None = None
-            try:
-                async for event in explorer.run():
-                    if isinstance(event, SubAgentStartEvent):
-                        await self._start_status_animation("scanning workspace", random_accent_color())
-                        renderer = SubAgentRenderer(conversation)
-                        await renderer.start(event.name, event.description, event.color)
-                    elif isinstance(event, StatusUpdateEvent) and renderer:
-                        await renderer.status_update(event)
-                    elif isinstance(event, LogEvent) and renderer:
-                        await renderer.log(event.message)
-                    elif isinstance(event, InferEndEvent) and renderer:
-                        renderer.accumulate_tokens(event)
-                    elif isinstance(event, DoneEvent) and renderer:
-                        await renderer.done()
-            except Exception as error:
-                await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"workspace scan error: {error}"))
-                conversation.scroll_end(animate=False)
-            finally:
-                await self._stop_status_animation()
-            workspace = explorer.workspace or {}
+            await self._run_ws_explorer(conversation)
+            workspace = self._workspace
         else:
             try:
                 workspace = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -586,10 +553,9 @@ class GekaiApp(App[None]):
             conversation.scroll_end(animate=False)
         finally:
             await self._stop_status_animation()
-        if explorer.workspace:
-            self._workspace = explorer.workspace
-            if self._session is not None:
-                self._agent.update_workspace_context(self._session, explorer.workspace)
+        self._workspace = explorer.workspace or {}
+        if self._workspace and self._session is not None:
+            self._agent.update_workspace_context(self._session, self._workspace)
 
     async def _maybe_rescan_workspace(self, conversation: ScrollableContainer) -> None:
         """Run workspace re-scan activation logic. Updates session and self._workspace if scan fires."""
@@ -624,7 +590,7 @@ class GekaiApp(App[None]):
 
         if commit_hash == cached_hash and dirty == cached_uncommitted:
             # Git unchanged — silently refresh timestamp
-            await asyncio.to_thread(_refresh_scan_timestamp, cache_path)
+            await asyncio.to_thread(_update_scan_state_key, cache_path, "timestamp", now_utc_str())
             return
 
         # Git changed — throttle check
@@ -639,7 +605,7 @@ class GekaiApp(App[None]):
                 pass
 
         # Ask user
-        await asyncio.to_thread(_write_asked_timestamp, cache_path)
+        await asyncio.to_thread(_update_scan_state_key, cache_path, "asked_timestamp", now_utc_str())
         if await self._ask_yesno("Workspace changed — rescan? [y/N]"):
             await self._run_ws_explorer(conversation)
 

@@ -7,12 +7,12 @@ import re
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from ..manifest_parsers import extract_tech_stack, _parse_csproj
+from ..persistence import now_utc_str
 from ..workspace import _SKIP_DIRS
 
 
@@ -420,7 +420,7 @@ async def enrich_workspace(
     existing["tech_stack"] = tech_stack
     existing["domain_map"] = domain_map
     existing["scan_state"] = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "timestamp": now_utc_str(),
         "commit_hash": commit_hash,
         "uncommitted": dirty,
     }

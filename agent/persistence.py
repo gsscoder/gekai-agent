@@ -6,7 +6,7 @@ from pathlib import Path
 from .router import Session
 
 
-def _now() -> str:
+def now_utc_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
@@ -24,7 +24,7 @@ def session_file(session: Session) -> Path:
 def append_message(session: Session, message: dict) -> None:
     path = session_file(session)
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"timestamp": _now(), **message}, separators=(",", ":")) + "\n")
+        fh.write(json.dumps({"timestamp": now_utc_str(), **message}, separators=(",", ":")) + "\n")
 
 
 def append_debug(session: Session, message: dict) -> None:
@@ -32,7 +32,7 @@ def append_debug(session: Session, message: dict) -> None:
     base.mkdir(parents=True, exist_ok=True)
     path = base / f"{session.id}.debug.jsonl"
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"timestamp": _now(), "content": message["content"]}, separators=(",", ":")) + "\n")
+        fh.write(json.dumps({"timestamp": now_utc_str(), "content": message["content"]}, separators=(",", ":")) + "\n")
 
 
 def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] | None:
