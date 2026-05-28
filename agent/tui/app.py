@@ -27,7 +27,7 @@ from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEnd
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
-from .widgets import MessageKind, MessageWidget
+from .widgets import ChoiceBar, MessageKind, MessageWidget
 
 
 class ConversationContainer(ScrollableContainer):
@@ -235,14 +235,6 @@ class GekaiApp(App[None]):
         background: ansi_default;
     }
 
-    #question-bar {
-        height: 1;
-        background: ansi_default;
-        color: orange;
-        padding: 0 1 0 0;
-        display: none;
-    }
-
     #status-line {
         height: 1;
         background: ansi_default;
@@ -398,8 +390,7 @@ class GekaiApp(App[None]):
         self._status_start: float = 0.0
         self._current_lang: str = "EN"
         self._esc_pending: bool = False
-        self._pending_question: asyncio.Future[str] | None = None
-        self._pending_yesno: asyncio.Future[bool] | None = None
+        self._pending_choice: asyncio.Future[str | None] | None = None
         self._context_limit: int = 128_000
         super().__init__(**kwargs)
         self.ansi_color = True
@@ -407,7 +398,7 @@ class GekaiApp(App[None]):
     def compose(self) -> ComposeResult:
         yield ConversationContainer(id="conversation")
         with Container(id="footer"):
-            yield Static("", id="question-bar")
+            yield ChoiceBar(id="choice-bar")
             yield Static("", id="status-line")
             yield Static("", id="status-spacer")
             yield CommandPalette(self._command_registry, id="command-palette")
@@ -514,6 +505,15 @@ class GekaiApp(App[None]):
             self._clear_hint()
 
     def on_key(self, event: events.Key) -> None:
+        choice_bar = self.query_one(ChoiceBar)
+        if choice_bar.display and event.key in ("left", "right", "up", "down"):
+            if event.key in ("left", "up"):
+                choice_bar.move_left()
+            else:
+                choice_bar.move_right()
+            event.stop()
+            return
+
         palette = self.query_one(CommandPalette)
         if palette.display and event.key in ("up", "down"):
             if event.key == "up":
@@ -533,46 +533,26 @@ class GekaiApp(App[None]):
         prompt.insert_text_at_cursor(event.character)
         event.stop()
 
-    async def _ask_inline(self, question: str) -> str:
+    async def _ask_choice(
+        self,
+        question: str,
+        options: list[tuple[str, str]],
+        default_index: int = 0,
+    ) -> str | None:
         loop = asyncio.get_event_loop()
-        self._pending_question = loop.create_future()
-        bar = self.query_one("#question-bar", Static)
-        bar.update(question)
-        bar.display = True
-        return await self._pending_question
-
-    async def _ask_yesno(self, question: str) -> bool:
-        loop = asyncio.get_event_loop()
-        self._pending_yesno = loop.create_future()
-        bar = self.query_one("#question-bar", Static)
-        bar.update(question)
-        bar.display = True
-        return await self._pending_yesno
+        self._pending_choice = loop.create_future()
+        self.query_one(ChoiceBar).show(question, options, default_index)
+        return await self._pending_choice
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self._pending_yesno is not None and not self._pending_yesno.done():
-            answer = event.value.strip().lower()
+        if self._pending_choice is not None and not self._pending_choice.done():
             event.input.value = ""
-            bar = self.query_one("#question-bar", Static)
-            bar.display = False
-            bar.update("")
-            future = self._pending_yesno
-            self._pending_yesno = None
-            future.set_result(answer in ("y", "yes"))
-            self._focus_prompt()
-            return
-        if self._pending_question is not None and not self._pending_question.done():
-            answer = event.value.strip()
-            event.input.value = ""
-            bar = self.query_one("#question-bar", Static)
-            bar.display = False
-            bar.update("")
-            future = self._pending_question
-            self._pending_question = None
-            conversation = self.query_one("#conversation", ScrollableContainer)
-            await conversation.mount(MessageWidget(MessageKind.USER, answer or "n"))
-            conversation.scroll_end(animate=False)
-            future.set_result(answer or "n")
+            choice_bar = self.query_one(ChoiceBar)
+            key = choice_bar.selected_key
+            choice_bar.hide()
+            future = self._pending_choice
+            self._pending_choice = None
+            future.set_result(key)
             self._focus_prompt()
             return
         if self._session is None:
@@ -695,7 +675,7 @@ class GekaiApp(App[None]):
 
         # Ask user
         await asyncio.to_thread(_update_scan_state_key, cache_path, "asked_timestamp", now_utc_str())
-        if await self._ask_yesno("Workspace changed — rescan? [y/N]"):
+        if await self._ask_choice("Workspace changed — rescan?", [("y", "Yes"), ("n", "No")]) == "y":
             await self._run_ws_explorer(conversation)
 
     async def _stream(self, user_input: str) -> None:
@@ -865,6 +845,13 @@ class GekaiApp(App[None]):
         self.query_one("#scroll-hint-wrap", Container).display = not event.at_end and not is_streaming
 
     def action_cancel_stream(self) -> None:
+        if self._pending_choice is not None and not self._pending_choice.done():
+            self.query_one(ChoiceBar).hide()
+            future = self._pending_choice
+            self._pending_choice = None
+            future.set_result(None)
+            return
+
         palette = self.query_one(CommandPalette)
         if palette.display:
             self.query_one("#prompt", Input).value = ""
