@@ -17,7 +17,7 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import now_utc_str
 from agent.router import Intent, Session
-from agent.settings import load_ws_scan_staleness_min, resolve_permissions, save_permissions
+from agent.settings import load_context_limit, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
 from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
@@ -156,6 +156,37 @@ def _fmt_status(verb: str, elapsed: float) -> str:
     return f"{verb.capitalize()}... [white]({_fmt_elapsed(elapsed)} · thinking)[/white]"
 
 
+_CONTEXT_LIMITS: dict[str, int] = {
+    "gpt-4o": 128_000,
+    "gpt-4-turbo": 128_000,
+    "gpt-4": 8_192,
+    "gpt-3.5": 16_385,
+    "claude": 200_000,
+    "gemini-1.5": 1_048_576,
+    "gemini-2": 1_048_576,
+    "deepseek-chat": 128_000,
+}
+
+
+def _context_limit(model: str) -> int:
+    lower = model.lower()
+    for key, limit in _CONTEXT_LIMITS.items():
+        if key in lower:
+            return limit
+    return 128_000
+
+
+def _fmt_context_pct(prompt_tokens: int, limit: int) -> str:
+    pct = round(prompt_tokens / limit * 100, 1)
+    return f"{pct}% context"
+
+
+def _estimate_session_tokens(session: Session) -> int:
+    # Includes transcript + persistent system messages ([preference], [artifact], <lang>).
+    # Artifacts from prior Query turns are what make this number grow meaningfully.
+    return sum(len(str(m.get("content") or "")) for m in session.messages) // 4
+
+
 class GekaiApp(App[None]):
     CSS = """
     App {
@@ -178,7 +209,7 @@ class GekaiApp(App[None]):
     #footer {
         dock: bottom;
         height: auto;
-        padding-bottom: 2;
+        padding-bottom: 1;
         background: ansi_default;
     }
 
@@ -274,6 +305,14 @@ class GekaiApp(App[None]):
         width: 5;
         color: grey;
     }
+
+    #context-bar {
+        height: 1;
+        background: ansi_default;
+        color: grey;
+        text-align: left;
+        padding: 0 0 0 2;
+    }
     """
 
     BINDINGS = [
@@ -315,6 +354,7 @@ class GekaiApp(App[None]):
         self._esc_pending: bool = False
         self._pending_question: asyncio.Future[str] | None = None
         self._pending_yesno: asyncio.Future[bool] | None = None
+        self._context_limit: int = 128_000
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -329,6 +369,7 @@ class GekaiApp(App[None]):
             with Container(id="input-area"):
                 yield Input(id="prompt", compact=True)
                 yield Static("❯", id="prompt-marker")
+            yield Static("", id="context-bar")
 
     async def on_mount(self) -> None:
         if self._needs_permissions:
@@ -375,6 +416,12 @@ class GekaiApp(App[None]):
             session_id=self._restored_id,
         )
 
+        override = load_context_limit(self._working_dir)
+        self._context_limit = override if override is not None else _context_limit(self._agent.model)
+        self.query_one("#context-bar", Static).update(
+            _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)
+        )
+
         if self._restored_messages:
             for msg in self._restored_messages:
                 role = msg.get("role")
@@ -391,6 +438,9 @@ class GekaiApp(App[None]):
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
+        self.query_one("#context-bar", Static).update(
+            _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)
+        )
         self._current_lang = "EN"
         self._assistant_widget = None
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
@@ -615,7 +665,6 @@ class GekaiApp(App[None]):
         color = random_accent_color()
         conversation = self.query_one("#conversation", ScrollableContainer)
         answer_chunks: list[str] = []
-        completion_tokens: int = 0
         ws_renderer: SubAgentRenderer | None = None
         query_tool_count: int = 0
 
@@ -670,6 +719,10 @@ class GekaiApp(App[None]):
                             await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):
                             await ws_renderer.done()
+            if self._session is not None:
+                self.query_one("#context-bar", Static).update(
+                    _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)
+                )
             answer = "".join(answer_chunks).rstrip("\n")
             self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
             await conversation.mount(self._assistant_widget)

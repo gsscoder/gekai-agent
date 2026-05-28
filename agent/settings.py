@@ -73,6 +73,17 @@ def resolve_permissions(choice: str) -> Permissions | None:
     return None
 
 
+def load_context_limit(working_dir: Path) -> int | None:
+    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
+        try:
+            val = json.loads(path.read_text()).get("context_limit")
+            if isinstance(val, int) and val > 0:
+                return val
+        except (OSError, ValueError):
+            pass
+    return None
+
+
 def load_ws_scan_staleness_min(working_dir: Path) -> float:
     local_path = _settings_path(working_dir)
     try:

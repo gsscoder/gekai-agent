@@ -12,7 +12,7 @@ from .handlers.action import ActionHandler
 from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.display import DisplayHandler
-from .handlers.query import QueryHandler
+from .handlers.query import Artifact, QueryHandler
 from .normalizer import PromptNormalizer
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
@@ -141,6 +141,7 @@ class GekaiAgent:
         append_message(session, session.messages[-1])
         all_chunks: list[str] = []
         first = True
+        artifact_content: str | None = None
 
         for intent, sub_prompt, plan in segments:
             if not first:
@@ -162,6 +163,8 @@ class GekaiAgent:
                     async for item in handler.stream(session, user_input):
                         if isinstance(item, str):
                             all_chunks.append(item)
+                        elif isinstance(item, Artifact):
+                            artifact_content = item.content
                         yield item
                 else:
                     result = await handler.handle(session, user_input)
@@ -174,11 +177,32 @@ class GekaiAgent:
                     async for item in handler.stream(session, sub_prompt):
                         if isinstance(item, str):
                             all_chunks.append(item)
+                        elif isinstance(item, Artifact):
+                            artifact_content = item.content
                         yield item
                 else:
                     result = await handler.handle(session, sub_prompt)
                     all_chunks.append(result)
                     yield result
 
+        if artifact_content:
+            _append_bounded_artifact(session, artifact_content)
+
         session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
         append_message(session, session.messages[-1])
+
+
+def _append_bounded_artifact(session: Session, content: str) -> None:
+    """Keep at most the last 8 [artifact] system messages in the in-memory transcript."""
+    # Collect non-artifact messages + the most recent 7 artifacts, then append the new one
+    non_artifacts = []
+    recent_artifacts = []
+    for m in session.messages:
+        if m.get("role") == "system" and (m.get("content") or "").startswith("[artifact]"):
+            recent_artifacts.append(m)
+        else:
+            non_artifacts.append(m)
+    # Keep only the last 7 existing artifacts
+    recent_artifacts = recent_artifacts[-7:]
+    session.messages[:] = non_artifacts + recent_artifacts + [{"role": "system", "content": content}]
+    append_message(session, session.messages[-1])

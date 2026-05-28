@@ -3,14 +3,21 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
+from dataclasses import dataclass
+
 from llmstitch import Agent
-from llmstitch.events import EventBus, ToolExecutionStarted
+from llmstitch.events import EventBus, ToolExecutionStarted, UsageUpdated
 from llmstitch.providers.openai import OpenAIAdapter
 from llmstitch.types import Message, TextBlock, ToolUseBlock
 
 from ..router import Session, SYSTEM_PROMPT
-from ..subagent import DoneEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
+from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
 from ..tools import make_tools
+
+
+@dataclass
+class Artifact:
+    content: str
 
 _TOOL_INSTRUCTION = (
     "the <workspace> block contains verified metadata about this repository: proj_brief, tech_stack, primary_languages, branch, and domain_map; "
@@ -58,12 +65,17 @@ class QueryHandler:
         for t in make_tools(session.working_dir):
             agent.tools.register(t)
 
-        queue: asyncio.Queue[LogEvent | None] = asyncio.Queue()
+        queue: asyncio.Queue[LogEvent | InferEndEvent | None] = asyncio.Queue()
 
         async def _consume_bus() -> None:
             async for event in bus.stream():
                 if isinstance(event, ToolExecutionStarted):
                     await queue.put(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
+                elif isinstance(event, UsageUpdated) and event.delta:
+                    await queue.put(InferEndEvent(
+                        prompt_tokens=event.delta.get("input_tokens"),
+                        completion_tokens=event.delta.get("output_tokens"),
+                    ))
             await queue.put(None)
 
         yield SubAgentStartEvent(name="Query", description="Inspecting workspace", color=_QUERY_COLOR)
@@ -89,3 +101,40 @@ class QueryHandler:
             text = last.content or ""
         if text:
             yield text
+
+        artifact = _synthesize_artifact(history)
+        if artifact:
+            yield Artifact(content=f"[artifact] {artifact}")
+
+
+def _synthesize_artifact(history: list) -> str | None:
+    """Very conservative: list files actually read + one short fact from final answer."""
+    files: list[str] = []
+    for msg in history:
+        if hasattr(msg, "content") and isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock) and block.name in ("read_file", "grep", "list_files"):
+                    inp = block.input or {}
+                    if block.name == "read_file" and inp.get("path"):
+                        files.append(inp["path"])
+                    elif block.name == "grep" and inp.get("path"):
+                        files.append(inp["path"])
+    files = list(dict.fromkeys(files))[:6]  # dedup, cap
+
+    final = ""
+    if history:
+        last = history[-1]
+        if isinstance(last.content, list):
+            final = " ".join(b.text for b in last.content if isinstance(b, TextBlock))
+        else:
+            final = last.content or ""
+    summary = (final[:140] + "…") if len(final) > 140 else final
+
+    if not files and not summary:
+        return None
+    parts = []
+    if files:
+        parts.append("files: " + ", ".join(files))
+    if summary:
+        parts.append("summary: " + summary)
+    return "; ".join(parts)

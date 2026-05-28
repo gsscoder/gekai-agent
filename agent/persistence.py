@@ -35,10 +35,21 @@ def append_debug(session: Session, message: dict) -> None:
         fh.write(json.dumps({"timestamp": now_utc_str(), "content": message["content"]}, separators=(",", ":")) + "\n")
 
 
+_PERSISTENT_SYSTEM_PREFIXES = ("[preference]", "[artifact]", "<lang>")
+
+
+def _is_persistent_system_message(m: dict) -> bool:
+    if m.get("role") != "system":
+        return False
+    content = m.get("content") or ""
+    return content.startswith(_PERSISTENT_SYSTEM_PREFIXES)
+
+
 def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] | None:
     """
-    Returns (session_id, user/assistant messages). System messages are re-injected
-    fresh on startup. Returns None if not found.
+    Returns (session_id, user/assistant + persistent system messages).
+    Always-fresh system messages (SYSTEM_PROMPT, workspace) are re-injected on startup.
+    Returns None if not found.
     """
     path = Path.home() / ".gekai" / "workspaces" / _normalize_path(working_dir) / f"{session_id}.jsonl"
     if not path.exists():
@@ -50,8 +61,10 @@ def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] |
             if not line:
                 continue
             m = json.loads(line)
-            if m.get("role") in ("user", "assistant"):
+            if m.get("role") in ("user", "assistant") or _is_persistent_system_message(m):
                 messages.append(m)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     return session_id, messages
+
+

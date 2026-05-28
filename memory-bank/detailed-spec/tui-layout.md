@@ -22,7 +22,8 @@ Textual-based full-screen terminal UI; fixed footer with command palette and inp
 │  Container #input-area                               │  height: 3, layered
 │    Static #prompt-marker   ❯                         │  layer: marker, absolute
 │    Input  #prompt                                    │  layer: input, padding-left: 2
-└──────────────────────────────────────────────────────┘  padding-bottom: 2
+│  Static #context-bar       X.X% context              │  height: 1, left-aligned, grey, padding-left: 2
+└──────────────────────────────────────────────────────┘  padding-bottom: 1
 ```
 All widgets use `background: ansi_default` / `color: ansi_default` for terminal transparency
 
@@ -44,7 +45,7 @@ All widgets use `background: ansi_default` / `color: ansi_default` for terminal 
 1. `main.py` resolves permissions, creates `GekaiApp`, calls `.run()`
 2. `on_mount`: if `needs_permissions` → `push_screen(PermissionScreen, callback=_on_permission_selected)` else → `await _init_session()`
 3. `_on_permission_selected(choice)`: resolves + saves permissions, runs `_init_session()` via worker
-4. `_init_session()`: mounts BANNER + SYSTEM widgets; if `workspace.json` absent runs `WsExplorer` via `SubAgentRenderer` (same event loop as streaming); loads or builds workspace, starts session, replays restored messages as USER/ASSISTANT widgets
+4. `_init_session()`: mounts BANNER + SYSTEM widgets; if `workspace.json` absent runs `WsExplorer` via `SubAgentRenderer` (same event loop as streaming); loads or builds workspace, starts session, replays restored messages as USER/ASSISTANT widgets; updates `#context-bar` from session message estimate
 
 ## Input Handling
 `on_input_submitted`:
@@ -84,6 +85,21 @@ Helper class in `app.py`; one instance per subagent block within a turn.
 - `status_update(event)` — lazily mounts a `ProgressBar` (40% width, no ETA, percentage shown) on first call; subsequent calls update progress/total
 - `accumulate_tokens(event)` — sums `prompt_tokens + completion_tokens` from `InferEndEvent`
 - `done()` — removes the progress bar if present, mounts a summary `Static` with format `⎿ Done ({tokens} tokens · {elapsed})`; elapsed uses `_fmt_duration_verbose` (ms / s / m s)
+
+## Context Bar
+`Static #context-bar`; sits below `#input-area` inside `#footer`; always visible.
+
+Displays `"X.X% context"` — an approximation of how much of the core model's context window the current session consumes.
+
+**Computation**: `sum(len(content) for all session.messages) // 4` (chars ÷ 4 ≈ tokens); divided by `_context_limit(model)`.
+
+**Context limit resolution** (`_context_limit`): checks `GEKAI_CORE_MODEL_CONTEXT_LIMIT` env var first (exact override for exotic models); falls back to prefix matching against a built-in table (`claude` → 200k, `gemini-1.5`/`gemini-2` → 1M, `gpt-4o`/`gpt-4-turbo` → 128k, `gpt-4` → 8k, `gpt-3.5` → 16k); defaults to 128k if no match.
+
+**Update triggers**: `_init_session` (on startup or session restore), `_clear_session` (after `/new`), end of every `_stream` turn.
+
+**Session resume**: messages restored from disk are in `session.messages` before the first estimate — the bar correctly reflects prior session size from turn 1.
+
+No persistence — recomputed from message content each time.
 
 ## Status / Spinner
 `_tick_status(color)` cycles `| / - \` frames, derives text from `_status_verb` + elapsed time, calls `_set_status`
