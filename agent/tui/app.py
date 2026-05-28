@@ -78,7 +78,7 @@ class SubAgentRenderer:
         self.name = name
         await self._conversation.mount(Static("", classes="assistant-spacer"))
         bg = color or "grey50"
-        header_markup = f"[bold black on {bg}]{name}[/bold black on {bg}][white]({description})[/white]"
+        header_markup = f"[bold #666666]{name}[/bold #666666]"
         await self._conversation.mount(MessageWidget(MessageKind.HEADER, header_markup))
 
     async def log(self, message: str, tool_name: str = "") -> None:

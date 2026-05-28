@@ -15,9 +15,20 @@ def _normalize_path(p: Path) -> str:
     return re.sub(r"[^a-z0-9]", "", str(p).lower())
 
 
+def _meta_path(workspace_folder: Path) -> Path:
+    return workspace_folder / "meta.json"
+
+
+def _write_meta(workspace_folder: Path, working_dir: Path) -> None:
+    meta = _meta_path(workspace_folder)
+    if not meta.exists():
+        meta.write_text(json.dumps({"working_dir": str(working_dir)}), encoding="utf-8")
+
+
 def session_file(session: Session) -> Path:
     base = Path.home() / ".gekai" / "workspaces" / _normalize_path(session.working_dir)
     base.mkdir(parents=True, exist_ok=True)
+    _write_meta(base, session.working_dir)
     return base / f"{session.id}.jsonl"
 
 
@@ -45,14 +56,21 @@ def _is_persistent_system_message(m: dict) -> bool:
     return content.startswith(_PERSISTENT_SYSTEM_PREFIXES)
 
 
-def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] | None:
+def load_session(session_id: str) -> tuple[str, Path, list[dict]] | None:
     """
-    Returns (session_id, user/assistant + persistent system messages).
+    Returns (session_id, working_dir, user/assistant + persistent system messages).
     Always-fresh system messages (SYSTEM_PROMPT, workspace) are re-injected on startup.
-    Returns None if not found.
+    Returns None if not found or meta is missing/malformed.
     """
-    path = Path.home() / ".gekai" / "workspaces" / _normalize_path(working_dir) / f"{session_id}.jsonl"
-    if not path.exists():
+    matches = list((Path.home() / ".gekai" / "workspaces").glob(f"*/{session_id}.jsonl"))
+    if not matches:
+        return None
+    path = matches[0]
+    workspace_folder = path.parent
+    try:
+        meta_raw = _meta_path(workspace_folder).read_text(encoding="utf-8")
+        working_dir = Path(json.loads(meta_raw)["working_dir"])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
         return None
     messages: list[dict] = []
     try:
@@ -65,6 +83,6 @@ def load_session(session_id: str, working_dir: Path) -> tuple[str, list[dict]] |
                 messages.append(m)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
-    return session_id, messages
+    return session_id, working_dir, messages
 
 

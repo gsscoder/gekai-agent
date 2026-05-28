@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument(
         "-d", "--working-dir",
         type=Path,
-        default=Path.cwd(),
+        default=None,
         metavar="DIR",
         help="working directory (default: current directory)",
     )
@@ -35,7 +35,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    working_dir: Path = args.working_dir.resolve()
+    restored_id: str | None = None
+    restored_messages: list[dict] | None = None
+
+    if args.resume and args.working_dir is not None:
+        print("error: --resume and --working-dir cannot be used together")
+        raise SystemExit(1)
+
+    if args.resume:
+        result = load_session(args.resume)
+        if result is None:
+            print(f"session {args.resume} not found")
+            raise SystemExit(1)
+        restored_id, working_dir, restored_messages = result
+    else:
+        working_dir = (args.working_dir or Path.cwd()).resolve()
+
     branch: str | None = get_git_branch(working_dir)
 
     permissions = load_permissions(working_dir)
@@ -44,15 +59,6 @@ def main() -> None:
         permissions = Permissions(read=False, write=False)
 
     agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=args.debug)
-
-    restored_id: str | None = None
-    restored_messages: list[dict] | None = None
-    if args.resume:
-        result = load_session(args.resume, working_dir)
-        if result is None:
-            print(f"session {args.resume} not found, starting fresh")
-        else:
-            restored_id, restored_messages = result
 
     registry = CommandRegistry()
     registry.register(ClearCommand())
