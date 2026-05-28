@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from textual import events
 from textual.widgets import Static
 
 from agent.commands.registry import CommandRegistry
@@ -52,6 +53,14 @@ class CommandPalette(Static):
 
     def hide(self) -> None:
         self.display = False
+
+    def on_click(self, event: events.Click) -> None:
+        if not self._items:
+            return
+        idx = event.y
+        if 0 <= idx < len(self._items):
+            self.app.action_select_command(self._items[idx][0])
+        event.stop()
 
     def _refresh_display(self) -> None:
         if not self._items:

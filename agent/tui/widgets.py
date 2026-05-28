@@ -27,6 +27,7 @@ class MessageWidget(Widget):
     MessageWidget.assistant { layout: horizontal; margin-top: 1; }
     MessageWidget.assistant > Static { width: 2; height: auto; }
     MessageWidget.assistant > Markdown { width: 1fr; height: auto; padding: 0; }
+    MessageWidget.assistant > .assistant-body { width: 1fr; height: auto; }
     MessageWidget.header { layout: horizontal; height: auto; }
     MessageWidget.header > .header-dot { width: 2; height: auto; }
     MessageWidget.header > .header-text { width: 1fr; height: auto; }
@@ -40,8 +41,12 @@ class MessageWidget(Widget):
 
     def compose(self) -> ComposeResult:
         if self._kind == MessageKind.ASSISTANT:
-            yield Static("[cyan]●[/cyan]")
-            yield Markdown(self._text)
+            dot_color = self._color or "cyan"
+            yield Static(f"[{dot_color}]●[/{dot_color}]")
+            if self._color:
+                yield Static(markup_escape(self._text), classes="assistant-body")
+            else:
+                yield Markdown(self._text)
         elif self._kind == MessageKind.HEADER:
             yield Static("[cyan]●[/cyan]", classes="header-dot")
             yield Static(self._text, classes="header-text")
@@ -49,6 +54,10 @@ class MessageWidget(Widget):
             yield Static(self._as_user_text())
         else:
             yield Static(self._as_markup())
+
+    def on_mount(self) -> None:
+        if self._kind == MessageKind.ASSISTANT and self._color:
+            self.query_one(".assistant-body", Static).styles.color = self._color
 
     def _as_user_text(self) -> str:
         return f"❯ [bold]{markup_escape(self._text)}[/bold]"

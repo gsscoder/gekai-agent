@@ -597,7 +597,7 @@ class GekaiApp(App[None]):
                 return
             result = await self._command_registry.dispatch(stripped)
             if result.output:
-                await conversation.mount(MessageWidget(MessageKind.SYSTEM, result.output))
+                await conversation.mount(MessageWidget(MessageKind.ASSISTANT, result.output, color="#ffd700"))
             if result.clear_session:
                 await self._clear_session()
                 return
@@ -874,6 +874,13 @@ class GekaiApp(App[None]):
 
     def action_scroll_to_end(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_end(animate=False)
+
+    def action_select_command(self, name: str) -> None:
+        palette = self.query_one(CommandPalette)
+        palette.hide()
+        prompt = self.query_one("#prompt", Input)
+        prompt.value = f"/{name}"
+        prompt.action_submit()
 
     @on(events.Click, "#scroll-hint")
     def _scroll_hint_clicked(self, event: events.Click) -> None:
