@@ -622,7 +622,11 @@ class GekaiApp(App[None]):
             conversation.scroll_end(animate=False)
         finally:
             await self._stop_status_animation()
-        self._workspace = explorer.workspace or {}
+        cache_path = self._working_dir / ".gekai" / "workspace.json"
+        try:
+            self._workspace = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._workspace = explorer.workspace or {}
         if self._workspace and self._session is not None:
             self._agent.update_workspace_context(self._session, self._workspace)
 
