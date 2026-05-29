@@ -42,6 +42,7 @@ class ConversationContainer(ScrollableContainer):
 
 
 _SPINNER_FRAMES = ["|", "/", "-", "\\"]
+_BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 def _update_scan_state_key(cache_path: Path, key: str, value: str) -> None:
@@ -73,13 +74,29 @@ class SubAgentRenderer:
         self._current_widget: Static | None = None
         self._current_prefix: str = ""
         self._progress_bar: ProgressBar | None = None
+        self._header_widget: MessageWidget | None = None
+        self._spinner_task: asyncio.Task | None = None
+
+    async def _animate_dot(self) -> None:
+        frame = 0
+        try:
+            while True:
+                if self._header_widget is not None:
+                    char = _BRAILLE_FRAMES[frame % len(_BRAILLE_FRAMES)]
+                    self._header_widget.query_one(".header-dot", Static).update(f"[#666666]{char}[/#666666]")
+                frame += 1
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass
 
     async def start(self, name: str, description: str, color: str) -> None:
         self.name = name
         await self._conversation.mount(Static("", classes="assistant-spacer"))
-        bg = color or "grey50"
-        header_markup = f"[bold #666666]{name}[/bold #666666]"
-        await self._conversation.mount(MessageWidget(MessageKind.HEADER, header_markup))
+        header_markup = "[bold #666666]Thinking...[/bold #666666]"
+        widget = MessageWidget(MessageKind.HEADER, header_markup)
+        await self._conversation.mount(widget)
+        self._header_widget = widget
+        self._spinner_task = asyncio.create_task(self._animate_dot())
 
     async def log(self, message: str, tool_name: str = "") -> None:
         if message.endswith("..."):
@@ -123,6 +140,13 @@ class SubAgentRenderer:
             self._total_tokens += event.completion_tokens
 
     async def done(self) -> None:
+        if self._spinner_task is not None:
+            self._spinner_task.cancel()
+            self._spinner_task = None
+        if self._header_widget is not None:
+            self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
+            self._header_widget.query_one(".header-text", Static).update("[#666666]Thought[/#666666]")
+            self._header_widget = None
         if self._progress_bar is not None:
             await self._progress_bar.remove()
             self._progress_bar = None
@@ -167,7 +191,7 @@ def _fmt_elapsed(elapsed: float) -> str:
 
 
 def _fmt_status(verb: str, elapsed: float) -> str:
-    return f"{verb.capitalize()}... [white]({_fmt_elapsed(elapsed)} · thinking)[/white]"
+    return f"{verb.capitalize()}... [white]({_fmt_elapsed(elapsed)})[/white]"
 
 
 _CONTEXT_LIMITS: dict[str, int] = {
