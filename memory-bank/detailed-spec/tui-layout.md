@@ -19,6 +19,9 @@ Textual-based full-screen terminal UI; fixed footer with command palette and inp
 │  Static #status-spacer blank line below status       │  hidden when idle
 │  CommandPalette #command-palette                     │  hidden when input ≠ /…
 │  Static #hint-area     transient hint text           │  hidden by default; right-aligned, grey
+│  Container #scroll-hint-wrap                         │  hidden; shown when scrolled up and not streaming
+│  FilePanel #file-panel                               │  hidden by default; shown on @ trigger
+│  HistoryPanel #history-panel                         │  hidden by default; shown on Ctrl+R
 │  Container #input-area                               │  height: 3, layered
 │    Static #prompt-marker   ❯                         │  layer: marker, absolute
 │    Input  #prompt                                    │  layer: input, padding-left: 2
@@ -120,11 +123,45 @@ Three choices rendered as `Static` widgets pre-populated in `compose()` to avoid
 `reactive(selected, init=False)` + `is_mounted` guard in `watch_selected` to prevent `NoMatches` during init
 Dismisses with choice key (`"read_only"` / `"full"` / `"deny"`) or `None` on Escape → app exits
 
+## HistoryPanel
+`Widget` subclass in `widgets.py`; `display: none` by default; height: 5; border-top solid `#3a3a3a`; mounted in `#footer` above `#input-area`
+`_MAX_ENTRIES = 5`; `_MAX_TEXT_LEN = 60`; entries stored in `~/.gekai/workspaces/<dir>/history.jsonl` via `PromptHistory`
+
+`action_toggle_history` (bound to `Ctrl+R`, priority): loads `_history.load()`, reverses list (newest first), calls `panel.show(entries, selected_index=0)`; if already visible, hides and refocuses prompt
+
+Row format: `❯ {ago:>6}  {text}` in `[bold cyan]` for selected, `[dim]  {ago:>6}  {text}[/dim]` for others; ago via `_fmt_ago` (s/m/h/d)
+Scrollable window: `_window_start` centres the view around `_selected` when entries exceed 5
+
+`on_key` (in `GekaiApp`): Up/Down when panel is visible → `panel.move_up()` / `panel.move_down()`, sets `#prompt` value to `panel.selected_text`, stops event; evaluated after `FilePanel` check
+Enter (`action_confirm_or_submit`): sets `#prompt` value + cursor to end, hides panel
+Click (`on_history_panel_row_clicked`): selects clicked row, sets prompt value, hides panel
+ESC (`action_cancel_stream`): hides panel (checked after `FilePanel`, before palette/worker)
+
+## FilePanel
+`Widget` subclass in `widgets.py`; `display: none` by default; height: 5; border-top solid `#3a3a3a`; mounted in `#footer` above `HistoryPanel`
+`_MAX_ENTRIES = 5`; `_MAX_PATH_LEN = 60`; `_file_at_pos: int` on `GekaiApp` tracks `@` position in input for replacement
+
+Trigger: `on_input_changed` finds last `@` via `value.rfind("@")`; extracts `query = value[at_pos+1:]`
+- if `query` has no space: loads `list_files(working_dir)` lazily into `_file_paths` (flat sorted relative paths), calls `file_panel.show(paths, query)` or `file_panel.filter(query)` if already visible
+- if space appears in `query` or no `@` found: hides panel, resets `_file_at_pos = -1`
+
+Filter: contains-search `query.lower() in path.lower()` over full path list; resets `_selected = 0` on each filter
+
+Row format: `+ {path}` in `[bold cyan]` for selected, `[dim]  {path}[/dim]` for others; long paths truncated as `…{tail}` preserving last 59 chars
+
+`on_key` (highest priority, before HistoryPanel): Up/Down when panel visible → `file_panel.move_up()` / `file_panel.move_down()`, stops event
+Enter (`action_confirm_or_submit`): replaces `value[:at_pos] + "@{selected_path} "` in `#prompt`, sets cursor to end, hides panel — does NOT submit
+Click (`on_file_panel_row_clicked`): same replacement logic as Enter
+ESC (`action_cancel_stream`): hides panel, resets `_file_at_pos = -1` (checked first, before HistoryPanel)
+
+Post-processing: `_resolve_at_refs(text)` (called in `on_input_submitted` before passing to `_stream`) replaces every `@(\S+)` token with `` `\1` ``; user sees `@path` in conversation widget, model receives `` `path` ``
+
 ## Key Bindings
-| Key     | Action                                                          |
-|---------|-----------------------------------------------------------------|
-| `esc`   | `action_cancel_stream`: hide palette+clear input, or cancel worker+clear status |
-| `ctrl+c`| `quit`                                                          |
+| Key      | Action                                                          |
+|----------|-----------------------------------------------------------------|
+| `esc`    | `action_cancel_stream`: hide FilePanel → hide HistoryPanel → hide palette+clear input → cancel worker+clear status |
+| `ctrl+r` | `action_toggle_history`: toggle HistoryPanel                    |
+| `ctrl+c` | `quit`                                                          |
 
 ## Accent Colors
 Defined in `agent/ui.py`; all validated against `textual.color.Color.parse()`:
