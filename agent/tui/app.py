@@ -36,8 +36,9 @@ class ConversationContainer(ScrollableContainer):
             super().__init__()
             self.at_end = at_end
 
-    def watch_scroll_y(self, scroll_y: float) -> None:
-        at_end = scroll_y >= self.max_scroll_y or self.max_scroll_y <= 0
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        at_end = new_value >= self.max_scroll_y or self.max_scroll_y <= 0
         self.post_message(self.Scrolled(at_end=at_end))
 
 
@@ -379,7 +380,10 @@ class GekaiApp(App[None]):
     BINDINGS = [
         ("escape", "cancel_stream", "Cancel"),
         ("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+up", "scroll_to_top", "Scroll to top", priority=True),
         Binding("ctrl+down", "scroll_to_end", "Scroll to bottom", priority=True),
+        Binding("pageup", "scroll_page_up", "Scroll page up", priority=True),
+        Binding("pagedown", "scroll_page_down", "Scroll page down", priority=True),
     ]
 
     def __init__(
@@ -703,7 +707,7 @@ class GekaiApp(App[None]):
 
         # Ask user
         await asyncio.to_thread(_update_scan_state_key, cache_path, "asked_timestamp", now_utc_str())
-        if await self._ask_choice("Workspace changed — rescan?", [("y", "Yes"), ("n", "No")]) == "y":
+        if await self._ask_choice("Workspace needs rescan — proceed?", [("y", "Yes"), ("n", "No")]) == "y":
             await self._run_ws_explorer(conversation)
 
     async def _stream(self, user_input: str) -> None:
@@ -893,8 +897,17 @@ class GekaiApp(App[None]):
             self._focus_prompt()
             return
 
+    def action_scroll_to_top(self) -> None:
+        self.query_one("#conversation", ConversationContainer).scroll_home(animate=False)
+
     def action_scroll_to_end(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_end(animate=False)
+
+    def action_scroll_page_up(self) -> None:
+        self.query_one("#conversation", ConversationContainer).scroll_page_up(animate=False)
+
+    def action_scroll_page_down(self) -> None:
+        self.query_one("#conversation", ConversationContainer).scroll_page_down(animate=False)
 
     def action_select_command(self, name: str) -> None:
         palette = self.query_one(CommandPalette)
