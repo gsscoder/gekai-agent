@@ -18,7 +18,7 @@ from textual.worker import Worker
 from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.persistence import now_utc_str
+from agent.persistence import now_utc_str, _normalize_path
 from agent.router import Intent, Session
 from agent.settings import load_context_limit, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.ws_explorer.enrichment import _get_git_state
@@ -27,7 +27,8 @@ from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEnd
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
-from .widgets import ChoiceBar, MessageKind, MessageWidget
+from .history import PromptHistory
+from .widgets import ChoiceBar, HistoryPanel, MessageKind, MessageWidget
 
 
 class ConversationContainer(ScrollableContainer):
@@ -384,6 +385,8 @@ class GekaiApp(App[None]):
         Binding("ctrl+down", "scroll_to_end", "Scroll to bottom", priority=True),
         Binding("pageup", "scroll_page_up", "Scroll page up", priority=True),
         Binding("pagedown", "scroll_page_down", "Scroll page down", priority=True),
+        Binding("ctrl+r", "toggle_history", "History", priority=True),
+        Binding("enter", "confirm_or_submit", "Confirm", priority=True, show=False),
     ]
 
     def __init__(
@@ -420,6 +423,7 @@ class GekaiApp(App[None]):
         self._esc_pending: bool = False
         self._pending_choice: asyncio.Future[str | None] | None = None
         self._context_limit: int = 128_000
+        self._history: PromptHistory | None = None
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -433,6 +437,7 @@ class GekaiApp(App[None]):
             yield Static("", id="hint-area")
             with Container(id="scroll-hint-wrap"):
                 yield Static("Scroll to bottom  ctrl+↓", id="scroll-hint")
+            yield HistoryPanel(id="history-panel")
             with Container(id="input-area"):
                 yield Input(id="prompt", compact=True)
                 yield Static("❯", id="prompt-marker")
@@ -477,6 +482,12 @@ class GekaiApp(App[None]):
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
         )
+
+        history_path = (
+            Path.home() / ".gekai" / "workspaces"
+            / _normalize_path(self._working_dir) / "history.jsonl"
+        )
+        self._history = PromptHistory(history_path)
 
         override = load_context_limit(self._working_dir)
         self._context_limit = override if override is not None else _context_limit(self._agent.model)
@@ -533,6 +544,18 @@ class GekaiApp(App[None]):
             self._clear_hint()
 
     def on_key(self, event: events.Key) -> None:
+        panel = self.query_one("#history-panel", HistoryPanel)
+        if panel.display:
+            if event.key in ("up", "down"):
+                if event.key == "up":
+                    panel.move_up()
+                else:
+                    panel.move_down()
+                text = panel.selected_text
+                if text is not None:
+                    self.query_one("#prompt", Input).value = text
+                event.stop()
+                return
         choice_bar = self.query_one(ChoiceBar)
         if choice_bar.display and event.key in ("left", "right", "up", "down"):
             if event.key in ("left", "up"):
@@ -600,6 +623,12 @@ class GekaiApp(App[None]):
         if not stripped:
             self._focus_prompt()
             return
+        if self._history is not None:
+            self._history.append(stripped)
+            self._history.reset()
+        history_panel = self.query_one("#history-panel", HistoryPanel)
+        if history_panel.display:
+            history_panel.hide()
         event.input.value = ""
         conversation = self.query_one("#conversation", ScrollableContainer)
         if stripped.startswith("/"):
@@ -877,6 +906,12 @@ class GekaiApp(App[None]):
         self.query_one("#scroll-hint-wrap", Container).display = not event.at_end and not is_streaming
 
     def action_cancel_stream(self) -> None:
+        history_panel = self.query_one("#history-panel", HistoryPanel)
+        if history_panel.display:
+            history_panel.hide()
+            self._focus_prompt()
+            return
+
         if self._pending_choice is not None and not self._pending_choice.done():
             self.query_one(ChoiceBar).hide()
             future = self._pending_choice
@@ -896,6 +931,50 @@ class GekaiApp(App[None]):
             self._clear_status()
             self._focus_prompt()
             return
+
+        prompt = self.query_one("#prompt", Input)
+        if self._esc_pending:
+            prompt.value = ""
+            self._clear_hint()
+        elif prompt.value:
+            self._esc_pending = True
+            self._show_hint("ESC again to clear input")
+
+    def action_toggle_history(self) -> None:
+        panel = self.query_one("#history-panel", HistoryPanel)
+        if panel.display:
+            panel.hide()
+            self._focus_prompt()
+        else:
+            if self._history is None:
+                return
+            entries = self._history.load()
+            entries_display = list(reversed(entries))  # newest first
+            panel.show(entries_display, selected_index=0)
+
+    async def action_confirm_or_submit(self) -> None:
+        panel = self.query_one("#history-panel", HistoryPanel)
+        if panel.display:
+            text = panel.selected_text
+            panel.hide()
+            prompt = self.query_one("#prompt", Input)
+            if text:
+                prompt.value = text
+                prompt.action_end()
+            self._focus_prompt()
+        else:
+            await self.query_one("#prompt", Input).action_submit()
+
+    def on_history_panel_row_clicked(self, event: HistoryPanel.RowClicked) -> None:
+        panel = self.query_one("#history-panel", HistoryPanel)
+        panel.select_index(event.index)
+        text = panel.selected_text
+        if text:
+            prompt = self.query_one("#prompt", Input)
+            prompt.value = text
+            prompt.action_end()
+        panel.hide()
+        self._focus_prompt()
 
     def action_scroll_to_top(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_home(animate=False)

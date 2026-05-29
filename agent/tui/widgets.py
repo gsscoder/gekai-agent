@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import time
 from enum import Enum
 
 from rich.markup import escape as markup_escape
+from textual import events
 from textual.app import ComposeResult
+from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
@@ -155,3 +158,118 @@ class MessageWidget(Widget):
             self.query_one(".header-text", Static).update(self._text)
         else:
             self.query_one(Static).update(self._as_markup())
+
+
+def _fmt_ago(ts: float) -> str:
+    delta = time.time() - ts
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
+class HistoryPanel(Widget):
+    DEFAULT_CSS = """
+    HistoryPanel {
+        display: none;
+        height: 5;
+        background: ansi_default;
+        border-top: solid #3a3a3a;
+    }
+    HistoryPanel #history-entries {
+        height: 1fr;
+        background: ansi_default;
+        padding: 0 0 0 2;
+    }
+    """
+
+    class RowClicked(Message):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+
+    _MAX_ENTRIES = 5
+    _MAX_TEXT_LEN = 60
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._entries: list[dict] = []
+        self._selected: int = 0
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="history-entries")
+
+    def show(self, entries: list[dict], selected_index: int = 0) -> None:
+        self._entries = entries
+        self._selected = selected_index
+        self._refresh_display()
+        self.display = True
+
+    def hide(self) -> None:
+        self.display = False
+        self._entries = []
+        self._selected = 0
+
+    def move_up(self) -> None:
+        if self._entries:
+            self._selected = max(0, self._selected - 1)
+            self._refresh_display()
+
+    def move_down(self) -> None:
+        if self._entries:
+            self._selected = min(len(self._entries) - 1, self._selected + 1)
+            self._refresh_display()
+
+    def select_index(self, i: int) -> None:
+        if 0 <= i < len(self._entries):
+            self._selected = i
+            self._refresh_display()
+
+    @property
+    def selected_text(self) -> str | None:
+        if not self._entries:
+            return None
+        if 0 <= self._selected < len(self._entries):
+            return self._entries[self._selected].get("text")
+        return None
+
+    @property
+    def _window_start(self) -> int:
+        n = len(self._entries)
+        if n <= self._MAX_ENTRIES:
+            return 0
+        start = self._selected - self._MAX_ENTRIES // 2
+        return max(0, min(start, n - self._MAX_ENTRIES))
+
+    def _refresh_display(self) -> None:
+        if not self._entries:
+            self.query_one("#history-entries", Static).update("[dim]  no history[/dim]")
+            return
+        start = self._window_start
+        visible = self._entries[start : start + self._MAX_ENTRIES]
+        lines = []
+        for i, entry in enumerate(visible):
+            abs_i = start + i
+            ts = entry.get("timestamp", 0.0)
+            text = entry.get("text", "")
+            ago = _fmt_ago(ts)
+            truncated = text if len(text) <= self._MAX_TEXT_LEN else text[: self._MAX_TEXT_LEN] + "…"
+            escaped = markup_escape(truncated)
+            ago_markup = f"[dim]{ago:>6}[/dim]"
+            if abs_i == self._selected:
+                lines.append(f"[bold cyan]❯ {ago_markup}  {escaped}[/bold cyan]")
+            else:
+                lines.append(f"[dim]  {ago_markup}  {escaped}[/dim]")
+        self.query_one("#history-entries", Static).update("\n".join(lines))
+
+    def on_click(self, event: events.Click) -> None:
+        entries_widget = self.query_one("#history-entries", Static)
+        rel_y = event.y - entries_widget.region.y
+        start = self._window_start
+        visible_count = min(self._MAX_ENTRIES, len(self._entries) - start)
+        if 0 <= rel_y < visible_count:
+            self.post_message(self.RowClicked(index=start + rel_y))
+            event.stop()
