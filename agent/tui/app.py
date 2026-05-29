@@ -42,7 +42,7 @@ class ConversationContainer(ScrollableContainer):
         self.post_message(self.Scrolled(at_end=at_end))
 
 
-_SPINNER_FRAMES = ["|", "/", "-", "\\"]
+_SPINNER_FRAMES = ["·", "•", "●", "•"]
 _BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 

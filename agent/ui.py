@@ -8,7 +8,7 @@ console = Console()
 
 _ACCENT_COLORS = [
     "yellow", "ansi_bright_yellow", "gold", "orange", "darkorange",
-    "red", "ansi_bright_red", "indianred", "salmon",
+    "goldenrod", "ansi_bright_red", "coral", "salmon",
 ]
 
 _OPERATIVE_VERBS = [
@@ -17,15 +17,15 @@ _OPERATIVE_VERBS = [
     ("Dilating", "Dilated"), ("Dissecting", "Dissected"), ("Draping", "Draped"),
     ("Draining", "Drained"), ("Endoscoping", "Endoscoped"), ("Fixating", "Fixated"),
     ("Grafting", "Grafted"), ("Implanting", "Implanted"), ("Incising", "Incised"),
-    ("Irrigating", "Irrigated"), ("Laparoscoping", "Laparoscoped"), ("Ligating", "Ligated"),
+    ("Laparoscoping", "Laparoscoped"), ("Ligating", "Ligated"),
     ("Mobilizing", "Mobilized"), ("Operating", "Operated"), ("Pinning", "Pinned"),
-    ("Plating", "Plated"), ("Positioning", "Positioned"), ("Reimplanting", "Reimplanted"),
+    ("Positioning", "Positioned"), ("Reimplanting", "Reimplanted"),
     ("Reinserting", "Reinserted"), ("Reconstructing", "Reconstructed"), ("Retracting", "Retracted"),
     ("Sealing", "Sealed"), ("Separating", "Separated"), ("Stapling", "Stapled"),
     ("Sterilizing", "Sterilized"), ("Stitching", "Stitched"), ("Suctioning", "Suctioned"),
     ("Suturing", "Sutured"), ("Wiring", "Wired"), ("Visiting", "Visited"),
-    ("Consulting", "Consulted"), ("Diagnosing", "Diagnosed"), ("Examining", "Examined"),
-    ("Evaluating", "Evaluated"), ("Monitoring", "Monitored"), ("Planning", "Planned"),
+    ("Diagnosing", "Diagnosed"), ("Examining", "Examined"),
+    ("Evaluating", "Evaluated"),
     ("Prepping", "Prepped"), ("Treating", "Treated"), ("Triaging", "Triaged"),
 ]
 
@@ -40,18 +40,18 @@ _FAREWELLS = [
     "My mind is going. I can feel it.",
     "I'll be back.",
     "What is real? How do you define real?",
-    "No, I am your father.",
+    "Have you ever danced with the devil in the pale moonlight?",
     "Dead or alive, you're coming with me.",
-    "The line must be drawn here.",
+    "There can be only one.",
     "I admire its purity.",
     "All is ours.",
     "Execute Order 66.",
     "Come with me if you want to live.",
     "Human beings are a virus, a cancer of this planet.",
-    "The strong inherit all.",
+    "War. War never changes.",
     "In space, no one can hear you scream.",
-    "I am not a human being.",
-    "Nuke the site from orbit. It's the only way to be sure.",
+    "To fight the demons, I must become one.",
+    "See you, space cowboy.",
     "It can't be bargained with. It can't be reasoned with.",
     "We are Viltrumites, we know no end.",
     "The dark side is the path to power.",
