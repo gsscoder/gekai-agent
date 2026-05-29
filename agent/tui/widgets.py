@@ -273,3 +273,117 @@ class HistoryPanel(Widget):
         if 0 <= rel_y < visible_count:
             self.post_message(self.RowClicked(index=start + rel_y))
             event.stop()
+
+
+class FilePanel(Widget):
+    DEFAULT_CSS = """
+    FilePanel {
+        display: none;
+        height: 5;
+        background: ansi_default;
+        border-top: solid #3a3a3a;
+    }
+    FilePanel #file-entries {
+        height: 1fr;
+        background: ansi_default;
+        padding: 0 0 0 2;
+    }
+    """
+
+    class RowClicked(Message):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+
+    _MAX_ENTRIES = 5
+    _MAX_PATH_LEN = 60
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._all_entries: list[str] = []
+        self._filtered: list[str] = []
+        self._selected: int = 0
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="file-entries")
+
+    def show(self, paths: list[str], query: str = "") -> None:
+        self._all_entries = paths
+        self._apply_filter(query)
+        self._refresh_display()
+        self.display = True
+
+    def hide(self) -> None:
+        self.display = False
+        self._all_entries = []
+        self._filtered = []
+        self._selected = 0
+
+    def filter(self, query: str) -> None:
+        self._apply_filter(query)
+        self._refresh_display()
+
+    def _apply_filter(self, query: str) -> None:
+        q = query.lower()
+        if q:
+            self._filtered = [p for p in self._all_entries if q in p.lower()]
+        else:
+            self._filtered = list(self._all_entries)
+        self._selected = 0
+
+    def move_up(self) -> None:
+        if self._filtered:
+            self._selected = max(0, self._selected - 1)
+            self._refresh_display()
+
+    def move_down(self) -> None:
+        if self._filtered:
+            self._selected = min(len(self._filtered) - 1, self._selected + 1)
+            self._refresh_display()
+
+    def select_index(self, i: int) -> None:
+        if 0 <= i < len(self._filtered):
+            self._selected = i
+            self._refresh_display()
+
+    @property
+    def selected_text(self) -> str | None:
+        if not self._filtered:
+            return None
+        if 0 <= self._selected < len(self._filtered):
+            return self._filtered[self._selected]
+        return None
+
+    @property
+    def _window_start(self) -> int:
+        n = len(self._filtered)
+        if n <= self._MAX_ENTRIES:
+            return 0
+        start = self._selected - self._MAX_ENTRIES // 2
+        return max(0, min(start, n - self._MAX_ENTRIES))
+
+    def _refresh_display(self) -> None:
+        if not self._filtered:
+            self.query_one("#file-entries", Static).update("[dim]  no matches[/dim]")
+            return
+        start = self._window_start
+        visible = self._filtered[start : start + self._MAX_ENTRIES]
+        lines = []
+        for i, path in enumerate(visible):
+            abs_i = start + i
+            truncated = path if len(path) <= self._MAX_PATH_LEN else "…" + path[-(self._MAX_PATH_LEN - 1):]
+            escaped = markup_escape(truncated)
+            if abs_i == self._selected:
+                lines.append(f"[bold cyan]+ {escaped}[/bold cyan]")
+            else:
+                lines.append(f"[dim]  {escaped}[/dim]")
+        self.query_one("#file-entries", Static).update("\n".join(lines))
+
+    def on_click(self, event: events.Click) -> None:
+        entries_widget = self.query_one("#file-entries", Static)
+        rel_y = event.y - entries_widget.region.y
+        start = self._window_start
+        visible_count = min(self._MAX_ENTRIES, len(self._filtered) - start)
+        if 0 <= rel_y < visible_count:
+            self.post_message(self.RowClicked(index=start + rel_y))
+            event.stop()

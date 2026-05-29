@@ -237,6 +237,16 @@ def scan_workspace(
     return result
 
 
+def list_files(working_dir: Path) -> list[str]:
+    """Return sorted flat list of all file paths relative to working_dir."""
+    paths: list[str] = []
+    for dirpath, filenames in _walk(working_dir):
+        for fname in filenames:
+            rel = (dirpath / fname).relative_to(working_dir)
+            paths.append(str(rel).replace("\\", "/"))
+    return sorted(paths)
+
+
 def get_git_branch(path: Path) -> str | None:
     try:
         result = subprocess.run(

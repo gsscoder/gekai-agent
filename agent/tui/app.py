@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from agent.commands.registry import CommandRegistry
 from agent.persistence import now_utc_str, _normalize_path
 from agent.router import Intent, Session
 from agent.settings import load_context_limit, load_ws_scan_staleness_min, resolve_permissions, save_permissions
+from agent.workspace import list_files
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
 from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
@@ -28,7 +30,7 @@ from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEnd
 from .palette import CommandPalette
 from .permissions import PermissionScreen
 from .history import PromptHistory
-from .widgets import ChoiceBar, HistoryPanel, MessageKind, MessageWidget
+from .widgets import ChoiceBar, FilePanel, HistoryPanel, MessageKind, MessageWidget
 
 
 class ConversationContainer(ScrollableContainer):
@@ -161,6 +163,10 @@ class SubAgentRenderer:
         self._first_item = False
         await self._conversation.mount(Static(f"{prefix} Done ({summary})"))
         self._conversation.scroll_end(animate=False)
+
+
+def _resolve_at_refs(text: str) -> str:
+    return re.sub(r"@(\S+)", lambda m: f"`{m.group(1)}`", text)
 
 
 def _fmt_duration(elapsed: float) -> str:
@@ -424,6 +430,8 @@ class GekaiApp(App[None]):
         self._pending_choice: asyncio.Future[str | None] | None = None
         self._context_limit: int = 128_000
         self._history: PromptHistory | None = None
+        self._file_paths: list[str] | None = None
+        self._file_at_pos: int = -1
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -437,6 +445,7 @@ class GekaiApp(App[None]):
             yield Static("", id="hint-area")
             with Container(id="scroll-hint-wrap"):
                 yield Static("Scroll to bottom  ctrl+↓", id="scroll-hint")
+            yield FilePanel(id="file-panel")
             yield HistoryPanel(id="history-panel")
             with Container(id="input-area"):
                 yield Input(id="prompt", compact=True)
@@ -540,10 +549,41 @@ class GekaiApp(App[None]):
             palette.filter(event.value[1:])
         else:
             palette.hide()
+
+        file_panel = self.query_one("#file-panel", FilePanel)
+        value = event.value
+        at_pos = value.rfind("@")
+        if at_pos != -1:
+            query = value[at_pos + 1:]
+            if " " not in query:
+                self._file_at_pos = at_pos
+                if self._file_paths is None:
+                    self._file_paths = list_files(self._working_dir)
+                if not file_panel.display:
+                    file_panel.show(self._file_paths, query)
+                else:
+                    file_panel.filter(query)
+            else:
+                file_panel.hide()
+                self._file_at_pos = -1
+        else:
+            file_panel.hide()
+            self._file_at_pos = -1
+
         if self._esc_pending:
             self._clear_hint()
 
     def on_key(self, event: events.Key) -> None:
+        file_panel = self.query_one("#file-panel", FilePanel)
+        if file_panel.display:
+            if event.key in ("up", "down"):
+                if event.key == "up":
+                    file_panel.move_up()
+                else:
+                    file_panel.move_down()
+                event.stop()
+                return
+
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
             if event.key in ("up", "down"):
@@ -654,7 +694,7 @@ class GekaiApp(App[None]):
             self._focus_prompt()
             return
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
-        self._worker = self.run_worker(self._stream(stripped), exclusive=True)
+        self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
 
     async def _run_ws_explorer(self, conversation: ScrollableContainer) -> None:
         """Run WsExplorer and update session workspace context."""
@@ -906,6 +946,13 @@ class GekaiApp(App[None]):
         self.query_one("#scroll-hint-wrap", Container).display = not event.at_end and not is_streaming
 
     def action_cancel_stream(self) -> None:
+        file_panel = self.query_one("#file-panel", FilePanel)
+        if file_panel.display:
+            file_panel.hide()
+            self._file_at_pos = -1
+            self._focus_prompt()
+            return
+
         history_panel = self.query_one("#history-panel", HistoryPanel)
         if history_panel.display:
             history_panel.hide()
@@ -953,6 +1000,21 @@ class GekaiApp(App[None]):
             panel.show(entries_display, selected_index=0)
 
     async def action_confirm_or_submit(self) -> None:
+        file_panel = self.query_one("#file-panel", FilePanel)
+        if file_panel.display:
+            path = file_panel.selected_text
+            file_panel.hide()
+            if path is not None:
+                prompt = self.query_one("#prompt", Input)
+                at_pos = self._file_at_pos
+                if at_pos != -1 and at_pos < len(prompt.value):
+                    new_value = prompt.value[:at_pos] + f"@{path} "
+                    prompt.value = new_value
+                    prompt.cursor_position = len(new_value)
+            self._file_at_pos = -1
+            self._focus_prompt()
+            return
+
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
             text = panel.selected_text
@@ -964,6 +1026,21 @@ class GekaiApp(App[None]):
             self._focus_prompt()
         else:
             await self.query_one("#prompt", Input).action_submit()
+
+    def on_file_panel_row_clicked(self, event: FilePanel.RowClicked) -> None:
+        file_panel = self.query_one("#file-panel", FilePanel)
+        file_panel.select_index(event.index)
+        path = file_panel.selected_text
+        file_panel.hide()
+        if path is not None:
+            prompt = self.query_one("#prompt", Input)
+            at_pos = self._file_at_pos
+            if at_pos != -1 and at_pos < len(prompt.value):
+                new_value = prompt.value[:at_pos] + f"@{path} "
+                prompt.value = new_value
+                prompt.cursor_position = len(new_value)
+        self._file_at_pos = -1
+        self._focus_prompt()
 
     def on_history_panel_row_clicked(self, event: HistoryPanel.RowClicked) -> None:
         panel = self.query_one("#history-panel", HistoryPanel)
