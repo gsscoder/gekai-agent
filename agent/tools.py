@@ -75,10 +75,14 @@ async def _read_file(
 
 
 async def _list_files(pattern: str, *, working_dir: Path) -> str:
+    def _entry(p: Path) -> str:
+        rel = str(p.relative_to(working_dir))
+        return rel + "/" if p.is_dir() else rel
+
     matches = sorted(
-        str(p.relative_to(working_dir))
+        _entry(p)
         for p in working_dir.glob(pattern)
-        if p.is_file()
+        if p.is_file() or p.is_dir()
     )[:_MAX_RESULTS]
     return "\n".join(matches) if matches else "(no matches)"
 
@@ -208,7 +212,8 @@ def make_tools(working_dir: Path) -> list:
 
     @tool
     async def list_files(pattern: str) -> str:
-        """List files matching a glob pattern (e.g. '**/*.py')."""
+        """List files and directories matching a glob pattern (e.g. '**/*.py', '*').
+        Directories appear with a trailing '/'."""
         return await _list_files(pattern, working_dir=working_dir)
 
     @tool
