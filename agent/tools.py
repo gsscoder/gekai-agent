@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from llmstitch import tool
+from agent.llm import tool
 
 _MAX_RESULTS = 200
 

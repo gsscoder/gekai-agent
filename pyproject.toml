@@ -5,7 +5,7 @@ description = "Precision-scoped AI coding agent"
 requires-python = ">=3.11"
 dependencies = [
     "rich>=13.0",
-    "llmstitch[openai]",
+    "openai>=1.50",
     "python-dotenv>=1.0",
     "pyfiglet>=1.0",
     "python-toon",

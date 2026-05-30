@@ -1,0 +1,87 @@
+"""llmstitch — vendored into agent/llm (release/v0.2.0, MIT licence, see NOTICE)."""
+
+from __future__ import annotations
+
+from .agent import Agent
+from .errors import CostCeilingExceeded, MaxIterationsExceeded
+from .events import (
+    AgentStarted,
+    AgentStopped,
+    Event,
+    EventBus,
+    ModelRequestSent,
+    ModelResponseReceived,
+    RetryAttemptEvent,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+    TurnStarted,
+    UsageUpdated,
+)
+from .result import AgentResult, AgentResultEvent
+from .retry import RetryAttempt, RetryPolicy
+from .tools import Skill, Tool, ToolRegistry, tool
+from .types import (
+    CompletionResponse,
+    ContentBlock,
+    Cost,
+    Message,
+    MessageStop,
+    Pricing,
+    Role,
+    StreamDone,
+    StreamEvent,
+    TextBlock,
+    TextDelta,
+    TokenCount,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+    ToolUseDelta,
+    ToolUseStart,
+    ToolUseStop,
+    UsageTally,
+)
+
+__all__ = [
+    "Agent",
+    "MaxIterationsExceeded",
+    "CostCeilingExceeded",
+    "tool",
+    "Tool",
+    "Skill",
+    "ToolRegistry",
+    "Message",
+    "Role",
+    "TextBlock",
+    "ToolUseBlock",
+    "ToolResultBlock",
+    "ContentBlock",
+    "ToolDefinition",
+    "CompletionResponse",
+    "TextDelta",
+    "ToolUseStart",
+    "ToolUseDelta",
+    "ToolUseStop",
+    "MessageStop",
+    "StreamDone",
+    "StreamEvent",
+    "TokenCount",
+    "UsageTally",
+    "Pricing",
+    "Cost",
+    "RetryPolicy",
+    "RetryAttempt",
+    "EventBus",
+    "Event",
+    "AgentStarted",
+    "TurnStarted",
+    "ModelRequestSent",
+    "ModelResponseReceived",
+    "RetryAttemptEvent",
+    "ToolExecutionStarted",
+    "ToolExecutionCompleted",
+    "UsageUpdated",
+    "AgentStopped",
+    "AgentResult",
+    "AgentResultEvent",
+]

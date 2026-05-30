@@ -5,10 +5,10 @@ from collections.abc import AsyncIterator
 
 from dataclasses import dataclass
 
-from llmstitch import Agent
-from llmstitch.events import EventBus, ToolExecutionStarted, UsageUpdated
-from llmstitch.providers.openai import OpenAIAdapter
-from llmstitch.types import Message, TextBlock, ToolUseBlock
+from agent.llm import Agent
+from agent.llm.events import EventBus, ToolExecutionStarted, UsageUpdated
+from agent.llm.providers.openai import OpenAIAdapter
+from agent.llm.types import Message, TextBlock, ToolUseBlock
 
 from ..router import Session, SYSTEM_PROMPT
 from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
