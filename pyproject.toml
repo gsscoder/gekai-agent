@@ -10,6 +10,11 @@ dependencies = [
     "pyfiglet>=1.0",
     "python-toon",
     "textual>=0.70",
+    "tree-sitter>=0.25",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
 ]
 
 [project.scripts]

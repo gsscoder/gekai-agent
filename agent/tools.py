@@ -7,13 +7,67 @@ from llmstitch import tool
 
 _MAX_RESULTS = 200
 
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".go": "go",
+}
 
-async def _read_file(path: str, *, working_dir: Path) -> str:
+# (module_name, function_name) to obtain the language capsule
+_LANG_TO_MODULE: dict[str, tuple[str, str]] = {
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    "go": ("tree_sitter_go", "language"),
+}
+
+_LANG_QUERIES: dict[str, dict[str, str]] = {
+    "python": {
+        "function": "(function_definition name: (identifier) @name)",
+        "class": "(class_definition name: (identifier) @name)",
+    },
+    "javascript": {
+        "function": "(function_declaration name: (identifier) @name)",
+        "class": "(class_declaration name: (identifier) @name)",
+        "method": "(method_definition name: (property_identifier) @name)",
+    },
+    "typescript": {
+        "function": "(function_declaration name: (identifier) @name)",
+        "class": "(class_declaration name: (type_identifier) @name)",
+        "method": "(method_definition name: (property_identifier) @name)",
+        "interface": "(interface_declaration name: (type_identifier) @name)",
+    },
+    "go": {
+        "function": "(function_declaration name: (identifier) @name)",
+        "method": "(method_declaration name: (field_identifier) @name)",
+        "type": "(type_spec name: (type_identifier) @name)",
+    },
+}
+_LANG_QUERIES["tsx"] = _LANG_QUERIES["typescript"]
+
+
+async def _read_file(
+    path: str,
+    *,
+    working_dir: Path,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
     target = (working_dir / path).resolve()
     if not target.is_relative_to(working_dir.resolve()):
         return "error: path outside working directory"
     try:
-        return target.read_text(encoding="utf-8", errors="replace")
+        text = target.read_text(encoding="utf-8", errors="replace")
+        if start_line is None and end_line is None:
+            return text
+        lines = text.splitlines(keepends=True)
+        total = len(lines)
+        s = max(0, (start_line or 1) - 1)
+        e = min(total, end_line) if end_line is not None else total
+        return "".join(lines[s:e])
     except FileNotFoundError:
         return f"error: file not found: {path}"
     except Exception as exc:
@@ -27,6 +81,21 @@ async def _list_files(pattern: str, *, working_dir: Path) -> str:
         if p.is_file()
     )[:_MAX_RESULTS]
     return "\n".join(matches) if matches else "(no matches)"
+
+
+async def _file_info(path: str, *, working_dir: Path) -> str:
+    target = (working_dir / path).resolve()
+    if not target.is_relative_to(working_dir.resolve()):
+        return "error: path outside working directory"
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+        line_count = len(text.splitlines())
+        byte_size = target.stat().st_size
+        return f"lines: {line_count}, size: {byte_size} bytes"
+    except FileNotFoundError:
+        return f"error: file not found: {path}"
+    except Exception as exc:
+        return f"error: {exc}"
 
 
 async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> str:
@@ -62,11 +131,77 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
     return "\n".join(results) if results else "(no matches)"
 
 
+async def _symbols(
+    path: str,
+    *,
+    working_dir: Path,
+    kind: str | None = None,
+) -> str:
+    try:
+        import importlib
+        from tree_sitter import Language, Parser, Query, QueryCursor
+    except ImportError:
+        return "error: tree-sitter not installed (pip install tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript tree-sitter-go)"
+
+    target = (working_dir / path).resolve()
+    if not target.is_relative_to(working_dir.resolve()):
+        return "error: path outside working directory"
+
+    ext = target.suffix.lower()
+    lang_name = _EXT_TO_LANG.get(ext)
+    if lang_name is None:
+        return f"error: unsupported file type '{ext}'; supported: {', '.join(_EXT_TO_LANG)}"
+
+    try:
+        source = target.read_bytes()
+    except FileNotFoundError:
+        return f"error: file not found: {path}"
+    except Exception as exc:
+        return f"error: {exc}"
+
+    mod_name, fn_name = _LANG_TO_MODULE[lang_name]
+    try:
+        mod = importlib.import_module(mod_name)
+        language = Language(getattr(mod, fn_name)())
+    except Exception as exc:
+        return f"error: could not load language '{lang_name}': {exc}"
+
+    requested: set[str] | None = {k.strip() for k in kind.split(",")} if kind else None
+    queries = _LANG_QUERIES[lang_name]
+    parser = Parser(language)
+    tree = parser.parse(source)
+
+    results: list[tuple[int, str, str]] = []
+    for symbol_kind, query_str in queries.items():
+        if requested and symbol_kind not in requested:
+            continue
+        try:
+            cursor = QueryCursor(Query(language, query_str))
+            caps: dict[str, list] = cursor.captures(tree.root_node)
+            for node in caps.get("name", []):
+                name = node.text.decode("utf-8", errors="replace")
+                line = node.start_point[0] + 1
+                results.append((line, name, symbol_kind))
+        except Exception:
+            continue
+
+    if not results:
+        return "(no symbols found)"
+    results.sort(key=lambda r: r[0])
+    return "\n".join(f"{name}:{line}:{kind_}" for line, name, kind_ in results)
+
+
 def make_tools(working_dir: Path) -> list:
     @tool
-    async def read_file(path: str) -> str:
-        """Read the full contents of a file in the repository."""
-        return await _read_file(path, working_dir=working_dir)
+    async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
+        """Read a file in the repository.
+
+        For large files, read a targeted range rather than the full file.
+        Use file_info to check line count first, or grep/list_files to locate
+        relevant lines. Then pass start_line/end_line (1-based, inclusive) to
+        read only what is needed. Omit both to read the full file.
+        """
+        return await _read_file(path, working_dir=working_dir, start_line=start_line, end_line=end_line)
 
     @tool
     async def list_files(pattern: str) -> str:
@@ -78,4 +213,22 @@ def make_tools(working_dir: Path) -> list:
         """Search file contents for a regex pattern. Returns matching lines as file:line: content."""
         return await _grep(pattern, path=path, working_dir=working_dir)
 
-    return [read_file, list_files, grep]
+    @tool
+    async def file_info(path: str) -> str:
+        """Return line count and byte size for a file. Use before read_file to decide
+        whether to read the full file or a targeted range."""
+        return await _file_info(path, working_dir=working_dir)
+
+    @tool
+    async def symbols(path: str, kind: str | None = None) -> str:
+        """Find symbol declarations in a source file using AST parsing.
+
+        Returns one match per line as name:line_number:kind.
+        Supported languages: Python (.py), TypeScript (.ts/.tsx), JavaScript (.js), Go (.go).
+        kind: comma-separated filter — 'function', 'class', 'method', 'interface', 'type'.
+        Omit kind to return all declaration types.
+        Use file_info first to confirm the file type before calling this tool.
+        """
+        return await _symbols(path, working_dir=working_dir, kind=kind)
+
+    return [read_file, list_files, grep, file_info, symbols]
