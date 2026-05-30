@@ -23,7 +23,7 @@ _TOOL_INSTRUCTION = (
     "the <workspace> block contains verified metadata about this repository: proj_brief, tech_stack, primary_languages, branch, and domain_map; "
     "if these fields fully answer the question, respond directly without using tools; "
     "if the question requires file contents, implementation details, logic, or architecture depth, "
-    "you MUST use tools to read actual files — do not guess or rely on training knowledge"
+    "you MUST use tools to read actual files — do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"
 )
 
 _QUERY_COLOR = "#4169E1"

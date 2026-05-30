@@ -197,9 +197,12 @@ def make_tools(working_dir: Path) -> list:
         """Read a file in the repository.
 
         For large files, read a targeted range rather than the full file.
-        Use file_info to check line count first, or grep/list_files to locate
+        Use file_info to check line count first, or symbols/grep to locate
         relevant lines. Then pass start_line/end_line (1-based, inclusive) to
         read only what is needed. Omit both to read the full file.
+        When showing multiple symbols from the same file, make ONE call spanning
+        from the lowest to the highest line (add ~5 line buffer) — never one
+        call per symbol.
         """
         return await _read_file(path, working_dir=working_dir, start_line=start_line, end_line=end_line)
 
@@ -227,7 +230,8 @@ def make_tools(working_dir: Path) -> list:
         Supported languages: Python (.py), TypeScript (.ts/.tsx), JavaScript (.js), Go (.go).
         kind: comma-separated filter — 'function', 'class', 'method', 'interface', 'type'.
         Omit kind to return all declaration types.
-        Use file_info first to confirm the file type before calling this tool.
+        For simple functions the name:line output is often sufficient to answer
+        signature questions — only read_file if the full signature is required.
         """
         return await _symbols(path, working_dir=working_dir, kind=kind)
 
