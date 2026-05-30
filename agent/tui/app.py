@@ -352,6 +352,15 @@ class GekaiApp(App[None]):
         color: grey;
     }
 
+    #copy-notice {
+        height: 1;
+        background: ansi_default;
+        color: grey;
+        padding: 0 2 0 0;
+        text-align: right;
+        display: none;
+    }
+
     #context-bar {
         height: 1;
         background: ansi_default;
@@ -447,6 +456,7 @@ class GekaiApp(App[None]):
                 yield Static("Scroll to bottom  ctrl+↓", id="scroll-hint")
             yield FilePanel(id="file-panel")
             yield HistoryPanel(id="history-panel")
+            yield Static("", id="copy-notice")
             with Container(id="input-area"):
                 yield Input(id="prompt", compact=True)
                 yield Static("❯", id="prompt-marker")
@@ -454,6 +464,20 @@ class GekaiApp(App[None]):
             yield Static(f"[dim]{__version_core__}[/dim] [bold white]{__version_label__}[/bold white]", id="version-bar")
 
     async def on_mount(self) -> None:
+        # Disable terminal mouse tracking so native text selection works.
+        # Patch the method so Textual cannot re-enable it after screen transitions.
+        # Trade-off: mouse wheel scroll and in-conversation click handlers stop working.
+        _driver = getattr(self, "_driver", None)
+        if _driver is not None:
+            if hasattr(_driver, "_enable_mouse_support"):
+                _driver._enable_mouse_support = lambda: None
+            try:
+                _driver.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")
+            except Exception:
+                pass
+
+        asyncio.create_task(self._poll_clipboard())
+
         if self._needs_permissions:
             self.push_screen(PermissionScreen(), callback=self._on_permission_selected)
             return
@@ -1052,6 +1076,35 @@ class GekaiApp(App[None]):
             prompt.action_end()
         panel.hide()
         self._focus_prompt()
+
+    @staticmethod
+    def _clipboard_sequence() -> int:
+        try:
+            import ctypes
+            return ctypes.windll.user32.GetClipboardSequenceNumber()
+        except Exception:
+            return 0
+
+    async def _poll_clipboard(self) -> None:
+        last = self._clipboard_sequence()
+        while True:
+            await asyncio.sleep(0.4)
+            current = self._clipboard_sequence()
+            if current != last:
+                last = current
+                self._show_copy_notice()
+
+    def _show_copy_notice(self) -> None:
+        notice = self.query_one("#copy-notice", Static)
+        notice.update("copied to clipboard")
+        notice.display = True
+        self.set_timer(2.0, self._hide_copy_notice)
+
+    def _hide_copy_notice(self) -> None:
+        try:
+            self.query_one("#copy-notice", Static).display = False
+        except Exception:
+            pass
 
     def action_scroll_to_top(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_home(animate=False)
