@@ -71,12 +71,14 @@ class SubAgentRenderer:
         self._first_item = True
         self.name: str = ""
         self._total_tokens: int = 0
+        self._infer_count: int = 0
         self._start_time: float = time.monotonic()
         self._debug = debug
         self._current_tool: str = ""
         self._current_count: int = 0
         self._current_widget: Static | None = None
         self._current_prefix: str = ""
+        self._log_widgets: list[Static] = []
         self._progress_bar: ProgressBar | None = None
         self._header_widget: MessageWidget | None = None
         self._spinner_task: asyncio.Task | None = None
@@ -120,11 +122,13 @@ class SubAgentRenderer:
             kind = message.split()[0] if message else tool_name
             widget = Static(f"{prefix} {kind} (1 call)")
             await self._conversation.mount(widget)
+            self._log_widgets.append(widget)
             self._current_widget = widget
             self._current_prefix = prefix
         else:
             widget = Static(f"{prefix} {message}")
             await self._conversation.mount(widget)
+            self._log_widgets.append(widget)
             self._current_widget = None
         self._conversation.scroll_end(animate=False)
 
@@ -142,26 +146,31 @@ class SubAgentRenderer:
             self._total_tokens += event.prompt_tokens
         if event.completion_tokens:
             self._total_tokens += event.completion_tokens
+        self._infer_count += 1
 
-    async def done(self) -> None:
+    async def done(self, thinking_chars: int = 0) -> None:
         if self._spinner_task is not None:
             self._spinner_task.cancel()
             self._spinner_task = None
-        if self._header_widget is not None:
-            self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
-            self._header_widget.query_one(".header-text", Static).update("[#666666]Thought[/#666666]")
-            self._header_widget = None
+        for w in self._log_widgets:
+            await w.remove()
+        self._log_widgets.clear()
         if self._progress_bar is not None:
             await self._progress_bar.remove()
             self._progress_bar = None
         elapsed = time.monotonic() - self._start_time
-        parts = [_fmt_duration_verbose(elapsed)]
+        parts: list[str] = []
         if self._total_tokens > 0:
-            parts.insert(0, f"{_fmt_tokens(self._total_tokens)} tokens")
+            parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
+        parts.append(_fmt_duration_verbose(elapsed))
+        if self._infer_count > 0:
+            calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
+            parts.append(calls)
         summary = " · ".join(parts)
-        prefix = "  ⎿" if self._first_item else "   "
-        self._first_item = False
-        await self._conversation.mount(Static(f"{prefix} Done ({summary})"))
+        if self._header_widget is not None:
+            self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
+            self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought ({summary})[/#666666]")
+            self._header_widget = None
         self._conversation.scroll_end(animate=False)
 
 
@@ -833,7 +842,7 @@ class GekaiApp(App[None]):
                         elif isinstance(item, StatusUpdateEvent):
                             await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):
-                            await ws_renderer.done()
+                            await ws_renderer.done(item.thinking_chars)
             if self._session is not None:
                 self.query_one("#context-bar", Static).update(
                     _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)

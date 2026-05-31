@@ -42,7 +42,7 @@ class StatusUpdateEvent(SubAgentEvent):
 @dataclass
 class DoneEvent(SubAgentEvent):
     """Always the last event."""
-    pass
+    thinking_chars: int = 0
 
 
 class SubAgent(ABC):

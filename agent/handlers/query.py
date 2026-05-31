@@ -95,8 +95,6 @@ class QueryHandler:
             yield item
 
         history = await agent_task
-        yield DoneEvent()
-
         thinking_chars = sum(
             len(b.text)
             for msg in history
@@ -104,8 +102,7 @@ class QueryHandler:
             for b in msg.content
             if isinstance(b, ThinkingBlock)
         )
-        if thinking_chars:
-            yield LogEvent(message=f"Thought ({thinking_chars:,} chars)", tool_name="thinking")
+        yield DoneEvent(thinking_chars=thinking_chars)
 
         last = history[-1]
         if isinstance(last.content, list):
