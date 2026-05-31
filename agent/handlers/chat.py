@@ -20,9 +20,11 @@ class ChatHandler:
         model: str,
         api_key: str | None = None,
         api_base: str | None = None,
+        extra_params: dict | None = None,
     ) -> None:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
+        self._extra_params = extra_params or {}
 
     async def stream(
         self, session: Session, user_input: str
@@ -32,6 +34,7 @@ class ChatHandler:
             messages=session.messages,
             stream=True,
             stream_options={"include_usage": True},
+            **self._extra_params,
         )
         async for chunk in response:
             if chunk.choices and chunk.choices[0].delta.content is not None:

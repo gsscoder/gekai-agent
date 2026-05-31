@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from .handlers.action import ActionHandler
+from .llm.model_caps import resolve_thinking_params
 from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.query import Artifact, QueryHandler
@@ -62,6 +63,8 @@ class GekaiAgent:
         self.model: str = os.environ["GEKAI_CORE_MODEL_NAME"]
         self._api_key: str | None = os.environ.get("GEKAI_CORE_MODEL_KEY")
         self._api_base: str | None = os.environ.get("GEKAI_CORE_MODEL_URL")
+        _effort = os.environ.get("GEKAI_THINKING_EFFORT") or None
+        self._extra_params: dict = resolve_thinking_params(self.model, _effort)
         self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
         self._supp_model: str = os.environ["GEKAI_SUPPORT_MODEL_NAME"]
         self._supp_api_key: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_KEY")
@@ -82,11 +85,13 @@ class GekaiAgent:
                 model=self.model,
                 api_key=self._api_key,
                 api_base=self._api_base,
+                extra_params=self._extra_params,
             ),
             Intent.QUERY: QueryHandler(
                 model=self.model,
                 api_key=self._api_key,
                 api_base=self._api_base,
+                extra_params=self._extra_params,
             ),
             Intent.ACTION: ActionHandler(),
         }

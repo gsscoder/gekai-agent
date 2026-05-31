@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from agent.llm import Agent
 from agent.llm.events import EventBus, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
-from agent.llm.types import Message, TextBlock, ToolUseBlock
+from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
 from ..router import Session, SYSTEM_PROMPT
 from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
@@ -48,10 +48,12 @@ class QueryHandler:
         model: str,
         api_key: str | None = None,
         api_base: str | None = None,
+        extra_params: dict | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._api_base = api_base
+        self._extra_params = extra_params or {}
 
     async def stream(self, session: Session, user_input: str) -> AsyncIterator[SubAgentEvent | str]:
         bus = EventBus()
@@ -61,6 +63,7 @@ class QueryHandler:
             model=self._model,
             system=f"{SYSTEM_PROMPT}\n\n{_TOOL_INSTRUCTION}",
             event_bus=bus,
+            extra_params=self._extra_params,
         )
         for t in make_tools(session.working_dir):
             agent.tools.register(t)
@@ -93,6 +96,16 @@ class QueryHandler:
 
         history = await agent_task
         yield DoneEvent()
+
+        thinking_chars = sum(
+            len(b.text)
+            for msg in history
+            if msg.role == "assistant" and isinstance(msg.content, list)
+            for b in msg.content
+            if isinstance(b, ThinkingBlock)
+        )
+        if thinking_chars:
+            yield LogEvent(message=f"Thought ({thinking_chars:,} chars)", tool_name="thinking")
 
         last = history[-1]
         if isinstance(last.content, list):
