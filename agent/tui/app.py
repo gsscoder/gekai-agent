@@ -602,6 +602,10 @@ class GekaiApp(App[None]):
         self.query_one("#prompt", Input).focus(scroll_visible=False)
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        history_panel = self.query_one("#history-panel", HistoryPanel)
+        if history_panel.display:
+            return
+
         palette = self.query_one(CommandPalette)
         if event.value.startswith("/"):
             palette.filter(event.value[1:])
@@ -1130,8 +1134,7 @@ class GekaiApp(App[None]):
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
             panel.move_up()
-            text = panel.selected_text
-            if text is not None:
+            if (text := panel.selected_text) is not None:
                 self.query_one("#prompt", Input).value = text
             return
         if self.query_one(CommandPalette).display:
@@ -1149,8 +1152,7 @@ class GekaiApp(App[None]):
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
             panel.move_down()
-            text = panel.selected_text
-            if text is not None:
+            if (text := panel.selected_text) is not None:
                 self.query_one("#prompt", Input).value = text
             return
         if self.query_one(CommandPalette).display:
