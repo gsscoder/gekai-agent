@@ -93,6 +93,9 @@ class OpenAIAdapter(ProviderAdapter):
             text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
             tool_uses = [b for b in msg.content if isinstance(b, ToolUseBlock)]
             entry: dict[str, Any] = {"role": msg.role}
+            thinking_parts = [b.text for b in msg.content if isinstance(b, ThinkingBlock)]
+            if thinking_parts:
+                entry["reasoning_content"] = "".join(thinking_parts)
             if text_parts:
                 entry["content"] = "\n".join(text_parts)
             else:
