@@ -400,6 +400,8 @@ class GekaiApp(App[None]):
         Binding("ctrl+down", "scroll_to_end", "Scroll to bottom", priority=True),
         Binding("pageup", "scroll_page_up", "Scroll page up", priority=True),
         Binding("pagedown", "scroll_page_down", "Scroll page down", priority=True),
+        Binding("up", "navigate_up", show=False, priority=True),
+        Binding("down", "navigate_down", show=False, priority=True),
         Binding("ctrl+r", "toggle_history", "History", priority=True),
         Binding("enter", "confirm_or_submit", "Confirm", priority=True, show=False),
     ]
@@ -598,43 +600,12 @@ class GekaiApp(App[None]):
             self._clear_hint()
 
     def on_key(self, event: events.Key) -> None:
-        file_panel = self.query_one("#file-panel", FilePanel)
-        if file_panel.display:
-            if event.key in ("up", "down"):
-                if event.key == "up":
-                    file_panel.move_up()
-                else:
-                    file_panel.move_down()
-                event.stop()
-                return
-
-        panel = self.query_one("#history-panel", HistoryPanel)
-        if panel.display:
-            if event.key in ("up", "down"):
-                if event.key == "up":
-                    panel.move_up()
-                else:
-                    panel.move_down()
-                text = panel.selected_text
-                if text is not None:
-                    self.query_one("#prompt", Input).value = text
-                event.stop()
-                return
         choice_bar = self.query_one(ChoiceBar)
-        if choice_bar.display and event.key in ("left", "right", "up", "down"):
-            if event.key in ("left", "up"):
+        if choice_bar.display and event.key in ("left", "right"):
+            if event.key == "left":
                 choice_bar.move_left()
             else:
                 choice_bar.move_right()
-            event.stop()
-            return
-
-        palette = self.query_one(CommandPalette)
-        if palette.display and event.key in ("up", "down"):
-            if event.key == "up":
-                palette.move_up()
-            else:
-                palette.move_down()
             event.stop()
             return
 
@@ -1117,6 +1088,44 @@ class GekaiApp(App[None]):
 
     def action_scroll_page_down(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_page_down(animate=False)
+
+    def action_navigate_up(self) -> None:
+        if self.query_one("#file-panel", FilePanel).display:
+            self.query_one("#file-panel", FilePanel).move_up()
+            return
+        panel = self.query_one("#history-panel", HistoryPanel)
+        if panel.display:
+            panel.move_up()
+            text = panel.selected_text
+            if text is not None:
+                self.query_one("#prompt", Input).value = text
+            return
+        if self.query_one(CommandPalette).display:
+            self.query_one(CommandPalette).move_up()
+            return
+        if self.query_one(ChoiceBar).display:
+            self.query_one(ChoiceBar).move_left()
+            return
+        self.query_one("#conversation", ConversationContainer).scroll_up(animate=False)
+
+    def action_navigate_down(self) -> None:
+        if self.query_one("#file-panel", FilePanel).display:
+            self.query_one("#file-panel", FilePanel).move_down()
+            return
+        panel = self.query_one("#history-panel", HistoryPanel)
+        if panel.display:
+            panel.move_down()
+            text = panel.selected_text
+            if text is not None:
+                self.query_one("#prompt", Input).value = text
+            return
+        if self.query_one(CommandPalette).display:
+            self.query_one(CommandPalette).move_down()
+            return
+        if self.query_one(ChoiceBar).display:
+            self.query_one(ChoiceBar).move_right()
+            return
+        self.query_one("#conversation", ConversationContainer).scroll_down(animate=False)
 
     def action_select_command(self, name: str) -> None:
         palette = self.query_one(CommandPalette)
