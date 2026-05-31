@@ -20,6 +20,7 @@ from .events import (
 from .result import AgentResult, AgentResultEvent
 from .retry import RetryAttempt, RetryPolicy
 from .tools import Skill, Tool, ToolRegistry, tool
+from .model_caps import ModelCaps, resolve_thinking_params
 from .types import (
     CompletionResponse,
     ContentBlock,
@@ -84,4 +85,6 @@ __all__ = [
     "AgentStopped",
     "AgentResult",
     "AgentResultEvent",
+    "ModelCaps",
+    "resolve_thinking_params",
 ]
