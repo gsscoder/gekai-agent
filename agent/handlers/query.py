@@ -6,12 +6,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from agent.llm import Agent
-from agent.llm.events import EventBus, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
 from ..router import Session, SYSTEM_PROMPT
-from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent
+from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..tools import make_tools
 
 
@@ -68,7 +68,7 @@ class QueryHandler:
         for t in make_tools(session.working_dir):
             agent.tools.register(t)
 
-        queue: asyncio.Queue[LogEvent | InferEndEvent | None] = asyncio.Queue()
+        queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
 
         async def _consume_bus() -> None:
             async for event in bus.stream():
@@ -79,6 +79,8 @@ class QueryHandler:
                         prompt_tokens=event.delta.get("input_tokens"),
                         completion_tokens=event.delta.get("output_tokens"),
                     ))
+                elif isinstance(event, ThinkingChunkReceived):
+                    await queue.put(ThinkingTokenEvent(text=event.text))
             await queue.put(None)
 
         yield SubAgentStartEvent(name="Query", description="Inspecting workspace", color=_QUERY_COLOR)

@@ -40,6 +40,12 @@ class StatusUpdateEvent(SubAgentEvent):
 
 
 @dataclass
+class ThinkingTokenEvent(SubAgentEvent):
+    """A chunk of thinking/reasoning tokens from the LLM."""
+    text: str = ""
+
+
+@dataclass
 class DoneEvent(SubAgentEvent):
     """Always the last event."""
     thinking_chars: int = 0

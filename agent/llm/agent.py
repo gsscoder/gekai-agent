@@ -18,6 +18,7 @@ from .events import (
     ModelResponseReceived,
     RetryAttemptEvent,
     StopReason,
+    ThinkingChunkReceived,
     ToolExecutionCompleted,
     ToolExecutionStarted,
     TurnStarted,
@@ -35,6 +36,7 @@ from .types import (
     StreamDone,
     StreamEvent,
     TextBlock,
+    ThinkingDelta,
     TokenCount,
     ToolResultBlock,
     ToolUseBlock,
@@ -85,7 +87,17 @@ class Agent:
     async def _run_loop(self, messages: list[Message]) -> None:
         async def _complete() -> CompletionResponse:
             self.usage.record_call()
-            return await self.provider.complete(**self._provider_kwargs(messages))
+            final: CompletionResponse | None = None
+            async for ev in self.provider.stream(**self._provider_kwargs(messages)):
+                if isinstance(ev, ThinkingDelta):
+                    self._emit(ThinkingChunkReceived(text=ev.text))
+                elif isinstance(ev, StreamDone):
+                    final = ev.response
+            if final is None:
+                raise RuntimeError(
+                    f"{type(self.provider).__name__}.stream() ended without a StreamDone event"
+                )
+            return final
 
         try:
             for turn in range(1, self.max_iterations + 1):

@@ -25,7 +25,7 @@ from agent.settings import load_context_limit, load_ws_scan_staleness_min, resol
 from agent.workspace import list_files
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent
+from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent
 
 from .palette import CommandPalette
 from .permissions import PermissionScreen
@@ -82,6 +82,7 @@ class SubAgentRenderer:
         self._progress_bar: ProgressBar | None = None
         self._header_widget: MessageWidget | None = None
         self._spinner_task: asyncio.Task | None = None
+        self._thinking_buf: str = ""
 
     async def _animate_dot(self) -> None:
         frame = 0
@@ -141,6 +142,14 @@ class SubAgentRenderer:
         elif event.total is not None:
             self._progress_bar.update(total=event.total, progress=event.progress)
 
+    def thinking_chunk(self, text: str) -> None:
+        self._thinking_buf += text
+        snippet = _last_sentence(self._thinking_buf)
+        if snippet and self._header_widget is not None:
+            self._header_widget.query_one(".header-text", Static).update(
+                f"[bold #666666]Thinking({snippet})[/bold #666666]"
+            )
+
     def accumulate_tokens(self, event: "InferEndEvent") -> None:
         if event.prompt_tokens:
             self._total_tokens += event.prompt_tokens
@@ -172,6 +181,20 @@ class SubAgentRenderer:
             self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought ({summary})[/#666666]")
             self._header_widget = None
         self._conversation.scroll_end(animate=False)
+
+
+def _last_sentence(text: str, max_chars: int = 60) -> str:
+    last = -1
+    for ch in ".!?\n":
+        idx = text.rfind(ch)
+        if idx > last:
+            last = idx
+    fragment = text[last + 1:].strip() if last >= 0 else text.strip()
+    if not fragment and last >= 0:
+        fragment = text[:last + 1].strip()
+    if not fragment:
+        return ""
+    return (fragment[:max_chars].rstrip() + "...") if len(fragment) > max_chars else fragment
 
 
 def _resolve_at_refs(text: str) -> str:
@@ -839,6 +862,8 @@ class GekaiApp(App[None]):
                                 query_tool_count += 1
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)
+                        elif isinstance(item, ThinkingTokenEvent):
+                            ws_renderer.thinking_chunk(item.text)
                         elif isinstance(item, StatusUpdateEvent):
                             await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):

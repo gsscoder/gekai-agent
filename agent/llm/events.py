@@ -89,6 +89,13 @@ class AgentStopped:
     run_id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ThinkingChunkReceived:
+    """A chunk of thinking/reasoning tokens emitted during a streaming turn."""
+    text: str
+    run_id: str = ""
+
+
 Event = (
     AgentStarted
     | TurnStarted
@@ -99,6 +106,7 @@ Event = (
     | UsageUpdated
     | RetryAttemptEvent
     | AgentStopped
+    | ThinkingChunkReceived
 )
 
 
@@ -167,6 +175,7 @@ __all__ = [
     "ModelResponseReceived",
     "RetryAttemptEvent",
     "StopReason",
+    "ThinkingChunkReceived",
     "ToolExecutionCompleted",
     "ToolExecutionStarted",
     "TurnStarted",
