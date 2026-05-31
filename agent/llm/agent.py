@@ -59,6 +59,7 @@ class Agent:
     event_bus: EventBus | None = None
     cost_ceiling: float | None = None
     wall_clock_timeout: float | None = None
+    extra_params: dict[str, Any] = field(default_factory=dict)
     _run_id: str = field(default="", init=False, repr=False, compare=False)
 
     async def run(self, prompt: str | list[Message], *, run_id: str | None = None) -> list[Message]:
@@ -265,6 +266,7 @@ class Agent:
             "system": self.system,
             "tools": self.tools.definitions() or None,
             "max_tokens": self.max_tokens,
+            **self.extra_params,
         }
 
     async def _apply_response(

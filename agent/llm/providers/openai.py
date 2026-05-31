@@ -15,6 +15,8 @@ from ..types import (
     StreamEvent,
     TextBlock,
     TextDelta,
+    ThinkingBlock,
+    ThinkingDelta,
     ToolDefinition,
     ToolResultBlock,
     ToolUseBlock,
@@ -129,6 +131,9 @@ class OpenAIAdapter(ProviderAdapter):
         choice = response.choices[0]
         message = choice.message
         content: list[ContentBlock] = []
+        reasoning = getattr(message, "reasoning_content", None)
+        if reasoning:
+            content.append(ThinkingBlock(text=reasoning))
         text = getattr(message, "content", None)
         if text:
             content.append(TextBlock(text=text))
@@ -175,6 +180,7 @@ class OpenAIAdapter(ProviderAdapter):
         payload.update(kwargs)
 
         text_buf: list[str] = []
+        thinking_buf: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         tool_call_order: list[int] = []
         stop_reason = "stop"
@@ -202,6 +208,10 @@ class OpenAIAdapter(ProviderAdapter):
             if text_piece:
                 text_buf.append(text_piece)
                 yield TextDelta(text=text_piece)
+            reasoning_piece = getattr(delta, "reasoning_content", None)
+            if reasoning_piece:
+                thinking_buf.append(reasoning_piece)
+                yield ThinkingDelta(text=reasoning_piece)
             for tc_delta in getattr(delta, "tool_calls", None) or []:
                 idx = getattr(tc_delta, "index", 0)
                 fn = getattr(tc_delta, "function", None)
@@ -221,6 +231,9 @@ class OpenAIAdapter(ProviderAdapter):
         yield MessageStop(stop_reason=stop_reason, usage=usage)
 
         content: list[ContentBlock] = []
+        thinking = "".join(thinking_buf)
+        if thinking:
+            content.append(ThinkingBlock(text=thinking))
         text = "".join(text_buf)
         if text:
             content.append(TextBlock(text=text))

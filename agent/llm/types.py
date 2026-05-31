@@ -14,6 +14,11 @@ class TextBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class ThinkingBlock:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class ToolUseBlock:
     id: str
     name: str
@@ -27,7 +32,7 @@ class ToolResultBlock:
     is_error: bool = False
 
 
-ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
+ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
 
 
 @dataclass(slots=True)
@@ -56,6 +61,13 @@ class ToolDefinition:
 @dataclass(frozen=True, slots=True)
 class TextDelta:
     """Incremental text chunk emitted during streaming."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingDelta:
+    """Incremental thinking/reasoning chunk emitted during streaming."""
 
     text: str
 
@@ -190,4 +202,4 @@ class StreamDone:
     response: CompletionResponse
 
 
-StreamEvent = TextDelta | ToolUseStart | ToolUseDelta | ToolUseStop | MessageStop | StreamDone
+StreamEvent = TextDelta | ThinkingDelta | ToolUseStart | ToolUseDelta | ToolUseStop | MessageStop | StreamDone
