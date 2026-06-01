@@ -66,7 +66,7 @@ vs. **when tools are mandatory** (file contents, logic, depth).
 ## Intent Classification
 
 `IntentClassifier.classify(user_input, history=None)` makes **one LLM call**.
-Returns `list[tuple[Intent, str, bool]]` — `(intent, sub-prompt, plan_flag)`.
+Returns `list[tuple[Intent, str]]` — `(intent, sub-prompt)`.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
@@ -74,13 +74,11 @@ Returns `list[tuple[Intent, str, bool]]` — `(intent, sub-prompt, plan_flag)`.
 CLASSIFIER_PROMPT
 ├── output format     label: text  (one line per segment)
 ├── <labels>          chat | query | action | memorize | clarify
-├── <rules>           preference order; +plan heuristics
+├── <rules>           preference order
 └── <examples>        few-shot
 ```
 
-**`+plan` suffix** signals broad/multi-file scope → WsExplorer Y/N confirmation shown before query runs.
-
-Fallback on parse failure: `[(Intent.CHAT, user_input, False)]`.
+Fallback on parse failure: `[(Intent.CHAT, user_input)]`.
 
 ### Routing table
 
@@ -131,7 +129,6 @@ It streams `SubAgentEvent` instances to the TUI for live progress display.
 
 - **Startup**
 - **`/workspace:rebuild`**
-- **`query+plan` intent** when workspace cache may be stale → Y/N confirmation
 
 `.gekai/` directory excluded from activation triggers.
 

@@ -4,9 +4,10 @@
 Active development
 
 ## Current Focus
-Query handler intelligence: deterministic tool activation and workspace-aware routing
+Upgrade intent classifier and introduce strategist component
 
 ## Recent Changes
-- Full Textual TUI with intent classifier, workspace-aware routing, WS-explorer Y/N activation, slash command palette, permission modal, token tracking, and color-randomized spinner
+- Runtime permission gate (`PermissionGate`) wired into tool execution loop; tools declare required permission and are blocked or escalated via async TUI callback; `+plan` tagging and WsExplorer Y/N activation removed
+- Full Textual TUI with intent classifier, workspace-aware routing, slash command palette, permission dialog, token tracking, and color-randomized spinner
 - History panel (Ctrl+R): navigable prompt history overlay in TUI footer, persisted as JSONL per workspace
 - File reference panel (@): contains-search over repo files; selection inserts `@path` in input, post-processed to backtick notation before model send

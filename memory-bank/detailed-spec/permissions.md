@@ -5,36 +5,18 @@ Session-scoped filesystem access control stored in `.gekai/settings.local.json`
 
 Path: `{working_dir}/.gekai/settings.local.json`
 
-Current serialized schema (what `save_permissions` actually writes):
-
-```json
-{
-  "permissions": {
-    "read": "allow",
-    "write": "deny"
-  }
-}
-```
-
-Planned schema (not yet implemented — forward-looking):
+Serialized schema (what `save_permissions` writes):
 
 ```json
 {
   "permissions": {
     "workspace": { "read": "allow", "write": "deny", "exec": "deny" },
-    "external": [
-      {
-        "path": "C:\\MyRepos\\Other Project",
-        "read": "allow",
-        "write": "deny",
-        "exec": "deny"
-      }
-    ]
+    "external": []
   }
 }
 ```
 
-The `workspace` nesting and `external` array are not written or read by the current code. `load_permissions` reads `data["permissions"]["read"]` and `data["permissions"]["write"]` directly from the flat block.
+`external` is initialized as `[]` on every save; external path permission handling is not yet implemented.
 
 ## Dataclass
 
@@ -48,11 +30,24 @@ class Permissions:
     exec: bool = False
 ```
 
-`exec` is present on the dataclass but never serialized to or deserialized from the settings file. `load_permissions` does not read an `exec` field; it is always `False` on loaded instances (Python default).
+`exec` is serialized and deserialized via the `workspace.exec` field in the settings file.
+
+## Permission Gate (`agent/permissions.py`)
+
+`PermissionCallback = Callable[[str, str], Awaitable[bool]]` — async callback: `(permission_name, tool_name) -> bool`. Used by the TUI to prompt the user at runtime.
+
+`PermissionGate` — dataclass with fields `permissions: Permissions` and `on_request: PermissionCallback | None`. Internal `_pending: set[str]` deduplicates concurrent requests for the same permission.
+
+`PermissionGate.check(tool) -> bool`:
+- Returns `True` if `tool.required_permission == "none"` or the flag is already set on `permissions`
+- If not granted and `on_request` is set, calls it; on grant, sets the flag on `permissions` and returns `True`
+- Returns `False` if `on_request` is `None` or the callback returns `False`
+
+Tools expose `required_permission: str` (`"none"`, `"read"`, or `"write"`). `ToolRegistry.run` calls `gate.check(tool)` before executing; on deny, returns a `ToolResultBlock` with `is_error=True` and message `"Permission denied: '{tool_name}' requires '{perm}' permission which was not granted"`.
 
 ## Startup Dialog
 
-`PermissionScreen` in `agent/tui/permissions.py` — a `ModalScreen[str | None]` that shows three choices from `PERMISSION_CHOICES` in `agent/settings.py`. Navigation: up/down arrows, Enter to confirm, Escape to cancel (returns `None`; app exits on cancel).
+Inline `_ask_choice` call in `GekaiApp` (not a separate screen). Shows three choices from `PERMISSION_CHOICES` defined in `agent/settings.py`. On cancel or unknown choice, defaults to `"deny"`.
 
 | Choice key | Label | Permissions result |
 |---|---|---|
@@ -68,15 +63,14 @@ Session continues after "No Access"; chat still works, file tools are blocked.
 
 ## Load / Save
 
-`load_permissions(working_dir: Path) -> Permissions | None` — returns `None` if the settings file does not exist (triggers startup dialog). Reads `permissions.read` and `permissions.write` string values; `"allow"` → `True`, anything else → `False`.
+`load_permissions(working_dir: Path) -> Permissions | None` — returns `None` if the settings file does not exist (triggers startup dialog). Reads `permissions.workspace.read`, `.write`, `.exec`; `"allow"` → `True`, anything else → `False`.
 
-`save_permissions(working_dir: Path, permissions: Permissions) -> None` — creates `.gekai/` if absent, writes the flat `read`/`write` block. Does not write `exec`, `workspace` nesting, or `external`.
+`save_permissions(working_dir: Path, permissions: Permissions) -> None` — creates `.gekai/` if absent; reads existing file to preserve other keys; writes nested `permissions.workspace` block with `read`/`write`/`exec`; initializes `permissions.external` to `[]` if not present.
 
 ## exec Permission (Forward-Looking)
 
-`exec` on the `Permissions` dataclass is reserved for lazy grant of shell execution. Intended behavior (not yet implemented):
+`exec` on `Permissions` is serialized to/from `permissions.workspace.exec` in the settings file (defaults to `"deny"`). Intended lazy-grant behavior (not yet implemented):
 
-- Both workspace and external `exec` start as `"deny"`.
 - When a tool attempts a shell command, the TUI asks inline via `_ask_choice`.
 - If granted, the settings file is updated to persist the grant.
 - No shell execution tool exists yet; this path is not reachable in the current codebase.
