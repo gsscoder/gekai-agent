@@ -196,7 +196,7 @@ async def _symbols(
 
 
 def make_tools(working_dir: Path) -> list:
-    @tool
+    @tool(is_read_only=True, required_permission="read")
     async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
         """Read a file in the repository.
 
@@ -210,24 +210,24 @@ def make_tools(working_dir: Path) -> list:
         """
         return await _read_file(path, working_dir=working_dir, start_line=start_line, end_line=end_line)
 
-    @tool
+    @tool(is_read_only=True, required_permission="read")
     async def list_files(pattern: str) -> str:
         """List files and directories matching a glob pattern (e.g. '**/*.py', '*').
         Directories appear with a trailing '/'."""
         return await _list_files(pattern, working_dir=working_dir)
 
-    @tool
+    @tool(is_read_only=True, required_permission="read")
     async def grep(pattern: str, path: str | None = None) -> str:
         """Search file contents for a regex pattern. Returns matching lines as file:line: content."""
         return await _grep(pattern, path=path, working_dir=working_dir)
 
-    @tool
+    @tool(is_read_only=True, required_permission="read")
     async def file_info(path: str) -> str:
         """Return line count and byte size for a file. Use before read_file to decide
         whether to read the full file or a targeted range."""
         return await _file_info(path, working_dir=working_dir)
 
-    @tool
+    @tool(is_read_only=True, required_permission="read")
     async def symbols(path: str, kind: str | None = None) -> str:
         """Find symbol declarations in a source file using AST parsing.
 

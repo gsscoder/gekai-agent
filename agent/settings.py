@@ -10,12 +10,13 @@ from pathlib import Path
 class Permissions:
     read: bool
     write: bool
+    exec: bool = False
 
 
 PERMISSION_CHOICES = [
     ("read_only", "Read Only — scan and read files, no modifications"),
     ("full", "Full Access — read, write, and delete files"),
-    ("deny", "Deny — exit to terminal"),
+    ("deny", "No Access — chat only, no file operations"),
 ]
 
 
@@ -28,22 +29,28 @@ def load_permissions(working_dir: Path) -> Permissions | None:
     if not path.exists():
         return None
     data = json.loads(path.read_text())
-    perms = data.get("permissions", {})
+    ws = data.get("permissions", {}).get("workspace", {})
     return Permissions(
-        read=perms.get("read") == "allow",
-        write=perms.get("write") == "allow",
+        read=ws.get("read") == "allow",
+        write=ws.get("write") == "allow",
+        exec=ws.get("exec") == "allow",
     )
 
 
 def save_permissions(working_dir: Path, permissions: Permissions) -> None:
     path = _settings_path(working_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "permissions": {
-            "read": "allow" if permissions.read else "deny",
-            "write": "allow" if permissions.write else "deny",
-        }
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    perms = data.setdefault("permissions", {})
+    perms["workspace"] = {
+        "read": "allow" if permissions.read else "deny",
+        "write": "allow" if permissions.write else "deny",
+        "exec": "allow" if permissions.exec else "deny",
     }
+    perms.setdefault("external", [])
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -70,6 +77,8 @@ def resolve_permissions(choice: str) -> Permissions | None:
         return Permissions(read=True, write=False)
     if choice == "full":
         return Permissions(read=True, write=True)
+    if choice == "deny":
+        return Permissions(read=False, write=False, exec=False)
     return None
 
 

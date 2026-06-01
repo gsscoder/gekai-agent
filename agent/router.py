@@ -51,14 +51,13 @@ class Session:
         default_factory=lambda: [{"role": "system", "content": SYSTEM_PROMPT}]
     )
     working_dir: Path = field(default_factory=Path.cwd)
-    permissions: Permissions = field(default_factory=lambda: Permissions(read=True, write=False))
+    permissions: Permissions = field(default_factory=lambda: Permissions(read=True, write=False, exec=False))
 
 
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
     "output format: each line must be exactly `label: text` where label is one of chat, query, action, memorize, clarify\n"
-    "labels can optionally carry a +plan suffix (e.g. query+plan, action+plan) — see rules below\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "<labels>\n"
     " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
@@ -74,20 +73,18 @@ CLASSIFIER_PROMPT = (
     " assume all requests relate to the current codebase unless clearly otherwise\n"
     " when a message could fit multiple labels, prefer the least destructive: chat over query, query over action\n"
     " prefer chat or query over clarify — only clarify if truly blocked\n"
-    " use +plan when the request is broad, architectural, spans multiple files, or cannot be answered with a single targeted tool call\n"
-    " do not use +plan for specific file reads, simple questions, or narrowly scoped requests\n"
     "<examples>\n"
     " input: refactor auth error handling and tell me if GET /users returns JSON\n"
     "  action: refactor auth error handling\n"
     "  query: does GET /users return JSON\n"
     " input: describe the project\n"
-    "  query+plan: describe the project\n"
+    "  query: describe the project\n"
     " input: how does the auth system work\n"
-    "  query+plan: explain how the auth system works\n"
+    "  query: explain how the auth system works\n"
     " input: what's on line 10 of main.py\n"
     "  query: what is on line 10 of main.py\n"
     " input: refactor error handling across all modules\n"
-    "  action+plan: refactor error handling across all modules\n"
+    "  action: refactor error handling across all modules\n"
     " input: rename the variable on line 5 of utils.py\n"
     "  action: rename the variable on line 5 of utils.py"
 )
@@ -103,7 +100,7 @@ class IntentClassifier:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
-    async def classify(self, user_input: str, history: list[dict] | None = None) -> list[tuple[Intent, str, bool]]:
+    async def classify(self, user_input: str, history: list[dict] | None = None) -> list[tuple[Intent, str]]:
         context_msgs: list[dict] = []
         if history:
             turns = [m for m in history if m["role"] in ("user", "assistant")][-6:]
@@ -117,21 +114,19 @@ class IntentClassifier:
             ],
         )
         raw: str = response.choices[0].message.content.strip()
-        segments: list[tuple[Intent, str, bool]] = []
+        segments: list[tuple[Intent, str]] = []
         for line in raw.splitlines():
             line = line.strip()
             if not line or ": " not in line:
                 continue
             label, _, sub_prompt = line.partition(": ")
             label = label.strip().lower()
-            plan = label.endswith("+plan")
-            label = label.removesuffix("+plan")
             try:
                 intent = Intent(label)
             except ValueError:
                 intent = Intent.CHAT
-            segments.append((intent, sub_prompt.strip(), plan))
+            segments.append((intent, sub_prompt.strip()))
         if not segments:
             _log.warning("classifier parse failure — no valid segments; raw output: %r", raw)
-            return [(Intent.CHAT, user_input, False)]
+            return [(Intent.CHAT, user_input)]
         return segments

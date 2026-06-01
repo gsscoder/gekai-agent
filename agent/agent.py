@@ -14,6 +14,7 @@ from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.query import Artifact, QueryHandler
 from .normalizer import PromptNormalizer
+from .permissions import PermissionCallback
 from .router import Intent, IntentClassifier, Session
 from .settings import Permissions
 from toon import encode as toon_encode
@@ -124,7 +125,7 @@ class GekaiAgent:
             session.messages.extend(restored_messages)
         return session
 
-    async def classify(self, user_input: str) -> list[tuple[Intent, str, bool]]:
+    async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
         return await self._classifier.classify(user_input)
 
     async def normalize(self, user_input: str) -> tuple[str, str | None]:
@@ -137,8 +138,9 @@ class GekaiAgent:
         self,
         session: Session,
         user_input: str,
-        segments: list[tuple[Intent, str, bool]],
+        segments: list[tuple[Intent, str]],
         original_input: str | None = None,
+        permission_callback: PermissionCallback | None = None,
     ) -> AsyncIterator[str | UsageInfo | SubAgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1])
@@ -146,7 +148,7 @@ class GekaiAgent:
         first = True
         artifact_content: str | None = None
 
-        for intent, sub_prompt, plan in segments:
+        for intent, sub_prompt in segments:
             if not first:
                 sep = "\n\n"
                 all_chunks.append(sep)
@@ -177,7 +179,9 @@ class GekaiAgent:
             else:
                 handler = self._handlers[intent]
                 if hasattr(handler, "stream"):
-                    async for item in handler.stream(session, sub_prompt):
+                    async for item in handler.stream(
+                        session, sub_prompt, permission_callback=permission_callback,
+                    ):
                         if isinstance(item, str):
                             all_chunks.append(item)
                         elif isinstance(item, Artifact):

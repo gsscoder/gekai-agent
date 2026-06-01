@@ -21,14 +21,13 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import now_utc_str, _normalize_path
 from agent.router import Intent, Session
-from agent.settings import load_context_limit, load_ws_scan_staleness_min, resolve_permissions, save_permissions
+from agent.settings import PERMISSION_CHOICES, load_context_limit, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.workspace import list_files
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
 from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent
 
 from .palette import CommandPalette
-from .permissions import PermissionScreen
 from .history import PromptHistory
 from .widgets import ChoiceBar, FilePanel, HistoryPanel, MessageKind, MessageWidget
 
@@ -481,6 +480,8 @@ class GekaiApp(App[None]):
         self._file_paths: list[str] | None = None
         self._file_at_pos: int = -1
         self._worker_cancelled: bool = False
+        self._permission_denied_msg: str | None = None
+        self._status_paused: bool = False
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -517,19 +518,6 @@ class GekaiApp(App[None]):
                 pass
 
         asyncio.create_task(self._poll_clipboard())
-
-        if self._needs_permissions:
-            self.push_screen(PermissionScreen(), callback=self._on_permission_selected)
-            return
-        self.run_worker(self._init_session(), exclusive=True)
-
-    def _on_permission_selected(self, choice: str | None) -> None:
-        perms = resolve_permissions(choice) if choice else None
-        if perms is None:
-            self.exit()
-            return
-        save_permissions(self._working_dir, perms)
-        self._agent.permissions = perms
         self.run_worker(self._init_session(), exclusive=True)
 
     async def _init_session(self) -> None:
@@ -577,6 +565,19 @@ class GekaiApp(App[None]):
 
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
+
+        if self._needs_permissions:
+            self._needs_permissions = False
+            choice = await self._ask_choice(
+                "Gekai needs access to this workspace:",
+                PERMISSION_CHOICES,
+            )
+            perms = resolve_permissions(choice) if choice else None
+            if perms is None:
+                perms = resolve_permissions("deny")
+            save_permissions(self._working_dir, perms)
+            self._agent.permissions = perms
+            self._session.permissions = perms
 
     async def _clear_session(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
@@ -657,6 +658,27 @@ class GekaiApp(App[None]):
         prompt.focus(scroll_visible=False)
         prompt.insert_text_at_cursor(event.character)
         event.stop()
+
+    async def _permission_callback(self, kind: str, tool_name: str) -> bool:
+        if self._worker_cancelled:
+            return False
+        labels = {"read": "file reading", "write": "file writing", "exec": "command execution"}
+        question = f"'{tool_name}' needs {labels.get(kind, kind)} permission — grant?"
+        self._status_paused = True
+        pause_start = time.monotonic()
+        choice = await self._ask_choice(question, [("y", "Yes"), ("n", "No")])
+        self._status_paused = False
+        if choice == "y":
+            self._status_start += time.monotonic() - pause_start
+            setattr(self._session.permissions, kind, True)
+            save_permissions(self._working_dir, self._session.permissions)
+            return True
+        label = labels.get(kind, kind)
+        self._permission_denied_msg = f"[white]Access denied[/white]\n[#666666]⎿ the operation requires [bold]{label}[/bold] permission[/#666666]"
+        if self._worker is not None and not self._worker.is_finished:
+            self._worker_cancelled = True
+            self._worker.cancel()
+        return False
 
     async def _ask_choice(
         self,
@@ -826,12 +848,7 @@ class GekaiApp(App[None]):
             normalized, src_lang = await self._agent.normalize(user_input)
             segments = await self._agent.classify(normalized)
             if self._agent.debug:
-                labels = []
-                for intent, _sub, plan in segments:
-                    label = intent.name
-                    if plan:
-                        label += "+plan"
-                    labels.append(label)
+                labels = [intent.name for intent, _ in segments]
                 debug_text = f"\\[classifier: {', '.join(labels)}]"
                 await conversation.mount(
                     MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3")
@@ -849,12 +866,16 @@ class GekaiApp(App[None]):
                 self._current_lang = new_lang
                 lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
                 self._session.messages.append({"role": "system", "content": lang_hint})
-            # [dead code] workspace staleness check on QUERY+plan — disabled pending redesign
-            # if any(intent == Intent.QUERY and plan for intent, _, plan in segments):
+            # [dead code] workspace staleness check on QUERY — disabled pending redesign
+            # if any(intent == Intent.QUERY for intent, _ in segments):
             #     await self._stop_status_animation()
             #     await self._maybe_rescan_workspace(conversation)
             #     await self._start_status_animation(verb[0], color)
-            async for item in self._agent.process_stream(self._session, normalized, segments, original_input=user_input):
+            async for item in self._agent.process_stream(
+                self._session, normalized, segments,
+                original_input=user_input,
+                permission_callback=self._permission_callback,
+            ):
                 if isinstance(item, str):
                     answer_chunks.append(item)
                 elif isinstance(item, SubAgentEvent):
@@ -899,7 +920,9 @@ class GekaiApp(App[None]):
                 ws_renderer.stop_spinner()
             if self._worker_cancelled:
                 self._worker_cancelled = False
-                await conversation.mount(MessageWidget(MessageKind.INTERRUPTED, ""))
+                msg = self._permission_denied_msg or ""
+                self._permission_denied_msg = None
+                await conversation.mount(MessageWidget(MessageKind.INTERRUPTED, msg))
                 conversation.scroll_end(animate=False)
             self._worker = None
             self._focus_prompt()
@@ -952,6 +975,8 @@ class GekaiApp(App[None]):
                 pass
 
     def _tick_status(self, color: str) -> None:
+        if self._status_paused:
+            return
         frame = _SPINNER_FRAMES[self._status_frame % len(_SPINNER_FRAMES)]
         self._status_frame += 1
         elapsed = time.monotonic() - self._status_start

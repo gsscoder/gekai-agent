@@ -55,7 +55,7 @@ def main() -> None:
     permissions = load_permissions(working_dir)
     needs_permissions = permissions is None
     if needs_permissions:
-        permissions = Permissions(read=False, write=False)
+        permissions = Permissions(read=False, write=False, exec=False)
 
     agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=args.debug)
 

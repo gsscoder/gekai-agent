@@ -14,6 +14,9 @@ from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from .types import ToolDefinition, ToolResultBlock, ToolUseBlock
 
+if __import__("typing").TYPE_CHECKING:
+    from agent.permissions import PermissionGate
+
 ToolFunc = Callable[..., Any]
 
 _PRIMITIVE_SCHEMA: dict[type, dict[str, Any]] = {
@@ -133,6 +136,7 @@ class Tool:
     is_async: bool
     is_read_only: bool = False
     is_concurrency_safe: bool = True
+    required_permission: str = "read"
     hidden_params: frozenset[str] = frozenset()
     bound_params: frozenset[str] = frozenset()
 
@@ -174,6 +178,7 @@ def tool(
     description: str | None = None,
     is_read_only: bool = False,
     is_concurrency_safe: bool = True,
+    required_permission: str = "read",
     hidden_params: set[str] | None = None,
 ) -> Any:
     """Decorator that turns a function into a `Tool`."""
@@ -199,6 +204,7 @@ def tool(
             is_async=inspect.iscoroutinefunction(f),
             is_read_only=is_read_only,
             is_concurrency_safe=is_concurrency_safe,
+            required_permission=required_permission,
             hidden_params=hp,
         )
 
@@ -210,6 +216,10 @@ def tool(
 @dataclass(slots=True)
 class ToolRegistry:
     _tools: dict[str, Tool] = field(default_factory=dict)
+    _gate: PermissionGate | None = field(default=None, repr=False)
+
+    def set_gate(self, gate: PermissionGate | None) -> None:
+        self._gate = gate
 
     def register(self, item: Tool | ToolFunc) -> Tool:
         t = item if isinstance(item, Tool) else tool(item)
@@ -263,6 +273,12 @@ class ToolRegistry:
                 result = ToolResultBlock(
                     tool_use_id=use.id,
                     content=f"Unknown tool: {use.name}",
+                    is_error=True,
+                )
+            elif self._gate is not None and not await self._gate.check(tool_obj):
+                result = ToolResultBlock(
+                    tool_use_id=use.id,
+                    content=f"Permission denied: '{use.name}' requires '{tool_obj.required_permission}' permission which was not granted",
                     is_error=True,
                 )
             else:

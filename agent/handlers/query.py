@@ -10,6 +10,7 @@ from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionStart
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
+from ..permissions import PermissionCallback, PermissionGate
 from ..router import Session, SYSTEM_PROMPT
 from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..tools import make_tools
@@ -55,7 +56,12 @@ class QueryHandler:
         self._api_base = api_base
         self._extra_params = extra_params or {}
 
-    async def stream(self, session: Session, user_input: str) -> AsyncIterator[SubAgentEvent | str]:
+    async def stream(
+        self,
+        session: Session,
+        user_input: str,
+        permission_callback: PermissionCallback | None = None,
+    ) -> AsyncIterator[SubAgentEvent | str]:
         bus = EventBus()
         adapter = OpenAIAdapter(api_key=self._api_key, base_url=self._api_base)
         agent = Agent(
@@ -67,6 +73,10 @@ class QueryHandler:
         )
         for t in make_tools(session.working_dir):
             agent.tools.register(t)
+        agent.tools.set_gate(PermissionGate(
+            permissions=session.permissions,
+            on_request=permission_callback,
+        ))
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
 

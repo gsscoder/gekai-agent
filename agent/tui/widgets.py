@@ -117,11 +117,15 @@ class MessageWidget(Widget):
             else:
                 yield Markdown(self._text)
         elif self._kind == MessageKind.INTERRUPTED:
-            yield Static("[#666666]●[/#666666]")
-            yield Static(
-                "[white]Interrupted[/white]\n[#666666]⎿ How should Gekai proceed instead?[/#666666]",
-                classes="assistant-body",
-            )
+            if self._text:
+                yield Static("[red]●[/red]")
+                yield Static(self._text, classes="assistant-body")
+            else:
+                yield Static("[#666666]●[/#666666]")
+                yield Static(
+                    "[white]Interrupted[/white]\n[#666666]⎿ How should Gekai proceed instead?[/#666666]",
+                    classes="assistant-body",
+                )
         elif self._kind == MessageKind.ERROR:
             yield Static("[red]●[/red]")
             yield Static(
