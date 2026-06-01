@@ -150,6 +150,11 @@ class SubAgentRenderer:
                 f"[bold #666666]Thinking({snippet})[/bold #666666]"
             )
 
+    def stop_spinner(self) -> None:
+        if self._spinner_task is not None:
+            self._spinner_task.cancel()
+            self._spinner_task = None
+
     def accumulate_tokens(self, event: "InferEndEvent") -> None:
         if event.prompt_tokens:
             self._total_tokens += event.prompt_tokens
@@ -287,7 +292,7 @@ class GekaiApp(App[None]):
 
     ScrollableContainer {
         height: 1fr;
-        padding: 1 0 1 0;
+        padding: 0 0 1 0;
         background: ansi_default;
         scrollbar-size: 0 0;
     }
@@ -475,6 +480,7 @@ class GekaiApp(App[None]):
         self._history: PromptHistory | None = None
         self._file_paths: list[str] | None = None
         self._file_at_pos: int = -1
+        self._worker_cancelled: bool = False
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -746,7 +752,7 @@ class GekaiApp(App[None]):
                 elif isinstance(event, DoneEvent) and renderer:
                     await renderer.done()
         except Exception as error:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"workspace scan error: {error}"))
+            await conversation.mount(MessageWidget(MessageKind.ERROR, f"workspace scan: {error}"))
             conversation.scroll_end(animate=False)
         finally:
             await self._stop_status_animation()
@@ -889,10 +895,16 @@ class GekaiApp(App[None]):
             )
             conversation.scroll_end(animate=False)
         except Exception as error:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"error: {error}"))
+            await conversation.mount(MessageWidget(MessageKind.ERROR, str(error)))
             conversation.scroll_end(animate=False)
         finally:
             await self._stop_status_animation()
+            if ws_renderer is not None:
+                ws_renderer.stop_spinner()
+            if self._worker_cancelled:
+                self._worker_cancelled = False
+                await conversation.mount(MessageWidget(MessageKind.INTERRUPTED, ""))
+                conversation.scroll_end(animate=False)
             self._worker = None
             self._focus_prompt()
 
@@ -903,7 +915,7 @@ class GekaiApp(App[None]):
             self._session = self._agent.start_session(self._workspace or {})
             conversation.scroll_end(animate=False)
         except Exception as error:
-            await conversation.mount(MessageWidget(MessageKind.SYSTEM, f"error: {error}"))
+            await conversation.mount(MessageWidget(MessageKind.ERROR, str(error)))
             conversation.scroll_end(animate=False)
         finally:
             self._worker = None
@@ -1006,6 +1018,7 @@ class GekaiApp(App[None]):
             self._clear_hint()
             return
         if self._worker is not None and not self._worker.is_finished:
+            self._worker_cancelled = True
             self._worker.cancel()
             self._clear_hint()
             self._clear_status()

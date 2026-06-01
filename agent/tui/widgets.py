@@ -18,6 +18,8 @@ class MessageKind(Enum):
     SYSTEM = "system"
     BANNER = "banner"
     HEADER = "header"
+    INTERRUPTED = "interrupted"
+    ERROR = "error"
 
 
 class ChoiceBar(Static):
@@ -92,6 +94,12 @@ class MessageWidget(Widget):
     MessageWidget.header { layout: horizontal; height: auto; }
     MessageWidget.header > .header-dot { width: 2; height: auto; }
     MessageWidget.header > .header-text { width: 1fr; height: auto; }
+    MessageWidget.interrupted { layout: horizontal; margin-top: 1; }
+    MessageWidget.interrupted > Static { width: 2; height: auto; }
+    MessageWidget.interrupted > .assistant-body { width: 1fr; height: auto; }
+    MessageWidget.error { layout: horizontal; margin-top: 1; }
+    MessageWidget.error > Static { width: 2; height: auto; }
+    MessageWidget.error > .assistant-body { width: 1fr; height: auto; }
     """
 
     def __init__(self, kind: MessageKind, text: str, color: str | None = None) -> None:
@@ -108,6 +116,18 @@ class MessageWidget(Widget):
                 yield Static(markup_escape(self._text), classes="assistant-body")
             else:
                 yield Markdown(self._text)
+        elif self._kind == MessageKind.INTERRUPTED:
+            yield Static("[#666666]●[/#666666]")
+            yield Static(
+                "[white]Interrupted[/white]\n[#666666]⎿ How should Gekai proceed instead?[/#666666]",
+                classes="assistant-body",
+            )
+        elif self._kind == MessageKind.ERROR:
+            yield Static("[red]●[/red]")
+            yield Static(
+                f"[white]Error[/white]\n[#666666]⎿ {markup_escape(self._text)}[/#666666]",
+                classes="assistant-body",
+            )
         elif self._kind == MessageKind.HEADER:
             yield Static("[cyan]●[/cyan]", classes="header-dot")
             yield Static(self._text, classes="header-text")
