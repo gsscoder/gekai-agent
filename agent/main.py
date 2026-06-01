@@ -8,7 +8,6 @@ from .agent import GekaiAgent
 from .commands.clear import ClearCommand
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
-from .commands.workspace import WorkspaceRebuildCommand
 from .persistence import load_session
 from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions
 from .tui.app import GekaiApp
@@ -63,7 +62,6 @@ def main() -> None:
     registry = CommandRegistry()
     registry.register(ClearCommand())
     registry.register(ExitCommand())
-    registry.register(WorkspaceRebuildCommand())
 
     app = GekaiApp(
         agent=agent,

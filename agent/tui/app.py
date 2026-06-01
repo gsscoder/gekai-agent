@@ -540,10 +540,7 @@ class GekaiApp(App[None]):
         cache_path = self._working_dir / ".gekai" / "workspace.json"
         workspace: dict = {}
 
-        if not cache_path.exists():
-            await self._run_ws_explorer(conversation)
-            workspace = self._workspace
-        else:
+        if cache_path.exists():
             try:
                 workspace = json.loads(cache_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -712,9 +709,6 @@ class GekaiApp(App[None]):
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
             conversation.scroll_end(animate=False)
             cmd_name = stripped.lstrip("/").split()[0]
-            if cmd_name == "workspace:rebuild":
-                self._worker = self.run_worker(self._rebuild_workspace(), exclusive=True)
-                return
             result = await self._command_registry.dispatch(stripped)
             if result.output:
                 await conversation.mount(MessageWidget(MessageKind.ASSISTANT, result.output, color="#ffd700"))
@@ -733,6 +727,7 @@ class GekaiApp(App[None]):
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
 
+    # [dead code] workspace onboarding — disabled pending redesign
     async def _run_ws_explorer(self, conversation: ScrollableContainer) -> None:
         """Run WsExplorer and update session workspace context."""
         explorer = self._agent.create_ws_explorer(self._working_dir)
@@ -764,6 +759,7 @@ class GekaiApp(App[None]):
         if self._workspace and self._session is not None:
             self._agent.update_workspace_context(self._session, self._workspace)
 
+    # [dead code] workspace staleness rescan — disabled pending redesign
     async def _maybe_rescan_workspace(self, conversation: ScrollableContainer) -> None:
         """Run workspace re-scan activation logic. Updates session and self._workspace if scan fires."""
         cache_path = self._working_dir / ".gekai" / "workspace.json"
@@ -853,11 +849,11 @@ class GekaiApp(App[None]):
                 self._current_lang = new_lang
                 lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
                 self._session.messages.append({"role": "system", "content": lang_hint})
-            # Activation: check workspace staleness before any QUERY+plan
-            if any(intent == Intent.QUERY and plan for intent, _, plan in segments):
-                await self._stop_status_animation()
-                await self._maybe_rescan_workspace(conversation)
-                await self._start_status_animation(verb[0], color)
+            # [dead code] workspace staleness check on QUERY+plan — disabled pending redesign
+            # if any(intent == Intent.QUERY and plan for intent, _, plan in segments):
+            #     await self._stop_status_animation()
+            #     await self._maybe_rescan_workspace(conversation)
+            #     await self._start_status_animation(verb[0], color)
             async for item in self._agent.process_stream(self._session, normalized, segments, original_input=user_input):
                 if isinstance(item, str):
                     answer_chunks.append(item)
@@ -908,6 +904,7 @@ class GekaiApp(App[None]):
             self._worker = None
             self._focus_prompt()
 
+    # [dead code] /workspace:rebuild command handler — disabled pending redesign
     async def _rebuild_workspace(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
