@@ -442,6 +442,11 @@ class GekaiApp(App[None]):
         Binding("enter", "confirm_or_submit", "Confirm", priority=True, show=False),
     ]
 
+    # Slash commands that require parameters are inserted into the input with a
+    # trailing space when selected from the CommandPalette, allowing the user to
+    # enter arguments before the command is submitted.
+    _COMMANDS_WITH_ARGS: set[str] = {"config:gate"}
+
     def __init__(
         self,
         *,
@@ -717,6 +722,14 @@ class GekaiApp(App[None]):
             cmd = palette.selected_command
             palette.hide()
             if cmd:
+                if cmd in self._COMMANDS_WITH_ARGS:
+                    # Leave in input so user can type the required parameter(s);
+                    # do not mount as USER message or dispatch yet.
+                    val = f"/{cmd} "
+                    event.input.value = val
+                    event.input.cursor_position = len(val)
+                    self._focus_prompt()
+                    return
                 stripped = f"/{cmd}"
         if not stripped:
             self._focus_prompt()
@@ -1215,8 +1228,14 @@ class GekaiApp(App[None]):
         palette = self.query_one(CommandPalette)
         palette.hide()
         prompt = self.query_one("#prompt", Input)
-        prompt.value = f"/{name}"
-        prompt.action_submit()
+        if name in self._COMMANDS_WITH_ARGS:
+            val = f"/{name} "
+            prompt.value = val
+            prompt.cursor_position = len(val)
+            self._focus_prompt()
+        else:
+            prompt.value = f"/{name}"
+            prompt.action_submit()
 
     @on(events.Click, "#scroll-hint")
     def _scroll_hint_clicked(self, event: events.Click) -> None:
