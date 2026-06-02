@@ -8,7 +8,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from .handlers.action import ActionHandler
 from .llm.model_caps import resolve_thinking_params
 from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
@@ -97,7 +96,6 @@ class GekaiAgent:
                 api_base=self._api_base,
                 extra_params=self._extra_params,
             ),
-            Intent.ACTION: ActionHandler(),
         }
 
     @property
@@ -171,20 +169,6 @@ class GekaiAgent:
                 ack = "noted."
                 all_chunks.append(ack)
                 yield ack
-
-            elif intent == Intent.CLARIFY:
-                handler = self._handlers[Intent.CHAT]
-                if hasattr(handler, "stream"):
-                    async for item in handler.stream(session, user_input):
-                        if isinstance(item, str):
-                            all_chunks.append(item)
-                        elif isinstance(item, Artifact):
-                            artifact_content = item.content
-                        yield item
-                else:
-                    result = await handler.handle(session, user_input)
-                    all_chunks.append(result)
-                    yield result
 
             else:
                 handler = self._handlers[intent]

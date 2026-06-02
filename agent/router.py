@@ -17,9 +17,7 @@ from .settings import Permissions
 class Intent(enum.Enum):
     CHAT = "chat"
     QUERY = "query"
-    ACTION = "action"
     MEMORIZE = "memorize"
-    CLARIFY = "clarify"
 
 
 SYSTEM_PROMPT = (
@@ -59,25 +57,23 @@ class Session:
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output format: each line must be exactly `label: text` where label is one of chat, query, action, memorize, clarify\n"
+    "output format: each line must be exactly `label: text` where label is one of chat, query, memorize\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "<labels>\n"
     " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
-    " query     — needs to inspect the repository: read files, search code, understand structure\n"
-    " action    — modifies repository files (create, edit, delete, refactor)\n"
+    " query     — needs to inspect or modify the repository: read files, search code, understand structure,\n"
+    "             create, edit, delete, or refactor files\n"
     " memorize  — any rule, constraint, or preference that should persist across future turns: coding style,\n"
     "             project conventions, off-limits files or directories, tool preferences, or any instruction\n"
     "             that applies beyond the current request\n"
     "             (e.g. 'from now on use spaces instead of tabs', 'this project follows Google style guide',\n"
     "             'don't touch the migrations folder')\n"
-    " clarify   — only use clarify if you cannot determine which files, feature area, or domain the request relates to\n"
     "<rules>\n"
     " assume all requests relate to the current codebase unless clearly otherwise\n"
-    " when a message could fit multiple labels, prefer the least destructive: chat over query, query over action\n"
-    " prefer chat or query over clarify — only clarify if truly blocked\n"
+    " when a message could fit multiple labels, prefer chat over query\n"
     "<examples>\n"
     " input: refactor auth error handling and tell me if GET /users returns JSON\n"
-    "  action: refactor auth error handling\n"
+    "  query: refactor auth error handling\n"
     "  query: does GET /users return JSON\n"
     " input: describe the project\n"
     "  query: describe the project\n"
@@ -86,9 +82,9 @@ CLASSIFIER_PROMPT = (
     " input: what's on line 10 of main.py\n"
     "  query: what is on line 10 of main.py\n"
     " input: refactor error handling across all modules\n"
-    "  action: refactor error handling across all modules\n"
+    "  query: refactor error handling across all modules\n"
     " input: rename the variable on line 5 of utils.py\n"
-    "  action: rename the variable on line 5 of utils.py"
+    "  query: rename the variable on line 5 of utils.py"
 )
 
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
