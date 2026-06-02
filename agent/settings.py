@@ -82,6 +82,28 @@ def resolve_permissions(choice: str) -> Permissions | None:
     return None
 
 
+def load_scope_gate(working_dir: Path) -> bool:
+    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
+        try:
+            val = json.loads(path.read_text()).get("scope_gate")
+            if isinstance(val, bool):
+                return val
+        except (OSError, ValueError):
+            pass
+    return True
+
+
+def save_scope_gate(working_dir: Path, enabled: bool) -> None:
+    path = _settings_path(working_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data["scope_gate"] = enabled
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def load_context_limit(working_dir: Path) -> int | None:
     for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
         try:

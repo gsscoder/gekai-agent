@@ -21,7 +21,7 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import now_utc_str, _normalize_path
 from agent.router import Intent, Session
-from agent.settings import PERMISSION_CHOICES, load_context_limit, load_ws_scan_staleness_min, resolve_permissions, save_permissions
+from agent.settings import PERMISSION_CHOICES, load_context_limit, load_scope_gate, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.workspace import list_files
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
@@ -540,6 +540,7 @@ class GekaiApp(App[None]):
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
         )
+        self._session.scope_gate = load_scope_gate(self._working_dir)
 
         history_path = (
             Path.home() / ".gekai" / "workspaces"
@@ -583,6 +584,7 @@ class GekaiApp(App[None]):
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
+        self._session.scope_gate = load_scope_gate(self._working_dir)
         self.query_one("#context-bar", Static).update(
             _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
@@ -734,6 +736,8 @@ class GekaiApp(App[None]):
             result = await self._command_registry.dispatch(stripped)
             if result.output:
                 await conversation.mount(MessageWidget(MessageKind.ASSISTANT, result.output, color="#ffd700"))
+            if result.scope_gate is not None and self._session is not None:
+                self._session.scope_gate = result.scope_gate
             if result.clear_session:
                 await self._clear_session()
                 return
@@ -846,9 +850,18 @@ class GekaiApp(App[None]):
         try:
             await self._start_status_animation(verb[0], color)
             normalized, src_lang = await self._agent.normalize(user_input)
-            segments = await self._agent.classify(normalized)
+            classification = await self._agent.classify(normalized)
+            segments = classification.segments
+            if classification.gated and self._session.scope_gate:
+                await conversation.mount(
+                    MessageWidget(MessageKind.REJECTED, classification.reason or "request exceeds scope")
+                )
+                return
             if self._agent.debug:
-                labels = [intent.name for intent, _ in segments]
+                labels = [
+                    f"{intent.name}({w:.2f})"
+                    for (intent, _), w in zip(segments, classification.weights)
+                ]
                 debug_text = f"\\[classifier: {', '.join(labels)}]"
                 await conversation.mount(
                     MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3")

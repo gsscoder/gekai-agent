@@ -6,10 +6,11 @@ from pathlib import Path
 from . import __version__
 from .agent import GekaiAgent
 from .commands.clear import ClearCommand
+from .commands.config import ConfigGateCommand
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .persistence import load_session
-from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions
+from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions, load_scope_gate
 from .tui.app import GekaiApp
 from .workspace import get_git_branch
 
@@ -61,6 +62,7 @@ def main() -> None:
 
     registry = CommandRegistry()
     registry.register(ClearCommand())
+    registry.register(ConfigGateCommand(working_dir))
     registry.register(ExitCommand())
 
     app = GekaiApp(

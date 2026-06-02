@@ -20,6 +20,7 @@ class MessageKind(Enum):
     HEADER = "header"
     INTERRUPTED = "interrupted"
     ERROR = "error"
+    REJECTED = "rejected"
 
 
 class ChoiceBar(Static):
@@ -100,6 +101,7 @@ class MessageWidget(Widget):
     MessageWidget.error { layout: horizontal; margin-top: 1; }
     MessageWidget.error > Static { width: 2; height: auto; }
     MessageWidget.error > .assistant-body { width: 1fr; height: auto; }
+    MessageWidget.rejected { margin-top: 1; }
     """
 
     def __init__(self, kind: MessageKind, text: str, color: str | None = None) -> None:
@@ -132,6 +134,8 @@ class MessageWidget(Widget):
                 f"[white]Error[/white]\n[#666666]⎿ {markup_escape(self._text)}[/#666666]",
                 classes="assistant-body",
             )
+        elif self._kind == MessageKind.REJECTED:
+            yield Static(f"[red]●[/red] [white]Rejected[/white] — [#666666]{markup_escape(self._text)}[/#666666]")
         elif self._kind == MessageKind.HEADER:
             yield Static("[cyan]●[/cyan]", classes="header-dot")
             yield Static(self._text, classes="header-text")
