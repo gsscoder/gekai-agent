@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
+from ..permissions import PermissionCallback
 from ..router import Session
 
 
@@ -27,7 +28,10 @@ class ChatHandler:
         self._extra_params = extra_params or {}
 
     async def stream(
-        self, session: Session, user_input: str
+        self,
+        session: Session,
+        user_input: str,
+        permission_callback: PermissionCallback | None = None,
     ) -> AsyncIterator[str | UsageInfo]:
         response = await self._client.chat.completions.create(
             model=self._model,
