@@ -585,7 +585,7 @@ class GekaiApp(App[None]):
             self._agent.permissions = perms
             self._session.permissions = perms
 
-    async def _clear_session(self) -> None:
+    async def _clear_session(self, command_text: str | None = None) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
@@ -597,6 +597,9 @@ class GekaiApp(App[None]):
         self._assistant_widget = None
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
+        if command_text is not None:
+            await conversation.mount(MessageWidget(MessageKind.USER, command_text))
+            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, ""))
         self._focus_prompt()
 
     @property
@@ -745,15 +748,14 @@ class GekaiApp(App[None]):
         if stripped.startswith("/"):
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
             conversation.scroll_end(animate=False)
-            cmd_name = stripped.lstrip("/").split()[0]
             result = await self._command_registry.dispatch(stripped)
-            if result.output:
-                await conversation.mount(MessageWidget(MessageKind.ASSISTANT, result.output, color="#ffd700"))
             if result.scope_gate is not None and self._session is not None:
                 self._session.scope_gate = result.scope_gate
             if result.clear_session:
-                await self._clear_session()
+                await self._clear_session(command_text=stripped)
                 return
+            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, result.output or ""))
+            conversation.scroll_end(animate=False)
             if result.exit_app:
                 farewell = random_farewell()
                 await conversation.mount(MessageWidget(MessageKind.ASSISTANT, farewell))

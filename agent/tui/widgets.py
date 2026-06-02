@@ -21,6 +21,7 @@ class MessageKind(Enum):
     INTERRUPTED = "interrupted"
     ERROR = "error"
     REJECTED = "rejected"
+    COMMAND_RESULT = "command_result"
 
 
 class ChoiceBar(Static):
@@ -136,6 +137,8 @@ class MessageWidget(Widget):
             )
         elif self._kind == MessageKind.REJECTED:
             yield Static(f"[red]●[/red] [white]Rejected[/white] — [#666666]{markup_escape(self._text)}[/#666666]")
+        elif self._kind == MessageKind.COMMAND_RESULT:
+            yield Static(self._as_markup())
         elif self._kind == MessageKind.HEADER:
             yield Static("[cyan]●[/cyan]", classes="header-dot")
             yield Static(self._text, classes="header-text")
@@ -164,6 +167,10 @@ class MessageWidget(Widget):
                 return f"[dim]{self._text}[/dim]"
             case MessageKind.BANNER:
                 return f"[cyan]{self._text}[/cyan]"
+            case MessageKind.COMMAND_RESULT:
+                if self._text:
+                    return f"[#666666]⎿[/#666666] [#ffd700]{markup_escape(self._text)}[/#ffd700]"
+                return "[dim]⎿ (no output)[/dim]"
 
     def update(self, content: str) -> None:
         self._text = content
