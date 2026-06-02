@@ -4,11 +4,11 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 ## Package Layout
 `agent/` root: `agent.py` (orchestration), `router.py` (intents + session), `tools.py` (read/search/grep),
 `settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (support infrastructure)
-Subpackages: `handlers/` (chat, query, action, display), `ws_explorer/` (workspace enrichment + SubAgent),
+Subpackages: `handlers/` (chat, query, action), `ws_explorer/` (workspace enrichment + SubAgent — dead code),
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
 
 ## Session
-`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`
+`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`, `scope_gate: bool = True`
 
 `messages` starts with two system entries: `SYSTEM_PROMPT` at `[0]` + workspace context at `[1]` (TOON-encoded)
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
@@ -31,12 +31,12 @@ Before classification, `PromptNormalizer` normalizes/translates user input using
 Intents:
 - `chat` — general coding Q&A; answer from model knowledge + session history
 - `query` — needs repo inspection: read files, search code, understand structure
-- `display` — user wants raw file contents printed verbatim; no summarization or analysis
 - `action` — modifies repository files (create, edit, delete, refactor)
 - `memorize` — user states a rule/preference; stored as system message in session
 - `clarify` — classifier thinks message is ambiguous; routes to CHAT handler anyway (model decides with full session context)
 
-`GekaiAgent._handlers` maps `Intent → Handler`; `CLARIFY` routes to `Intent.CHAT` handler; `DISPLAY` routes to `DisplayHandler`
+`GekaiAgent._handlers` maps `Intent → Handler`; `CLARIFY` routes to `Intent.CHAT` handler
+Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated intent
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in QueryHandler
@@ -45,39 +45,44 @@ Env vars (CORE — used by ChatHandler, QueryHandler, ActionHandler):
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
 
-Env vars (SUPP — used by `IntentClassifier`, `PromptNormalizer`, and `WsExplorer`/`enrich_workspace`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
+Env vars (SUPP — used by `IntentClassifier` and `PromptNormalizer`; `WsExplorer`/`enrich_workspace` also reference these but are dead code; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
 - `GEKAI_SUPPORT_MODEL_NAME`
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
 
 `QueryHandler` appends `_TOOL_INSTRUCTION` to `SYSTEM_PROMPT` at agent construction — balanced rule: `<workspace>` block is authoritative for high-level questions (proj_brief, tech_stack, primary_languages, branch, domain_map); tools are mandatory for file contents, implementation details, logic, or architecture depth
 
-## Workspace Scan / WsExplorer
-`WsExplorer` (`ws_explorer/subagent.py`) is a `SubAgent` that runs scan + enrichment and streams `SubAgentEvent` instances to the TUI
-Activation policy: runs at startup and on `/workspace:rebuild`
-`.gekai/` directory is excluded from workspace scan activation triggers
+## Workspace Scan / WsExplorer [dead code]
+`WsExplorer` (`ws_explorer/subagent.py`), `scan_workspace`, `enrich_workspace`, and all activation logic are dead code — present in source but not called from any live path; disabled pending redesign
 
-`scan_workspace(working_dir)` (in `workspace.py`) writes `.gekai/workspace.json`
-Phases:
+`GekaiAgent.create_ws_explorer()` and `GekaiAgent.update_workspace_context()` exist but are only reachable from dead methods
+
+`_run_ws_explorer()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers; none are reachable from the live startup or stream path
+
+`/workspace:rebuild` command (`commands/workspace.py`) carries a `# [dead code]` marker; the command class is not registered and `execute()` returns an empty `CommandResult`
+
+Staleness logic (`_maybe_rescan_workspace` + `load_ws_scan_staleness_min`) is dead for the same reason
+
+**What remains active:** `_init_session()` still reads `.gekai/workspace.json` unconditionally if it exists and passes the dict to `agent.start_session()`, which injects the `<workspace>` block into `session.messages[1]` via `_format_workspace_context()`. The cache file can exist from a prior run; if absent, an empty dict is used and the block is injected with default/unknown values. No live code writes `workspace.json`.
+
+`scan_workspace(working_dir)` (in `workspace.py`) — phases below are inactive:
 1. repo name (git remote) + branch
 2. manifest scan (recursive, root + subdirs, skip hidden/vendor) → `projects` list with lang + path
 3. extension frequency (top 15) → `extensions` map; used as primary signal only when no manifests
 4. AI instruction file detection (root + one level deep): `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, etc.
 
-`enrich_workspace` (`ws_explorer/enrichment.py`) runs two parallel LLM calls (proj_brief + domain_map); fires async callbacks `on_file`, `on_infer_start`, `on_infer_delta`, `on_infer_end` for TUI progress
-
-Cache: `workspace.json` reused if mtime < 15 min (fresh session) or < 30 min (resume). `created_at` preserved across re-scans.
+`enrich_workspace` (`ws_explorer/enrichment.py`) — inactive: two parallel LLM calls (proj_brief + domain_map); fires async callbacks `on_file` and `on_infer_end` for TUI progress
 
 ## Session Persistence
 Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped message appended via `append_message()`
 Debug messages written to `{session-id}.debug.jsonl` via `append_debug()`
-`load_session()` returns `(session_id, user/assistant messages)`; system messages are excluded (re-injected fresh on startup)
+`load_session()` returns `(session_id, working_dir, user/assistant + persistent system messages)`; always-fresh system messages (SYSTEM_PROMPT, workspace) are excluded and re-injected on startup
 
-On resume (`--resume <session-id>`): restores session ID and user/assistant messages; re-injects fresh system messages; prints conversation history to terminal; skips workspace scan if cache valid
+On resume (`--resume <session-id>`): restores session ID and user/assistant messages; re-injects fresh system messages; prints conversation history to terminal; reads `workspace.json` cache if present (workspace scan is dead code — no rescan occurs)
 
 ## Streaming UX
 Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.
-- spinner `| / - \` + random operative verb + token count in `#status-line` (accent color via `styles.color`)
+- spinner `· • ● •` + random operative verb + elapsed time in `#status-line` (accent color via `styles.color`)
 - ESC cancels worker; `Ctrl+C` quits app
 - on completion: ASSISTANT widget (Markdown) + OPERATION widget (`* {PastVerb} for {duration}`)
 
@@ -85,7 +90,8 @@ Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.
 Slash-prefixed input intercepted by `CommandPalette` then dispatched via `CommandRegistry`.
 - `/exit` — exit to terminal (with farewell message + delay)
 - `/clear` — clears chat and starts a new session (resets session ID)
-- `/workspace:rebuild` — re-scan + AI-enrich workspace; handled directly in `GekaiApp._rebuild_workspace()`, not via registry dispatch
+- `/config:gate on|off` — enable or disable the scope gate for the current project; persists to `.gekai/settings.local.json`; updates `session.scope_gate` immediately
+- `/workspace:rebuild` — [dead code] command class exists in `commands/workspace.py` but is not registered; `_rebuild_workspace()` in `app.py` carries a `# [dead code]` marker and is unreachable
 
 ## CLI Flags
 - `--debug` — prints `[classifier: INTENT, ...]` in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt

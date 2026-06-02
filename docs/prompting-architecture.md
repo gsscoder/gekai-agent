@@ -15,7 +15,7 @@ PromptNormalizer          [support model]  — translate / normalize; detect sou
 IntentClassifier          [support model]  — decompose into labeled segments
     │
     ▼
-Handler(s)                [core model]     — chat / query / action / memorize
+Handler(s)                [core model]     — chat / query / action / memorize / clarify
 ```
 
 ---
@@ -87,8 +87,10 @@ Fallback on parse failure: `[(Intent.CHAT, user_input)]`.
 | `chat`     | ChatHandler    | knowledge only, no tools           |
 | `query`    | QueryHandler   | tool-calling loop via llmstitch    |
 | `action`   | ActionHandler  | modifies repo files                |
-| `memorize` | —              | appends system message to session  |
+| `memorize` | —              | appends `[preference]` system message to session |
 | `clarify`  | ChatHandler    | model decides with full context    |
+
+> `display` is not a classifier label and `DisplayHandler` does not exist. The `<file_handling>` rule in `SYSTEM_PROMPT` handles verbatim file output without a dedicated intent.
 
 ---
 
@@ -120,19 +122,21 @@ Events flow through `EventBus` → async queue → TUI stream.
 
 ---
 
-## WsExplorer SubAgent
+## WsExplorer SubAgent [dead code]
+
+> **Note:** `WsExplorer`, `scan_workspace`, `enrich_workspace`, and all scan activation paths are currently dead code. They are present in source (`ws_explorer/` subpackage) but not called from any live path. `_run_ws_explorer()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers. `/workspace:rebuild` is not registered in the command palette. No live code writes `workspace.json`.
 
 `WsExplorer` (`ws_explorer/subagent.py`) is a `SubAgent` that **enriches workspace metadata**.
 It streams `SubAgentEvent` instances to the TUI for live progress display.
 
-### Activation
+### Activation [dead code]
 
-- **Startup**
-- **`/workspace:rebuild`**
+- **Startup** — was intended to run on first launch; on resume, any cached `workspace.json` would be loaded immediately while enrichment could refresh it
+- **`/workspace:rebuild`** — not registered; handler is dead code
 
-`.gekai/` directory excluded from activation triggers.
+`.gekai/` directory excluded from workspace scan activation triggers.
 
-### Scan phases (`scan_workspace` → `.gekai/workspace.json`)
+### Scan phases (`scan_workspace` → `.gekai/workspace.json`) [dead code]
 
 ```
 1. repo name (git remote) + branch
@@ -141,11 +145,11 @@ It streams `SubAgentEvent` instances to the TUI for live progress display.
 4. AI instruction file detection  (root + one level deep)
 ```
 
-**Cache reuse:** `< 15 min` fresh session · `< 30 min` resume. `created_at` preserved across re-scans.
+**Cache read (still active):** `_init_session()` reads `.gekai/workspace.json` at startup if present and passes it to `agent.start_session()`. No live code writes the file; the `<workspace>` block in `Session.messages[1]` reflects whatever the file contains (or defaults to empty/unknown values if absent). Staleness enforcement and the enrichment write path are dead.
 
-### Enrichment (`enrich_workspace`)
+### Enrichment (`enrich_workspace`) [dead code]
 
-**Two parallel** support-model calls:
+**Two parallel** support-model calls — inactive:
 
 ```
 ┌─────────────────┐     ┌──────────────────┐
@@ -155,16 +159,18 @@ It streams `SubAgentEvent` instances to the TUI for live progress display.
 └─────────────────┘     └──────────────────┘
          └──────────────────┘
                  ▼
-         workspace.json  (merged)
+         workspace.json  (merged)  ← never reached; write path is dead
                  ▼
          injected into Session.messages[1]
-         as <workspace> block
+         as <workspace> block      ← injection at startup is active; enrichment write is not
 ```
 
-Async callbacks fired during enrichment: `on_file` · `on_infer_start` · `on_infer_delta` · `on_infer_end`.
+Async callbacks fired during enrichment: `on_file` · `on_infer_end`.
 
 ### Injected workspace fields
 
 **Always:** `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`
 **Conditional:** `extensions` (when `projects` empty) · `domain_map` (when present)
 **Preamble:** `"verified repository metadata — treat as authoritative for high-level questions:"`
+
+> The injection format above describes what `_format_workspace_context()` produces. This function is called by the active `agent.start_session()` path. The fields will reflect an existing `workspace.json` cache if one is present, otherwise default/empty values.
