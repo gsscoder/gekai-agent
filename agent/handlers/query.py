@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from agent.llm import Agent
+from agent.llm.errors import MaxIterationsExceeded
 from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
@@ -97,36 +98,47 @@ class QueryHandler:
 
         prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
         prior.append(Message(role="user", content=user_input))
-        agent_task = asyncio.create_task(agent.run(prior))
-        asyncio.create_task(_consume_bus())
+        agent_task: asyncio.Task = asyncio.create_task(agent.run(prior))
+        bus_task: asyncio.Task = asyncio.create_task(_consume_bus())
 
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
 
-        history = await agent_task
-        thinking_chars = sum(
-            len(b.text)
-            for msg in history
-            if msg.role == "assistant" and isinstance(msg.content, list)
-            for b in msg.content
-            if isinstance(b, ThinkingBlock)
-        )
-        yield DoneEvent(thinking_chars=thinking_chars)
+            try:
+                history = await agent_task
+            except MaxIterationsExceeded:
+                yield DoneEvent(thinking_chars=0)
+                return
 
-        last = history[-1]
-        if isinstance(last.content, list):
-            text = "\n".join(b.text for b in last.content if isinstance(b, TextBlock))
-        else:
-            text = last.content or ""
-        if text:
-            yield text
+            thinking_chars = sum(
+                len(b.text)
+                for msg in history
+                if msg.role == "assistant" and isinstance(msg.content, list)
+                for b in msg.content
+                if isinstance(b, ThinkingBlock)
+            )
+            yield DoneEvent(thinking_chars=thinking_chars)
 
-        artifact = _synthesize_artifact(history)
-        if artifact:
-            yield Artifact(content=f"[artifact] {artifact}")
+            last = history[-1]
+            if isinstance(last.content, list):
+                text = "\n".join(b.text for b in last.content if isinstance(b, TextBlock))
+            else:
+                text = last.content or ""
+            if text:
+                yield text
+
+            artifact = _synthesize_artifact(history)
+            if artifact:
+                yield Artifact(content=f"[artifact] {artifact}")
+        finally:
+            if not agent_task.done():
+                agent_task.cancel()
+            if not bus_task.done():
+                bus_task.cancel()
 
 
 def _synthesize_artifact(history: list) -> str | None:
