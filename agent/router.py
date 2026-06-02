@@ -59,7 +59,7 @@ class Session:
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output format: each line must be exactly `label: weight: text` where label is one of chat, query, action, memorize, clarify\n"
+    "output format: each line must be exactly `label: text` where label is one of chat, query, action, memorize, clarify\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "<labels>\n"
     " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
@@ -71,78 +71,49 @@ CLASSIFIER_PROMPT = (
     "             (e.g. 'from now on use spaces instead of tabs', 'this project follows Google style guide',\n"
     "             'don't touch the migrations folder')\n"
     " clarify   — only use clarify if you cannot determine which files, feature area, or domain the request relates to\n"
-    "<weight>\n"
-    " weight is a decimal scoring how broad, vague, or multi-faceted the task remains after decomposition\n"
-    " 0.0-0.3 — precise and well-scoped: single file, named symbol, exact line\n"
-    " 0.4-0.7 — moderate: one feature area, a few files, a clear goal\n"
-    " 0.8-1.0 — broad or vague: cross-cutting, whole-codebase, or underspecified (will be rejected)\n"
-    "<rejection>\n"
-    " when ANY segment receives weight >= 0.8, also emit a final line: reject: <reason>\n"
-    " reason must state only what is wrong — do not suggest alternatives or corrections\n"
-    " keep it under 10 words\n"
     "<rules>\n"
     " assume all requests relate to the current codebase unless clearly otherwise\n"
     " when a message could fit multiple labels, prefer the least destructive: chat over query, query over action\n"
     " prefer chat or query over clarify — only clarify if truly blocked\n"
     "<examples>\n"
     " input: refactor auth error handling and tell me if GET /users returns JSON\n"
-    "  action: 0.5: refactor auth error handling\n"
-    "  query: 0.15: does GET /users return JSON\n"
+    "  action: refactor auth error handling\n"
+    "  query: does GET /users return JSON\n"
     " input: describe the project\n"
-    "  query: 0.4: describe the project\n"
+    "  query: describe the project\n"
     " input: how does the auth system work\n"
-    "  query: 0.45: explain how the auth system works\n"
+    "  query: explain how the auth system works\n"
     " input: what's on line 10 of main.py\n"
-    "  query: 0.1: what is on line 10 of main.py\n"
+    "  query: what is on line 10 of main.py\n"
     " input: refactor error handling across all modules\n"
-    "  action: 0.9: refactor error handling across all modules\n"
-    "  reject: refactoring error handling across all modules is too broad — specify which modules or error paths\n"
+    "  action: refactor error handling across all modules\n"
     " input: rename the variable on line 5 of utils.py\n"
-    "  action: 0.1: rename the variable on line 5 of utils.py"
+    "  action: rename the variable on line 5 of utils.py"
 )
 
-
-# scope gate thresholds — pure-Python guard over the weighted classifier output;
-# a single over-weight segment (> _MAX_SEGMENT_WEIGHT) trips it just like a count or cumulative overflow
-_MAX_SEGMENTS = 3
-_MAX_TOTAL_WEIGHT = 1.5
-_MAX_SEGMENT_WEIGHT = 0.8
-_MIN_WORDS_FOR_WEIGHT = 12
-# fallback when a segment's weight field is missing or unparseable
-_DEFAULT_WEIGHT = 0.5
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
-
-
-@dataclass(frozen=True)
-class Classification:
-    segments: list[tuple[Intent, str]]
-    weights: list[float]
-    total_weight: float
-    gated: bool
-    reason: str | None = None
 
 
 def _word_count(text: str) -> int:
     stripped = _CODE_FENCE_RE.sub("", text)
-    return len(stripped.split())
+    return len(re.findall(r"\w+", stripped))
 
 
-def _evaluate_gate(
-    segments: list[tuple[Intent, str]], weights: list[float],
-) -> tuple[float, bool]:
-    total = sum(weights)
-    if len(weights) == 1:
-        gated = (
-            weights[0] >= _MAX_SEGMENT_WEIGHT
-            and _word_count(segments[0][1]) >= _MIN_WORDS_FOR_WEIGHT
-        )
-    else:
-        gated = (
-            len(weights) > _MAX_SEGMENTS
-            or total > _MAX_TOTAL_WEIGHT
-            or any(w >= _MAX_SEGMENT_WEIGHT for w in weights)
-        )
-    return total, gated
+def evaluate_structural_gate(
+    segments: list[tuple[Intent, str]],
+    max_segments: int = 3,
+    big_prompt_min_words: int = 50,
+) -> tuple[bool, str | None]:
+    """Pure-Python structural gate. Returns (rejected, reason)."""
+    if len(segments) > max_segments:
+        return (True, f"Too many tasks ({len(segments)})")
+    if len(segments) == 1:
+        return (False, None)
+    if len(segments) > 2:
+        big_count = sum(1 for _, text in segments if _word_count(text) > big_prompt_min_words)
+        if big_count > 1:
+            return (True, "Multiple complex tasks")
+    return (False, None)
 
 
 class IntentClassifier:
@@ -155,7 +126,9 @@ class IntentClassifier:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
-    async def classify(self, user_input: str, history: list[dict] | None = None) -> Classification:
+    async def classify(
+        self, user_input: str, history: list[dict] | None = None,
+    ) -> list[tuple[Intent, str]]:
         context_msgs: list[dict] = []
         if history:
             turns = [m for m in history if m["role"] in ("user", "assistant")][-6:]
@@ -170,45 +143,18 @@ class IntentClassifier:
         )
         raw: str = response.choices[0].message.content.strip()
         segments: list[tuple[Intent, str]] = []
-        weights: list[float] = []
-        reject_reason: str | None = None
         for line in raw.splitlines():
             line = line.strip()
-            if not line:
+            if not line or ": " not in line:
                 continue
-            label, _, rest = line.partition(": ")
-            label_lower = label.strip().lower()
-            if label_lower == "reject":
-                raw_reason = rest.strip()[:120]
-                reject_reason = (raw_reason[:1].upper() + raw_reason[1:]) if raw_reason else None
-                continue
-            weight_str, sep, sub_prompt = rest.partition(": ")
-            if not sep:
-                continue
+            label, _, sub_prompt = line.partition(": ")
+            label = label.strip().lower()
             try:
-                intent = Intent(label_lower)
+                intent = Intent(label)
             except ValueError:
                 intent = Intent.CHAT
-            try:
-                weight = float(weight_str.strip())
-            except ValueError:
-                weight = _DEFAULT_WEIGHT
             segments.append((intent, sub_prompt.strip()))
-            weights.append(weight)
         if not segments:
             _log.warning("classifier parse failure — no valid segments; raw output: %r", raw)
-            segments = [(Intent.CHAT, user_input)]
-            weights = [_DEFAULT_WEIGHT]
-        total_weight, gated = _evaluate_gate(segments, weights)
-        if gated:
-            _log.info(
-                "classifier scope gate tripped — segments=%d total_weight=%.2f",
-                len(segments),
-                total_weight,
-            )
-            if not reject_reason:
-                reject_reason = f"request contains {len(segments)} tasks with cumulative complexity {total_weight:.1f}"
-        return Classification(
-            segments=segments, weights=weights, total_weight=total_weight,
-            gated=gated, reason=reject_reason,
-        )
+            return [(Intent.CHAT, user_input)]
+        return segments

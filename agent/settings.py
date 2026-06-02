@@ -104,6 +104,50 @@ def save_scope_gate(working_dir: Path, enabled: bool) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def load_max_prompt_segments(working_dir: Path) -> int:
+    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
+        try:
+            val = json.loads(path.read_text()).get("max_prompt_segments")
+            if isinstance(val, int) and 1 <= val <= 9:
+                return val
+        except (OSError, ValueError):
+            pass
+    return 3
+
+
+def load_big_prompt_min_size_words(working_dir: Path) -> int:
+    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
+        try:
+            val = json.loads(path.read_text()).get("big_prompt_min_size_words")
+            if isinstance(val, int) and 50 <= val <= 200:
+                return val
+        except (OSError, ValueError):
+            pass
+    return 50
+
+
+def validate_gate_config(working_dir: Path) -> list[str]:
+    errors: list[str] = []
+    paths = [_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"]
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        val = data.get("max_prompt_segments")
+        if val is not None and not (isinstance(val, int) and 1 <= val <= 9):
+            errors.append(f"{path}: max_prompt_segments must be an integer between 1 and 9 (got: {val})")
+        val = data.get("big_prompt_min_size_words")
+        if val is not None and not (isinstance(val, int) and 50 <= val <= 200):
+            errors.append(f"{path}: big_prompt_min_size_words must be an integer between 50 and 200 (got: {val})")
+        val = data.get("scope_gate")
+        if val is not None and not isinstance(val, bool):
+            errors.append(f"{path}: scope_gate must be a boolean (got: {val})")
+    return errors
+
+
 def load_context_limit(working_dir: Path) -> int | None:
     for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
         try:

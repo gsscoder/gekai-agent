@@ -863,40 +863,30 @@ class GekaiApp(App[None]):
         try:
             await self._start_status_animation(verb[0], color)
             normalized, src_lang = await self._agent.normalize(user_input)
-            classification = await self._agent.classify(normalized)
-            segments = classification.segments
-            if classification.gated and self._session.scope_gate:
+            segments = await self._agent.classify(normalized)
+            rejected, reason = await self._agent.check_gate(segments)
+            if rejected and self._session.scope_gate:
                 await conversation.mount(
-                    MessageWidget(MessageKind.REJECTED, classification.reason or "request exceeds scope")
+                    MessageWidget(MessageKind.REJECTED, reason or "request exceeds scope")
                 )
                 return
             if self._agent.debug:
-                labels = [
-                    f"{intent.name}({w:.2f})"
-                    for (intent, _), w in zip(segments, classification.weights)
-                ]
+                labels = [intent.name for intent, _ in segments]
                 debug_text = f"\\[classifier: {', '.join(labels)}]"
-                await conversation.mount(
-                    MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3")
-                )
+                await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
                 if normalized == user_input:
                     norm_debug = "\\[OK]"
                 else:
                     snippet = (normalized[:30] + "...") if len(normalized) > 30 else normalized
                     norm_debug = f"\\[{snippet}, {src_lang}]" if src_lang else f"\\[{snippet}]"
-                await conversation.mount(
-                    MessageWidget(MessageKind.OPERATION, norm_debug, color="#BA55D3")
-                )
+                await conversation.mount(MessageWidget(MessageKind.OPERATION, norm_debug, color="#BA55D3"))
+
             new_lang = src_lang or "EN"
             if new_lang != self._current_lang:
                 self._current_lang = new_lang
                 lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
                 self._session.messages.append({"role": "system", "content": lang_hint})
-            # [dead code] workspace staleness check on QUERY — disabled pending redesign
-            # if any(intent == Intent.QUERY for intent, _ in segments):
-            #     await self._stop_status_animation()
-            #     await self._maybe_rescan_workspace(conversation)
-            #     await self._start_status_animation(verb[0], color)
+
             async for item in self._agent.process_stream(
                 self._session, normalized, segments,
                 original_input=user_input,
@@ -921,6 +911,7 @@ class GekaiApp(App[None]):
                             await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):
                             await ws_renderer.done(item.thinking_chars)
+
             if self._session is not None:
                 self.query_one("#context-bar", Static).update(
                     _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)

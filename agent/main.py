@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import sys
+
 from . import __version__
 from .agent import GekaiAgent
 from .commands.clear import ClearCommand
@@ -10,7 +12,7 @@ from .commands.config import ConfigGateCommand
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .persistence import load_session
-from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions, load_scope_gate
+from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions, load_scope_gate, validate_gate_config
 from .tui.app import GekaiApp
 from .workspace import get_git_branch
 
@@ -57,6 +59,12 @@ def main() -> None:
     needs_permissions = permissions is None
     if needs_permissions:
         permissions = Permissions(read=False, write=False, exec=False)
+
+    errors = validate_gate_config(working_dir)
+    if errors:
+        for e in errors:
+            print(f"  config error: {e}")
+        sys.exit(1)
 
     agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=args.debug)
 
