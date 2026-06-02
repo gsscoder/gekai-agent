@@ -16,7 +16,7 @@ from .settings import Permissions
 
 class Intent(enum.Enum):
     CHAT = "chat"
-    QUERY = "query"
+    ACTION = "action"
     MEMORIZE = "memorize"
 
 
@@ -57,11 +57,11 @@ class Session:
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output format: each line must be exactly `label: text` where label is one of chat, query, memorize\n"
+    "output format: each line must be exactly `label: text` where label is one of chat, action, memorize\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "<labels>\n"
     " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
-    " query     — needs to inspect or modify the repository: read files, search code, understand structure,\n"
+    " action    — needs to inspect or modify the repository: read files, search code, understand structure,\n"
     "             create, edit, delete, or refactor files\n"
     " memorize  — any rule, constraint, or preference that should persist across future turns: coding style,\n"
     "             project conventions, off-limits files or directories, tool preferences, or any instruction\n"
@@ -70,21 +70,21 @@ CLASSIFIER_PROMPT = (
     "             'don't touch the migrations folder')\n"
     "<rules>\n"
     " assume all requests relate to the current codebase unless clearly otherwise\n"
-    " when a message could fit multiple labels, prefer chat over query\n"
+    " when a message could fit multiple labels, prefer chat over action\n"
     "<examples>\n"
     " input: refactor auth error handling and tell me if GET /users returns JSON\n"
-    "  query: refactor auth error handling\n"
-    "  query: does GET /users return JSON\n"
+    "  action: refactor auth error handling\n"
+    "  action: does GET /users return JSON\n"
     " input: describe the project\n"
-    "  query: describe the project\n"
+    "  action: describe the project\n"
     " input: how does the auth system work\n"
-    "  query: explain how the auth system works\n"
+    "  action: explain how the auth system works\n"
     " input: what's on line 10 of main.py\n"
-    "  query: what is on line 10 of main.py\n"
+    "  action: what is on line 10 of main.py\n"
     " input: refactor error handling across all modules\n"
-    "  query: refactor error handling across all modules\n"
+    "  action: refactor error handling across all modules\n"
     " input: rename the variable on line 5 of utils.py\n"
-    "  query: rename the variable on line 5 of utils.py"
+    "  action: rename the variable on line 5 of utils.py"
 )
 
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")

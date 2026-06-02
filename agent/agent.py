@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 from .llm.model_caps import resolve_thinking_params
 from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
-from .handlers.query import Artifact, QueryHandler
+from .handlers.action import Artifact, ActionHandler
 from .normalizer import PromptNormalizer
 from .permissions import PermissionCallback
 from .router import Intent, IntentClassifier, Session, evaluate_structural_gate
@@ -90,7 +90,7 @@ class GekaiAgent:
                 api_base=self._api_base,
                 extra_params=self._extra_params,
             ),
-            Intent.QUERY: QueryHandler(
+            Intent.ACTION: ActionHandler(
                 model=self.model,
                 api_key=self._api_key,
                 api_base=self._api_base,

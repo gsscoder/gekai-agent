@@ -903,7 +903,7 @@ class GekaiApp(App[None]):
                     elif ws_renderer:
                         if isinstance(item, LogEvent):
                             await ws_renderer.log(item.message, tool_name=item.tool_name)
-                            if ws_renderer.name == "query":
+                            if ws_renderer.name == "Action":
                                 query_tool_count += 1
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)

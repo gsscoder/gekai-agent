@@ -3,21 +3,21 @@ Demote IntentClassifier from planner to router + gatekeeper; move capability/per
 
 ## Intent Enum (before -> after)
 
-Before: `chat`, `query`, `action`, `memorize`, `clarify` (5 intents)
-After: `chat`, `query`, `memorize` (3 intents)
+Before: `chat`, `action`, `action`, `memorize`, `clarify` (5 intents)
+After: `chat`, `action`, `memorize` (3 intents)
 
 Removals:
-- `action` — merged into `query`; write-vs-read is a permission axis resolved at tool-call time by `PermissionGate`, not a semantic label. `ActionHandler` is an unimplemented stub
+- `action` — merged into `action`; write-vs-read is a permission axis resolved at tool-call time by `PermissionGate`, not a semantic label. `ActionHandler` is an unimplemented stub
 - `clarify` — was always routed to `ChatHandler` anyway; classifier should prefer `chat` over `clarify` per existing rules. Remove the indirection
 
 ## Classifier Prompt Changes
 
 `CLASSIFIER_PROMPT` in `router.py` shrinks:
-- Labels section: `chat | query | memorize` only
-- `query` label description absorbs `action`: "needs to inspect or modify the repository"
-- `clarify` removed; rule "prefer chat or query over clarify" becomes unnecessary
-- Examples updated: `action:` lines become `query:` lines
-- Rule "prefer least destructive: chat over query, query over action" simplifies to "prefer chat over query"
+- Labels section: `chat | action | memorize` only
+- `action` label description absorbs `action`: "needs to inspect or modify the repository"
+- `clarify` removed; rule "prefer chat or action over clarify" becomes unnecessary
+- Examples updated: `action:` lines become `action:` lines
+- Rule "prefer least destructive: chat over action, action over action" simplifies to "prefer chat over action"
 
 ## Handler Changes
 
@@ -25,9 +25,9 @@ Removals:
 - Remove `Intent.ACTION: ActionHandler()` entry
 - Remove `ActionHandler` import
 - Delete `agent/handlers/action.py`
-- `Intent.QUERY` handler (`QueryHandler`) already has tools + `PermissionGate` — handles both read and write intents
+- `Intent.ACTION` handler (`ActionHandler`) already has tools + `PermissionGate` — handles both read and write intents
 
-No changes to `ChatHandler` or `QueryHandler` internals.
+No changes to `ChatHandler` or `ActionHandler` internals.
 
 ## process_stream Changes
 
@@ -35,9 +35,9 @@ Segment loop in `agent.py:161` simplifies:
 - Remove `Intent.CLARIFY` branch (was routing to CHAT handler)
 - Remove `Intent.ACTION` from dispatch (no longer exists)
 - `Intent.MEMORIZE` branch unchanged
-- All non-memorize segments dispatch to `_handlers[intent]` (either CHAT or QUERY)
+- All non-memorize segments dispatch to `_handlers[intent]` (either CHAT or ACTION)
 
-The loop structure stays — classifier can still emit multiple segments (e.g. `memorize` + `query`). The gate (`evaluate_structural_gate`) still caps segment count.
+The loop structure stays — classifier can still emit multiple segments (e.g. `memorize` + `action`). The gate (`evaluate_structural_gate`) still caps segment count.
 
 ## Structural Gate
 
@@ -65,7 +65,7 @@ Already in place via tool decorator: `@tool(is_read_only=True, required_permissi
 
 ## Debug Output
 
-`--debug` prints `[classifier: INTENT, ...]` in TUI. After refactor, output shows `chat`/`query`/`memorize` only. No structural change to debug rendering — just fewer label values.
+`--debug` prints `[classifier: INTENT, ...]` in TUI. After refactor, output shows `chat`/`action`/`memorize` only. No structural change to debug rendering — just fewer label values.
 
 ## Fallback Behavior
 

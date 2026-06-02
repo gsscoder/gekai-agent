@@ -28,7 +28,7 @@ _TOOL_INSTRUCTION = (
     "you MUST use tools to read actual files — do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"
 )
 
-_QUERY_COLOR = "#4169E1"
+_ACTION_COLOR = "#4169E1"
 
 
 def _fmt_tool_call(call: ToolUseBlock) -> str:
@@ -44,7 +44,7 @@ def _fmt_tool_call(call: ToolUseBlock) -> str:
     return call.name.capitalize()
 
 
-class QueryHandler:
+class ActionHandler:
     def __init__(
         self,
         model: str,
@@ -94,7 +94,7 @@ class QueryHandler:
                     await queue.put(ThinkingTokenEvent(text=event.text))
             await queue.put(None)
 
-        yield SubAgentStartEvent(name="Query", description="Inspecting workspace", color=_QUERY_COLOR)
+        yield SubAgentStartEvent(name="Action", description="Inspecting workspace", color=_ACTION_COLOR)
 
         prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
         prior.append(Message(role="user", content=user_input))

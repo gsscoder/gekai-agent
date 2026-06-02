@@ -15,7 +15,7 @@ PromptNormalizer          [support model]  — translate / normalize; detect sou
 IntentClassifier          [support model]  — decompose into labeled segments
     │
     ▼
-Handler(s)                [core model]     — chat / query / memorize
+Handler(s)                [core model]     — chat / action / memorize
 ```
 
 ---
@@ -73,7 +73,7 @@ Returns `list[tuple[Intent, str]]` — `(intent, sub-prompt)`.
 ```
 CLASSIFIER_PROMPT
 ├── output format     label: text  (one line per segment)
-├── <labels>          chat | query | memorize
+├── <labels>          chat | action | memorize
 ├── <rules>           preference order
 └── <examples>        few-shot
 ```
@@ -85,7 +85,7 @@ Fallback on parse failure: `[(Intent.CHAT, user_input)]`.
 | Intent     | Handler        | Notes                              |
 |------------|----------------|------------------------------------|
 | `chat`     | ChatHandler    | knowledge only, no tools           |
-| `query`    | QueryHandler   | tool-calling loop via llmstitch; covers both read and write operations (permission resolved at tool-call time by PermissionGate) |
+| `action`   | ActionHandler  | tool-calling loop via llmstitch; covers both read and write operations (permission resolved at tool-call time by PermissionGate) |
 | `memorize` | —              | appends `[preference]` system message to session |
 
 ---

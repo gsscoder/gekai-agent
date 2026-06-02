@@ -4,7 +4,7 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 ## Package Layout
 `agent/` root: `agent.py` (orchestration), `router.py` (intents + session), `tools.py` (read/search/grep),
 `settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (support infrastructure)
-Subpackages: `handlers/` (chat, query), `ws_explorer/` (workspace enrichment + SubAgent — dead code),
+Subpackages: `handlers/` (chat, action), `ws_explorer/` (workspace enrichment + SubAgent — dead code),
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
 
 ## Session
@@ -30,10 +30,10 @@ Before classification, `PromptNormalizer` normalizes/translates user input using
 
 Intents:
 - `chat` — general coding Q&A; answer from model knowledge + session history
-- `query` — needs to inspect or modify the repository; permission resolved at tool-call time by PermissionGate
+- `action` — needs to inspect or modify the repository; permission resolved at tool-call time by PermissionGate
 - `memorize` — user states a rule/preference; stored as system message in session
 
-`GekaiAgent._handlers` maps `Intent → Handler`; keys are `Intent.CHAT` and `Intent.QUERY`
+`GekaiAgent._handlers` maps `Intent → Handler`; keys are `Intent.CHAT` and `Intent.ACTION`
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated intent
 
 ## LLM Integration
@@ -48,7 +48,7 @@ Env vars (SUPP — used by `IntentClassifier` and `PromptNormalizer`; `WsExplore
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
 
-`QueryHandler` appends `_TOOL_INSTRUCTION` to `SYSTEM_PROMPT` at agent construction — balanced rule: `<workspace>` block is authoritative for high-level questions (proj_brief, tech_stack, primary_languages, branch, domain_map); tools are mandatory for file contents, implementation details, logic, or architecture depth
+`ActionHandler` appends `_TOOL_INSTRUCTION` to `SYSTEM_PROMPT` at agent construction — balanced rule: `<workspace>` block is authoritative for high-level questions (proj_brief, tech_stack, primary_languages, branch, domain_map); tools are mandatory for file contents, implementation details, logic, or architecture depth
 
 ## Workspace Scan / WsExplorer [dead code]
 `WsExplorer` (`ws_explorer/subagent.py`), `scan_workspace`, `enrich_workspace`, and all activation logic are dead code — present in source but not called from any live path; disabled pending redesign
