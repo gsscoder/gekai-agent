@@ -39,7 +39,7 @@ SYSTEM_PROMPT = (
     "never output more than one blank line in a row; never place blank lines before or after headings; never start a response with a blank line\n"
     "state facts and decisions directly; never open with 'I think' or 'it seems'\n"
     "<file_handling>\n"
-    "when the user asks to show, print, or display a file, output its full contents in a fenced code block — never summarize, paraphrase, or editorialize"
+    "when the user asks to show, print, or display a file, output exactly this format: first a line `Display(filename)` where filename is the basename only, then the full file contents in a fenced code block — never summarize, paraphrase, or editorialize"
 )
 
 
