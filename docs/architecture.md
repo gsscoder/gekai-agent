@@ -1,18 +1,15 @@
-# Prompting Architecture
+# Architecture
 
 ## Overview
 
-Every turn passes through three layers: **normalization → classification → handler dispatch**.
-Each layer uses a distinct prompt and may use a distinct model (**support** vs. **core**).
+Every turn passes through two layers: **classification → handler dispatch**.
+Each layer uses a distinct model (**support** vs. **core**).
 
 ```
 user input
     │
     ▼
-PromptNormalizer          [support model]  — translate / normalize; detect source language
-    │
-    ▼
-IntentClassifier          [support model]  — decompose into labeled segments
+IntentClassifier          [support model]  — decompose into labeled segments; reject non-English
     │
     ▼
 Handler(s)                [core model]     — chat / action / memorize
@@ -119,8 +116,10 @@ sequenceDiagram
         llmstitch->>CoreModel: messages + tools
         CoreModel-->>llmstitch: ToolUseBlock / TextBlock
         llmstitch-->>ActionHandler: ToolExecutionStarted event
-        ActionHandler-->>TUI: LogEvent (e.g. "Read src/main.py")
+        ActionHandler-->>TUI: LogEvent (e.g. "Edit src/main.py")
         llmstitch->>llmstitch: execute tool, append result
+        llmstitch-->>ActionHandler: ToolExecutionCompleted event
+        ActionHandler-->>TUI: DiffEvent (edit_file only; old_str vs new_str)
     end
     llmstitch-->>ActionHandler: final history
     ActionHandler-->>TUI: DoneEvent → text response

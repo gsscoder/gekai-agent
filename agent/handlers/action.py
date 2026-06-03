@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
@@ -16,7 +16,8 @@ from pathlib import Path
 from ..permissions import PermissionCallback, PermissionGate
 from ..router import Session, SYSTEM_PROMPT
 from ..settings import Permissions
-from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..diff import build_diff
+from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..tools import make_tools
 
 @dataclass
@@ -116,6 +117,14 @@ class ActionHandler:
             async for event in bus.stream():
                 if isinstance(event, ToolExecutionStarted):
                     await queue.put(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
+                elif isinstance(event, ToolExecutionCompleted):
+                    if event.call.name == "edit_file":
+                        inp = event.call.input or {}
+                        old_str = inp.get("old_str", "")
+                        new_str = inp.get("new_str", "")
+                        if old_str != new_str:
+                            diff_lines = build_diff(old_str, new_str)
+                            await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
                 elif isinstance(event, UsageUpdated) and event.delta:
                     await queue.put(InferEndEvent(
                         prompt_tokens=event.delta.get("input_tokens"),

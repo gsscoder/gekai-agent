@@ -25,11 +25,11 @@ from agent.settings import PERMISSION_CHOICES, load_context_limit, load_scope_ga
 from agent.workspace import list_files
 from agent.ws_explorer.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent
+from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent
 
 from .palette import CommandPalette
 from .history import PromptHistory
-from .widgets import ChoiceBar, FilePanel, HistoryPanel, MessageKind, MessageWidget
+from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget
 
 
 class ConversationContainer(ScrollableContainer):
@@ -892,6 +892,9 @@ class GekaiApp(App[None]):
                             await ws_renderer.log(item.message, tool_name=item.tool_name)
                             if ws_renderer.name == "Action":
                                 query_tool_count += 1
+                        elif isinstance(item, DiffEvent):
+                            await conversation.mount(DiffWidget(item.path, item.diff_lines))
+                            conversation.scroll_end(animate=False)
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)
                         elif isinstance(item, ThinkingTokenEvent):

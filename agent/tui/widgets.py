@@ -10,6 +10,8 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
+from agent.diff import DiffLine, render_diff
+
 
 class MessageKind(Enum):
     USER = "user"
@@ -422,3 +424,25 @@ class FilePanel(Widget):
         if 0 <= rel_y < visible_count:
             self.post_message(self.RowClicked(index=start + rel_y))
             event.stop()
+
+
+class DiffWidget(Widget):
+    DEFAULT_CSS = """
+    DiffWidget {
+        height: auto;
+        background: ansi_default;
+        padding: 0 0 0 5;
+    }
+    DiffWidget > Static {
+        height: auto;
+        background: ansi_default;
+    }
+    """
+
+    def __init__(self, path: str, diff_lines: list[DiffLine], **kwargs: object) -> None:
+        self._path = path
+        self._diff_lines = diff_lines
+        super().__init__(**kwargs)
+
+    def compose(self) -> ComposeResult:
+        yield Static(render_diff(self._diff_lines))

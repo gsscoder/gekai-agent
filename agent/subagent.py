@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -23,6 +23,13 @@ class LogEvent(SubAgentEvent):
     """A timestep worth showing in the conversation (file read, scan step, etc.)."""
     message: str = ""
     tool_name: str = ""
+
+
+@dataclass
+class DiffEvent(SubAgentEvent):
+    """Diff of an edit_file mutation; emitted after ToolExecutionCompleted."""
+    path: str = ""
+    diff_lines: list = field(default_factory=list)  # list[DiffLine]
 
 
 @dataclass
