@@ -477,7 +477,6 @@ class GekaiApp(App[None]):
         self._status_frame: int = 0
         self._status_verb: str = ""
         self._status_start: float = 0.0
-        self._current_lang: str = "EN"
         self._esc_pending: bool = False
         self._pending_choice: asyncio.Future[str | None] | None = None
         self._context_limit: int = 128_000
@@ -593,7 +592,6 @@ class GekaiApp(App[None]):
         self.query_one("#context-bar", Static).update(
             _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
-        self._current_lang = "EN"
         self._assistant_widget = None
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
@@ -864,8 +862,10 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(verb[0], color)
-            normalized, src_lang = await self._agent.normalize(user_input)
-            segments = await self._agent.classify(normalized)
+            segments = await self._agent.classify(user_input)
+            if segments[0][0] is Intent.REJECTED:
+                await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0][1]))
+                return
             rejected, reason = await self._agent.check_gate(segments)
             if rejected and self._session.scope_gate:
                 await conversation.mount(
@@ -876,22 +876,9 @@ class GekaiApp(App[None]):
                 labels = [intent.name for intent, _ in segments]
                 debug_text = f"\\[classifier: {', '.join(labels)}]"
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
-                if normalized == user_input:
-                    norm_debug = "\\[OK]"
-                else:
-                    snippet = (normalized[:30] + "...") if len(normalized) > 30 else normalized
-                    norm_debug = f"\\[{snippet}, {src_lang}]" if src_lang else f"\\[{snippet}]"
-                await conversation.mount(MessageWidget(MessageKind.OPERATION, norm_debug, color="#BA55D3"))
-
-            new_lang = src_lang or "EN"
-            if new_lang != self._current_lang:
-                self._current_lang = new_lang
-                lang_hint = f"<lang>\nfrom now on answer in: {new_lang}"
-                self._session.messages.append({"role": "system", "content": lang_hint})
 
             async for item in self._agent.process_stream(
-                self._session, normalized, segments,
-                original_input=user_input,
+                self._session, user_input, segments,
                 permission_callback=self._permission_callback,
             ):
                 if isinstance(item, str):

@@ -17,6 +17,7 @@ class Intent(enum.Enum):
     CHAT = "chat"
     ACTION = "action"
     MEMORIZE = "memorize"
+    REJECTED = "rejected"
 
 
 SYSTEM_PROMPT = (
@@ -83,7 +84,9 @@ CLASSIFIER_PROMPT = (
     " input: refactor error handling across all modules\n"
     "  action: refactor error handling across all modules\n"
     " input: rename the variable on line 5 of utils.py\n"
-    "  action: rename the variable on line 5 of utils.py"
+    "  action: rename the variable on line 5 of utils.py\n"
+    "<human_language>\n"
+    "if the request is not in English, do not process it and respond exactly: REJECTED\n"
 )
 
 
@@ -123,6 +126,8 @@ class IntentClassifier:
             ],
         )
         raw: str = response.choices[0].message.content.strip()
+        if raw.strip() == "REJECTED":
+            return [(Intent.REJECTED, "User input must be in English")]
         segments: list[tuple[Intent, str]] = []
         for line in raw.splitlines():
             line = line.strip()
