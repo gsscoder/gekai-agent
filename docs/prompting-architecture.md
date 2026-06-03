@@ -63,6 +63,18 @@ vs. **when tools are mandatory** (file contents, logic, depth).
 
 ---
 
+## Sandbox / Isolation
+
+Tool execution is **not** OS-sandboxed. The current boundary is:
+
+- **Path jail** — `_resolve_in_ws` rejects any path that resolves outside the workspace root (symlinks included via `.resolve()`).
+- **No shell** — file ops use `shutil` / `pathlib` directly; no subprocess or shell interpolation surface.
+- **Permission gate** — `PermissionGate` enforces `read` / `write` / `exec` per tool call; `exec` permission is not granted by default.
+
+This is proportionate for a single-user local prototype. Full isolation is **deferred** under one explicit assumption: **no exec or network tool exists yet**. The moment either lands, OS-level sandboxing becomes blocking — the path jail is meaningless once arbitrary code runs with user privileges.
+
+---
+
 ## Intent Classification
 
 `IntentClassifier.classify(user_input, history=None)` makes **one LLM call**.
