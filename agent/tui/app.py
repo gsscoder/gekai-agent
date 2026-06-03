@@ -915,7 +915,7 @@ class GekaiApp(App[None]):
             await conversation.mount(
                 MessageWidget(
                     MessageKind.OPERATION,
-                    f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({query_tool_count} tools)" if query_tool_count > 0 else ""),
+                    f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({query_tool_count} {'tool' if query_tool_count == 1 else 'tools'})" if query_tool_count > 0 else ""),
                     color=color,
                 )
             )
