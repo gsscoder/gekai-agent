@@ -577,9 +577,10 @@ class GekaiApp(App[None]):
                 "Gekai needs access to this workspace:",
                 PERMISSION_CHOICES,
             )
-            perms = resolve_permissions(choice) if choice else None
-            if perms is None:
-                perms = resolve_permissions("deny")
+            if choice is None:
+                self.exit()
+                return
+            perms = resolve_permissions(choice)
             save_permissions(self._working_dir, perms)
             self._agent.permissions = perms
             self._session.permissions = perms
