@@ -135,6 +135,34 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
     return "\n".join(results) if results else "(no matches)"
 
 
+async def _edit_file(path: str, old_str: str, new_str: str, *, working_dir: Path) -> str:
+    target = (working_dir / path).resolve()
+    if not target.is_relative_to(working_dir.resolve()):
+        return "error: path outside working directory"
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return f"error: file not found: {path}"
+    except Exception as exc:
+        return f"error: {exc}"
+    if old_str not in text:
+        return f"error: old_str not found in {path}"
+    target.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
+    return "ok"
+
+
+async def _write_file(path: str, content: str, *, working_dir: Path) -> str:
+    target = (working_dir / path).resolve()
+    if not target.is_relative_to(working_dir.resolve()):
+        return "error: path outside working directory"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return "ok"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
 async def _symbols(
     path: str,
     *,
@@ -240,4 +268,23 @@ def make_tools(working_dir: Path) -> list:
         """
         return await _symbols(path, working_dir=working_dir, kind=kind)
 
-    return [read_file, list_files, grep, file_info, symbols]
+    @tool(is_read_only=False, required_permission="write")
+    async def edit_file(path: str, old_str: str, new_str: str) -> str:
+        """Edit a file by replacing the first occurrence of old_str with new_str.
+
+        old_str must match the file content exactly (including whitespace and indentation).
+        Returns 'ok' on success or an error string on failure.
+        To replace a larger block, include enough surrounding context to make old_str unique.
+        """
+        return await _edit_file(path, old_str=old_str, new_str=new_str, working_dir=working_dir)
+
+    @tool(is_read_only=False, required_permission="write")
+    async def write_file(path: str, content: str) -> str:
+        """Write content to a file, creating it if absent or overwriting if present.
+
+        Use for new files or complete rewrites. Prefer edit_file for targeted changes.
+        Returns 'ok' on success or an error string on failure.
+        """
+        return await _write_file(path, content=content, working_dir=working_dir)
+
+    return [read_file, list_files, grep, file_info, symbols, edit_file, write_file]
