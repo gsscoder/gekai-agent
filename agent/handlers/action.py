@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
@@ -18,8 +18,6 @@ from ..router import Session, SYSTEM_PROMPT
 from ..settings import Permissions
 from ..subagent import DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..tools import make_tools
-from ..verify import run_verification
-
 
 @dataclass
 class Artifact:
@@ -33,8 +31,6 @@ _TOOL_INSTRUCTION = (
 )
 
 _ACTION_COLOR = "#4169E1"
-
-_WRITE_TOOLS = frozenset(("edit_file", "write_file"))
 
 
 def _fmt_tool_call(call: ToolUseBlock) -> str:
@@ -115,17 +111,11 @@ class ActionHandler:
         )
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
-        modified_paths: list[str] = []
 
         async def _consume_bus() -> None:
             async for event in bus.stream():
                 if isinstance(event, ToolExecutionStarted):
                     await queue.put(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
-                elif isinstance(event, ToolExecutionCompleted):
-                    if event.call.name in _WRITE_TOOLS and not event.result.is_error:
-                        path = (event.call.input or {}).get("path")
-                        if path:
-                            modified_paths.append(path)
                 elif isinstance(event, UsageUpdated) and event.delta:
                     await queue.put(InferEndEvent(
                         prompt_tokens=event.delta.get("input_tokens"),
@@ -154,43 +144,6 @@ class ActionHandler:
             except MaxIterationsExceeded:
                 yield DoneEvent(thinking_chars=0)
                 return
-
-            # Verification loop — runs only when writes happened this turn
-            unique_paths = list(dict.fromkeys(modified_paths))
-            if unique_paths:
-                yield LogEvent(message="Verifying changes...", tool_name="verify")
-                vresult = await run_verification(
-                    session.working_dir, unique_paths, self._model, self._api_key, self._api_base,
-                )
-                if vresult.passed:
-                    yield LogEvent(message="Verified ✓", tool_name="verify")
-                else:
-                    yield LogEvent(message="Verification failed — correcting...", tool_name="verify")
-                    history.append(Message(
-                        role="user",
-                        content=(
-                            "The verification tests for your changes failed:\n\n"
-                            f"{vresult.output}\n\n"
-                            "Fix the code so the tests pass."
-                        ),
-                    ))
-                    correction = _build_agent(
-                        self._model, self._api_key, self._api_base, self._extra_params,
-                        session.working_dir, session.permissions, permission_callback,
-                    )
-                    try:
-                        history = await correction.run(history)
-                    except MaxIterationsExceeded:
-                        pass
-
-                    vresult2 = await run_verification(
-                        session.working_dir, unique_paths, self._model, self._api_key, self._api_base,
-                    )
-                    if vresult2.passed:
-                        yield LogEvent(message="Verified ✓", tool_name="verify")
-                    else:
-                        short = vresult2.output[:200]
-                        yield LogEvent(message=f"Still failing after correction: {short}", tool_name="verify")
 
             thinking_chars = sum(
                 len(b.text)
