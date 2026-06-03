@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import enum
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,28 +86,14 @@ CLASSIFIER_PROMPT = (
     "  action: rename the variable on line 5 of utils.py"
 )
 
-_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 
-
-def _word_count(text: str) -> int:
-    stripped = _CODE_FENCE_RE.sub("", text)
-    return len(re.findall(r"\w+", stripped))
-
-
-def evaluate_structural_gate(
+def evaluate_single_order_gate(
     segments: list[tuple[Intent, str]],
-    max_segments: int = 3,
-    big_prompt_min_words: int = 50,
 ) -> tuple[bool, str | None]:
-    """Pure-Python structural gate. Returns (rejected, reason)."""
-    if len(segments) > max_segments:
-        return (True, f"Too many tasks ({len(segments)})")
-    if len(segments) == 1:
-        return (False, None)
-    if len(segments) > 2:
-        big_count = sum(1 for _, text in segments if _word_count(text) > big_prompt_min_words)
-        if big_count > 1:
-            return (True, "Multiple complex tasks")
+    """One order per turn. Memorize directives ride along; >1 actionable segment is refused."""
+    orders = [s for s in segments if s[0] != Intent.MEMORIZE]
+    if len(orders) > 1:
+        return (True, f"One order per turn — split into {len(orders)} separate messages")
     return (False, None)
 
 

@@ -52,7 +52,7 @@ SYSTEM_PROMPT
 └── <file_handling>   show/print/display → full verbatim fenced block
 ```
 
-`QueryHandler` appends `_TOOL_INSTRUCTION` at construction time:
+`ActionHandler` appends `_TOOL_INSTRUCTION` at construction time:
 
 ```
 system = SYSTEM_PROMPT + "\n\n" + _TOOL_INSTRUCTION
@@ -90,28 +90,28 @@ Fallback on parse failure: `[(Intent.CHAT, user_input)]`.
 
 ---
 
-## QueryHandler — Tool Loop
+## ActionHandler — Tool Loop
 
 Uses `llmstitch.Agent` with `OpenAIAdapter`; tools registered from `make_tools(working_dir)`.
 
 ```mermaid
 sequenceDiagram
     participant TUI
-    participant QueryHandler
+    participant ActionHandler
     participant llmstitch
     participant CoreModel
 
-    TUI->>QueryHandler: stream(session, user_input)
-    QueryHandler->>llmstitch: agent.run(prior_messages)
+    TUI->>ActionHandler: stream(session, user_input)
+    ActionHandler->>llmstitch: agent.run(prior_messages)
     loop tool-calling
         llmstitch->>CoreModel: messages + tools
         CoreModel-->>llmstitch: ToolUseBlock / TextBlock
-        llmstitch-->>QueryHandler: ToolExecutionStarted event
-        QueryHandler-->>TUI: LogEvent (e.g. "Read src/main.py")
+        llmstitch-->>ActionHandler: ToolExecutionStarted event
+        ActionHandler-->>TUI: LogEvent (e.g. "Read src/main.py")
         llmstitch->>llmstitch: execute tool, append result
     end
-    llmstitch-->>QueryHandler: final history
-    QueryHandler-->>TUI: DoneEvent → text response
+    llmstitch-->>ActionHandler: final history
+    ActionHandler-->>TUI: DoneEvent → text response
 ```
 
 Events flow through `EventBus` → async queue → TUI stream.

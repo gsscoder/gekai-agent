@@ -14,7 +14,7 @@ from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.action import Artifact, ActionHandler
 from .normalizer import PromptNormalizer
 from .permissions import PermissionCallback
-from .router import Intent, IntentClassifier, Session, evaluate_structural_gate
+from .router import Intent, IntentClassifier, Session, evaluate_single_order_gate
 from .settings import Permissions
 from toon import encode as toon_encode
 
@@ -75,9 +75,6 @@ class GekaiAgent:
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
         )
-        from .settings import load_max_prompt_segments, load_big_prompt_min_size_words
-        self._max_prompt_segments = load_max_prompt_segments(working_dir)
-        self._big_prompt_min_words = load_big_prompt_min_size_words(working_dir)
         self._normalizer = PromptNormalizer(
             model=self._supp_model,
             api_key=self._supp_api_key,
@@ -130,11 +127,7 @@ class GekaiAgent:
         return await self._classifier.classify(user_input)
 
     async def check_gate(self, segments: list[tuple[Intent, str]]) -> tuple[bool, str | None]:
-        return evaluate_structural_gate(
-            segments,
-            max_segments=self._max_prompt_segments,
-            big_prompt_min_words=self._big_prompt_min_words,
-        )
+        return evaluate_single_order_gate(segments)
 
     async def normalize(self, user_input: str) -> tuple[str, str | None]:
         return await self._normalizer.normalize(user_input)

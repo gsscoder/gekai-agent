@@ -17,11 +17,11 @@ class ConfigGateCommand:
     async def execute(self, args: list[str]) -> CommandResult:
         arg = args[0].lower() if args else ""
         if arg not in ("on", "off"):
-            return CommandResult(output="usage: /config:gate on|off")
+            return CommandResult(output="Usage: /config:gate on|off")
         enabled = arg == "on"
         save_scope_gate(self._working_dir, enabled)
         state = "on" if enabled else "off"
         return CommandResult(
-            output=f"scope gate {state} — saved to project settings",
+            output=f"Scope gate {state} — saved to project settings",
             scope_gate=enabled,
         )

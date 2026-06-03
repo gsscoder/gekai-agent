@@ -37,11 +37,11 @@ Segment loop in `agent.py:161` simplifies:
 - `Intent.MEMORIZE` branch unchanged
 - All non-memorize segments dispatch to `_handlers[intent]` (either CHAT or ACTION)
 
-The loop structure stays — classifier can still emit multiple segments (e.g. `memorize` + `action`). The gate (`evaluate_structural_gate`) still caps segment count.
+The loop structure stays — classifier can still emit multiple segments (e.g. `memorize` + `action`). The single-order gate (`evaluate_single_order_gate`) ensures at most one non-memorize segment per turn.
 
-## Structural Gate
+## Single-Order Gate
 
-`evaluate_structural_gate` in `router.py` — **no changes**. Still runs on classifier segments. Still enforces max_segments and big_prompt_min_words. The gate inspects segment count and word counts, not intent labels.
+`evaluate_single_order_gate` in `router.py` — one order per turn. An "order" is any non-`memorize` segment. If classifier output contains >1 order, the gate rejects with a message asking the user to split. Memorize directives ride along (setup, not an order). Toggled via `scope_gate` bool (`/config:gate on|off`). Replaces the old `evaluate_structural_gate` which used configurable `max_segments` and `big_prompt_min_words` thresholds.
 
 ## Permission Flow (unchanged)
 

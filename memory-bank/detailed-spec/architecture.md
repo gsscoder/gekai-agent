@@ -37,8 +37,8 @@ Intents:
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated intent
 
 ## LLM Integration
-`openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in QueryHandler
-Env vars (CORE — used by ChatHandler, QueryHandler):
+`openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in ActionHandler
+Env vars (CORE — used by ChatHandler, ActionHandler):
 - `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`

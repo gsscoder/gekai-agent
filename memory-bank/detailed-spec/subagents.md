@@ -43,9 +43,9 @@ All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
 - Post-run state: `.workspace` and `.enrichment` attributes populated; caller reads them to update session context
 - `.gekai/` directory excluded from stale-detection triggers
 
-### QueryHandler — `agent/handlers/query.py`
+### ActionHandler — `agent/handlers/action.py`
 - Not a `SubAgent` subclass; `stream()` is an async generator that yields `SubAgentEvent | str`
-- `name` implicit: yields `SubAgentStartEvent(name="Query", description="Inspecting workspace", color="#4169E1")`
+- `name` implicit: yields `SubAgentStartEvent(name="Action", description="Inspecting workspace", color="#4169E1")`
 - Emits only `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), and `DoneEvent`
 - After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`
 - Uses `llmstitch` `EventBus` to bridge tool-call events from the agent loop into the subagent event stream
