@@ -51,6 +51,14 @@ def _fmt_tool_call(call: ToolUseBlock) -> str:
         return f"Edit {inp.get('path', '')}"
     if call.name == "write_file":
         return f"Write {inp.get('path', '')}"
+    if call.name == "move_file":
+        return f"Move {inp.get('src', '')} → {inp.get('dst', '')}"
+    if call.name == "copy_file":
+        return f"Copy {inp.get('src', '')} → {inp.get('dst', '')}"
+    if call.name == "delete_file":
+        return f"Delete {inp.get('path', '')}"
+    if call.name == "make_dir":
+        return f"Mkdir {inp.get('path', '')}"
     return call.name.capitalize()
 
 

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from agent.llm import tool
 
 _MAX_RESULTS = 200
+
+
+def _resolve_in_ws(path: str, working_dir: Path) -> Path | None:
+    target = (working_dir / path).resolve()
+    return target if target.is_relative_to(working_dir.resolve()) else None
+
 
 _EXT_TO_LANG: dict[str, str] = {
     ".py": "python",
@@ -56,8 +63,8 @@ async def _read_file(
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
-    target = (working_dir / path).resolve()
-    if not target.is_relative_to(working_dir.resolve()):
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
         return "error: path outside working directory"
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
@@ -88,8 +95,8 @@ async def _list_files(pattern: str, *, working_dir: Path) -> str:
 
 
 async def _file_info(path: str, *, working_dir: Path) -> str:
-    target = (working_dir / path).resolve()
-    if not target.is_relative_to(working_dir.resolve()):
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
         return "error: path outside working directory"
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
@@ -110,8 +117,8 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
 
     root = working_dir.resolve()
     if path:
-        target = (working_dir / path).resolve()
-        if not target.is_relative_to(root):
+        target = _resolve_in_ws(path, working_dir)
+        if target is None:
             return "error: path outside working directory"
         candidates = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
     else:
@@ -136,8 +143,8 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
 
 
 async def _edit_file(path: str, old_str: str, new_str: str, *, working_dir: Path) -> str:
-    target = (working_dir / path).resolve()
-    if not target.is_relative_to(working_dir.resolve()):
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
         return "error: path outside working directory"
     try:
         text = target.read_text(encoding="utf-8")
@@ -152,8 +159,8 @@ async def _edit_file(path: str, old_str: str, new_str: str, *, working_dir: Path
 
 
 async def _write_file(path: str, content: str, *, working_dir: Path) -> str:
-    target = (working_dir / path).resolve()
-    if not target.is_relative_to(working_dir.resolve()):
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
         return "error: path outside working directory"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -175,8 +182,8 @@ async def _symbols(
     except ImportError:
         return "error: tree-sitter not installed (pip install tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript tree-sitter-go)"
 
-    target = (working_dir / path).resolve()
-    if not target.is_relative_to(working_dir.resolve()):
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
         return "error: path outside working directory"
 
     ext = target.suffix.lower()
@@ -221,6 +228,70 @@ async def _symbols(
         return "(no symbols found)"
     results.sort(key=lambda r: r[0])
     return "\n".join(f"{name}:{line}:{kind_}" for line, name, kind_ in results)
+
+
+async def _move_file(src: str, dst: str, *, working_dir: Path) -> str:
+    src_path = _resolve_in_ws(src, working_dir)
+    if src_path is None:
+        return "error: path outside working directory"
+    dst_path = _resolve_in_ws(dst, working_dir)
+    if dst_path is None:
+        return "error: path outside working directory"
+    if not src_path.exists():
+        return f"error: source not found: {src}"
+    if dst_path.exists():
+        return f"error: destination already exists: {dst}"
+    try:
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_path), str(dst_path))
+        return "ok"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+async def _copy_file(src: str, dst: str, *, working_dir: Path) -> str:
+    src_path = _resolve_in_ws(src, working_dir)
+    if src_path is None:
+        return "error: path outside working directory"
+    dst_path = _resolve_in_ws(dst, working_dir)
+    if dst_path is None:
+        return "error: path outside working directory"
+    if not src_path.is_file():
+        return f"error: source not a file: {src}"
+    if dst_path.exists():
+        return f"error: destination already exists: {dst}"
+    try:
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src_path), str(dst_path))
+        return "ok"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+async def _delete_file(path: str, *, working_dir: Path) -> str:
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
+        return "error: path outside working directory"
+    if target.is_dir():
+        return f"error: target is a directory, not a file: {path}"
+    if not target.exists():
+        return f"error: file not found: {path}"
+    try:
+        target.unlink()
+        return "ok"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+async def _make_dir(path: str, *, working_dir: Path) -> str:
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
+        return "error: path outside working directory"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        return "ok"
+    except Exception as exc:
+        return f"error: {exc}"
 
 
 def make_tools(working_dir: Path) -> list:
@@ -287,4 +358,43 @@ def make_tools(working_dir: Path) -> list:
         """
         return await _write_file(path, content=content, working_dir=working_dir)
 
-    return [read_file, list_files, grep, file_info, symbols, edit_file, write_file]
+    @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
+    async def move_file(src: str, dst: str) -> str:
+        """Move or rename a file within the repository.
+
+        Both src and dst must be paths relative to the workspace root.
+        Refuses if dst already exists — no silent overwrite.
+        Returns 'ok' on success or an error string on failure.
+        """
+        return await _move_file(src, dst, working_dir=working_dir)
+
+    @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
+    async def copy_file(src: str, dst: str) -> str:
+        """Copy a file within the repository.
+
+        src must be a file (not a directory). Both paths must be within the workspace.
+        Refuses if dst already exists — no silent overwrite.
+        Returns 'ok' on success or an error string on failure.
+        """
+        return await _copy_file(src, dst, working_dir=working_dir)
+
+    @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
+    async def delete_file(path: str) -> str:
+        """Delete a single file from the repository.
+
+        Refuses directories — use this only for files.
+        Returns 'ok' on success or an error string on failure.
+        """
+        return await _delete_file(path, working_dir=working_dir)
+
+    @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
+    async def make_dir(path: str) -> str:
+        """Create a directory (and any missing parents) in the repository.
+
+        Safe to call when the directory already exists.
+        Returns 'ok' on success or an error string on failure.
+        """
+        return await _make_dir(path, working_dir=working_dir)
+
+    return [read_file, list_files, grep, file_info, symbols, edit_file, write_file,
+            move_file, copy_file, delete_file, make_dir]
