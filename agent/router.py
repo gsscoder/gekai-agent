@@ -16,7 +16,6 @@ from .settings import Permissions
 class Intent(enum.Enum):
     CHAT = "chat"
     ACTION = "action"
-    MEMORIZE = "memorize"
     REJECTED = "rejected"
 
 
@@ -57,17 +56,12 @@ class Session:
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output format: each line must be exactly `label: text` where label is one of chat, action, memorize\n"
+    "output format: each line must be exactly `label: text` where label is one of chat, action\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "<labels>\n"
     " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
     " action    — needs to inspect or modify the repository: read files, search code, understand structure,\n"
     "             create, edit, delete, or refactor files\n"
-    " memorize  — any rule, constraint, or preference that should persist across future turns: coding style,\n"
-    "             project conventions, off-limits files or directories, tool preferences, or any instruction\n"
-    "             that applies beyond the current request\n"
-    "             (e.g. 'from now on use spaces instead of tabs', 'this project follows Google style guide',\n"
-    "             'don't touch the migrations folder')\n"
     "<rules>\n"
     " assume all requests relate to the current codebase unless clearly otherwise\n"
     " when a message could fit multiple labels, prefer chat over action\n"
@@ -93,10 +87,9 @@ CLASSIFIER_PROMPT = (
 def evaluate_single_order_gate(
     segments: list[tuple[Intent, str]],
 ) -> tuple[bool, str | None]:
-    """One order per turn. Memorize directives ride along; >1 actionable segment is refused."""
-    orders = [s for s in segments if s[0] != Intent.MEMORIZE]
-    if len(orders) > 1:
-        return (True, f"One order per turn — split into {len(orders)} separate messages")
+    """One order per turn; >1 actionable segment is refused."""
+    if len(segments) > 1:
+        return (True, f"One order per turn — split into {len(segments)} separate messages")
     return (False, None)
 
 

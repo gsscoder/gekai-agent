@@ -12,7 +12,7 @@ user input
 IntentClassifier          [support model]  — decompose into labeled segments; reject non-English
     │
     ▼
-Handler(s)                [core model]     — chat / action / memorize
+Handler(s)                [core model]     — chat / action
 ```
 
 ---
@@ -28,12 +28,11 @@ index  role      content
   1    system    <workspace> block  (TOON-encoded, injected fresh on startup)
   …    user      prior turns
   …    assistant prior turns
-  …    system    [preference] …    (memorize segments only)
   N    user      current input      (appended before dispatch)
   N+1  assistant response           (appended after all segments complete)
 ```
 
-**System messages** (`[0]`, `[1]`, preference entries) are excluded from persistence;
+**System messages** (`[0]`, `[1]`) are excluded from persistence;
 they are re-injected fresh on every startup or resume.
 
 ---
@@ -82,8 +81,8 @@ Returns `list[tuple[Intent, str]]` — `(intent, sub-prompt)`.
 ```
 CLASSIFIER_PROMPT
 ├── output format     label: text  (one line per segment)
-├── <labels>          chat | action | memorize
-├── <rules>           preference order
+├── <labels>          chat | action
+├── <rules>           prefer chat over action
 └── <examples>        few-shot
 ```
 
@@ -95,7 +94,6 @@ Fallback on parse failure: `[(Intent.CHAT, user_input)]`.
 |------------|----------------|------------------------------------|
 | `chat`     | ChatHandler    | knowledge only, no tools           |
 | `action`   | ActionHandler  | tool-calling loop via llmstitch; covers both read and write operations (permission resolved at tool-call time by PermissionGate) |
-| `memorize` | —              | appends `[preference]` system message to session |
 
 ---
 

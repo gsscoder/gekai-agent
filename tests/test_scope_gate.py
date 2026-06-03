@@ -39,34 +39,6 @@ class TestEvaluateSingleOrderGate:
         assert not rejected
         assert reason is None
 
-    def test_single_memorize_passes(self):
-        segments = [(Intent.MEMORIZE, "use tabs")]
-        rejected, reason = evaluate_single_order_gate(segments)
-        assert not rejected
-        assert reason is None
-
-    def test_memorize_plus_action_passes(self):
-        segments = [(Intent.MEMORIZE, "use tabs"), (Intent.ACTION, "reformat foo.py")]
-        rejected, reason = evaluate_single_order_gate(segments)
-        assert not rejected
-        assert reason is None
-
-    def test_memorize_plus_chat_passes(self):
-        segments = [(Intent.MEMORIZE, "use tabs"), (Intent.CHAT, "what style do we use")]
-        rejected, reason = evaluate_single_order_gate(segments)
-        assert not rejected
-        assert reason is None
-
-    def test_multiple_memorize_plus_one_action_passes(self):
-        segments = [
-            (Intent.MEMORIZE, "use tabs"),
-            (Intent.MEMORIZE, "no semicolons"),
-            (Intent.ACTION, "reformat foo.py"),
-        ]
-        rejected, reason = evaluate_single_order_gate(segments)
-        assert not rejected
-        assert reason is None
-
     def test_two_actions_rejected(self):
         segments = [(Intent.ACTION, "refactor auth"), (Intent.ACTION, "fix tests")]
         rejected, reason = evaluate_single_order_gate(segments)
@@ -95,26 +67,10 @@ class TestEvaluateSingleOrderGate:
         assert rejected
         assert "3" in reason
 
-    def test_memorize_only_multiple_passes(self):
-        segments = [(Intent.MEMORIZE, "use tabs"), (Intent.MEMORIZE, "no semicolons")]
-        rejected, reason = evaluate_single_order_gate(segments)
-        assert not rejected
-        assert reason is None
-
     def test_empty_segments_passes(self):
         rejected, reason = evaluate_single_order_gate([])
         assert not rejected
         assert reason is None
-
-    def test_memorize_plus_two_actions_rejected(self):
-        segments = [
-            (Intent.MEMORIZE, "use tabs"),
-            (Intent.ACTION, "refactor auth"),
-            (Intent.ACTION, "fix tests"),
-        ]
-        rejected, reason = evaluate_single_order_gate(segments)
-        assert rejected
-        assert "2" in reason
 
 
 # ---------------------------------------------------------------------------

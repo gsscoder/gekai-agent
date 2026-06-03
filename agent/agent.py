@@ -147,28 +147,20 @@ class GekaiAgent:
                 yield sep
             first = False
 
-            if intent == Intent.MEMORIZE:
-                session.messages.append({"role": "system", "content": f"[preference] {sub_prompt}"})
-                append_message(session, session.messages[-1])
-                ack = "noted."
-                all_chunks.append(ack)
-                yield ack
-
+            handler = self._handlers[intent]
+            if hasattr(handler, "stream"):
+                async for item in handler.stream(
+                    session, sub_prompt, permission_callback=permission_callback,
+                ):
+                    if isinstance(item, str):
+                        all_chunks.append(item)
+                    elif isinstance(item, Artifact):
+                        artifact_content = item.content
+                    yield item
             else:
-                handler = self._handlers[intent]
-                if hasattr(handler, "stream"):
-                    async for item in handler.stream(
-                        session, sub_prompt, permission_callback=permission_callback,
-                    ):
-                        if isinstance(item, str):
-                            all_chunks.append(item)
-                        elif isinstance(item, Artifact):
-                            artifact_content = item.content
-                        yield item
-                else:
-                    result = await handler.handle(session, sub_prompt)
-                    all_chunks.append(result)
-                    yield result
+                result = await handler.handle(session, sub_prompt)
+                all_chunks.append(result)
+                yield result
 
         if artifact_content:
             _append_bounded_artifact(session, artifact_content)

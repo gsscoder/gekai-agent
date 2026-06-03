@@ -46,7 +46,7 @@ def append_debug(session: Session, message: dict) -> None:
         fh.write(json.dumps({"timestamp": now_utc_str(), "content": message["content"]}, separators=(",", ":")) + "\n")
 
 
-_PERSISTENT_SYSTEM_PREFIXES = ("[preference]", "[artifact]", "<lang>")
+_PERSISTENT_SYSTEM_PREFIXES = ("[artifact]", "<lang>")
 
 
 def _is_persistent_system_message(m: dict) -> bool:

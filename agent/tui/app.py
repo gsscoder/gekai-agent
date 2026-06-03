@@ -272,7 +272,7 @@ def _fmt_status_bar(model: str, working_dir: str, branch: str | None, prompt_tok
 
 
 def _estimate_session_tokens(session: Session) -> int:
-    # Includes transcript + persistent system messages ([preference], [artifact], <lang>).
+    # Includes transcript + persistent system messages ([artifact], <lang>).
     # Artifacts from prior Query turns are what make this number grow meaningfully.
     return sum(len(str(m.get("content") or "")) for m in session.messages) // 4
 

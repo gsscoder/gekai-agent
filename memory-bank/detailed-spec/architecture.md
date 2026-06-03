@@ -18,7 +18,6 @@ Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_language
 `segments: list[tuple[Intent, str]]`; `permission_callback: PermissionCallback | None = None` passed to the `PermissionGate` for runtime grant prompts
 - appends `{"role": "user"}` once per turn before dispatching
 - appends `{"role": "assistant"}` once per turn after all segments complete
-- `memorize` segments append an additional `{"role": "system", "content": "[preference] ..."}` inline
 
 ## Intent Routing
 `IntentClassifier.classify(user_input, history=None)` decomposes user input into `list[tuple[Intent, str]]` via one LLM call
@@ -31,7 +30,6 @@ Before classification, `PromptNormalizer` normalizes/translates user input using
 Intents:
 - `chat` — general coding Q&A; answer from model knowledge + session history
 - `action` — needs to inspect or modify the repository; permission resolved at tool-call time by PermissionGate
-- `memorize` — user states a rule/preference; stored as system message in session
 
 `GekaiAgent._handlers` maps `Intent → Handler`; keys are `Intent.CHAT` and `Intent.ACTION`
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated intent
