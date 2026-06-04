@@ -569,7 +569,7 @@ class GekaiApp(App[None]):
                     await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
             self.call_after_refresh(conversation.scroll_end)
 
-        self._set_route_label("__default")
+        self._set_route_label("default")
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
 
@@ -855,7 +855,7 @@ class GekaiApp(App[None]):
             await self._run_ws_explorer(conversation)
 
     def _set_route_label(self, label: str) -> None:
-        self.query_one("#input-area", Container).border_title = label
+        self.query_one("#input-area", Container).border_title = f"─[#000000 on #3a3a3a]{label}[/]"
 
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
@@ -872,7 +872,7 @@ class GekaiApp(App[None]):
             if segments[0].intent is Intent.REJECTED:
                 await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0].text))
                 return
-            self._set_route_label("__" + (segments[0].namespace or segments[0].intent.name.lower()))
+            self._set_route_label(segments[0].namespace or segments[0].intent.name.lower())
             rejected, reason = await self._agent.check_gate(segments)
             if rejected and self._session.scope_gate:
                 await conversation.mount(
@@ -892,7 +892,7 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                 elif isinstance(item, SubAgentEvent):
                     if isinstance(item, SubAgentStartEvent):
-                        self._set_route_label("__" + item.name)
+                        self._set_route_label(item.name)
                         ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
                         await ws_renderer.start(item.name, item.description, item.color)
                     elif ws_renderer:
@@ -932,7 +932,7 @@ class GekaiApp(App[None]):
             await conversation.mount(MessageWidget(MessageKind.ERROR, str(error)))
             conversation.scroll_end(animate=False)
         finally:
-            self._set_route_label("__default")
+            self._set_route_label("default")
             await self._stop_status_animation()
             if ws_renderer is not None:
                 ws_renderer.stop_spinner()

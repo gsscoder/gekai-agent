@@ -176,10 +176,10 @@ effective = Permissions(
 
 | State                     | Label shown         |
 |---------------------------|---------------------|
-| idle / between turns      | `__default`         |
-| after classify            | `__<namespace>`     |
-| sub-agent active          | `__<profile-name>`  |
-| finally (any exit)        | `__default`         |
+| idle / between turns      | `default`           |
+| after classify            | `<namespace>`       |
+| sub-agent active          | `<profile-name>`    |
+| finally (any exit)        | `default`           |
 
 ---
 
