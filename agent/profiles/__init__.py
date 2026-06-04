@@ -22,14 +22,32 @@ class AgentProfile:
 
 
 def _discover() -> list[AgentProfile]:
-    collected: list[AgentProfile] = []
+    import dataclasses
+
+    ns_directives: dict[str, str] = {}
+    raw_profiles: list[AgentProfile] = []
     package = __name__
     for info in pkgutil.iter_modules(__path__):  # type: ignore[name-defined]
         mod = importlib.import_module(f"{package}.{info.name}")
-        p = getattr(mod, "profile", None)
-        if isinstance(p, AgentProfile):
-            collected.append(p)
-    return collected
+        if info.name.startswith("_"):
+            ns = getattr(mod, "namespace", None)
+            nd = getattr(mod, "namespace_directives", None)
+            if isinstance(ns, str) and isinstance(nd, str):
+                ns_directives[ns] = nd
+        else:
+            p = getattr(mod, "profile", None)
+            if isinstance(p, AgentProfile):
+                raw_profiles.append(p)
+
+    result: list[AgentProfile] = []
+    for p in raw_profiles:
+        nd = ns_directives.get(p.namespace, "")
+        if nd:
+            composed = nd + ("\n" + p.directives if p.directives else "")
+            result.append(dataclasses.replace(p, directives=composed))
+        else:
+            result.append(p)
+    return result
 
 
 PROFILES: list[AgentProfile] = _discover()

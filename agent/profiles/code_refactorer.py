@@ -7,7 +7,6 @@ profile = AgentProfile(
     directives=(
         "do not invent features\n"
         "do not alter behavior beyond the request\n"
-        "preserve public signatures unless asked\n"
-        "merge into existing style, introduce no new patterns"
+        "preserve public signatures unless asked"
     ),
 )
