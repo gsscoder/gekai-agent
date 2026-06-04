@@ -93,6 +93,7 @@ class GekaiAgent:
                 api_key=self._api_key,
                 api_base=self._api_base,
                 extra_params=self._extra_params,
+                debug=self.debug,
             ),
         }
 

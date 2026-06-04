@@ -12,6 +12,7 @@ from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 from pathlib import Path
 
 from ..permissions import PermissionCallback, PermissionGate
+from ..persistence import append_debug
 from ..profiles import AgentProfile
 from ..router import Session, SYSTEM_PROMPT
 from ..settings import Permissions
@@ -20,10 +21,9 @@ from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, SubAgentEv
 from ..tools import make_tools
 
 _TOOL_INSTRUCTION = (
-    "the <workspace> block contains verified metadata about this repository: proj_brief, tech_stack, primary_languages, branch, and domain_map; "
-    "if these fields fully answer the question, respond directly without using tools; "
     "if the question requires file contents, implementation details, logic, or architecture depth, "
-    "you MUST use tools to read actual files — do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"
+    "you MUST use tools to read actual files — do not guess or rely on training knowledge; "
+    "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"
 )
 
 _ACTION_COLOR = "#4169E1"
@@ -60,6 +60,14 @@ def _fmt_tool_call(call: ToolUseBlock) -> str:
     return call.name.capitalize()
 
 
+def _build_system(profile: AgentProfile | None) -> str:
+    system = SYSTEM_PROMPT
+    if profile and profile.directives:
+        system += f"\n<directives>\n{profile.directives}"
+    system += f"\n<tools>\n{_TOOL_INSTRUCTION}"
+    return system
+
+
 def _build_agent(
     model: str,
     api_key: str | None,
@@ -68,14 +76,11 @@ def _build_agent(
     working_dir: Path,
     permissions: Permissions,
     permission_callback: PermissionCallback | None,
+    system: str,
     bus: EventBus | None = None,
     profile: AgentProfile | None = None,
 ) -> Agent:
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
-    system = SYSTEM_PROMPT
-    if profile and profile.directives:
-        system += f"\n<directives>\n{profile.directives}"
-    system += f"\n<tools>\n{_TOOL_INSTRUCTION}"
     agent = Agent(
         provider=adapter,
         model=model,
@@ -109,11 +114,13 @@ class ActionHandler:
         api_key: str | None = None,
         api_base: str | None = None,
         extra_params: dict | None = None,
+        debug: bool = False,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._api_base = api_base
         self._extra_params = extra_params or {}
+        self._debug = debug
 
     async def stream(
         self,
@@ -123,9 +130,12 @@ class ActionHandler:
         profile: AgentProfile | None = None,
     ) -> AsyncIterator[SubAgentEvent | str]:
         bus = EventBus()
+        system = _build_system(profile)
+        if self._debug:
+            append_debug(session, {"content": system})
         agent = _build_agent(
             self._model, self._api_key, self._api_base, self._extra_params,
-            session.working_dir, session.permissions, permission_callback, bus,
+            session.working_dir, session.permissions, permission_callback, system, bus,
             profile=profile,
         )
 
