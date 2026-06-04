@@ -31,6 +31,12 @@ from .palette import CommandPalette
 from .history import PromptHistory
 from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget
 
+_NS_COLORS: dict[str, str] = {
+    "coding": "gold1",
+    "management": "cyan",
+}
+_DEFAULT_ROUTE_COLOR = "#3a3a3a"
+
 
 class ConversationContainer(ScrollableContainer):
     class Scrolled(Message):
@@ -477,6 +483,7 @@ class GekaiApp(App[None]):
         self._status_stop: asyncio.Event | None = None
         self._status_frame: int = 0
         self._status_verb: str = ""
+        self._route_color: str = _DEFAULT_ROUTE_COLOR
         self._status_start: float = 0.0
         self._esc_pending: bool = False
         self._pending_choice: asyncio.Future[str | None] | None = None
@@ -854,8 +861,10 @@ class GekaiApp(App[None]):
         if await self._ask_choice("Workspace needs rescan — proceed?", [("y", "Yes"), ("n", "No")]) == "y":
             await self._run_ws_explorer(conversation)
 
-    def _set_route_label(self, label: str) -> None:
-        self.query_one("#input-area", Container).border_title = f"─[#000000 on #3a3a3a]{label}[/]"
+    def _set_route_label(self, label: str, color: str | None = None) -> None:
+        if color is not None:
+            self._route_color = color
+        self.query_one("#input-area", Container).border_title = f"─[#000000 on {self._route_color}]{label}[/]"
 
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
@@ -872,7 +881,11 @@ class GekaiApp(App[None]):
             if segments[0].intent is Intent.REJECTED:
                 await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0].text))
                 return
-            self._set_route_label(segments[0].namespace or segments[0].intent.name.lower())
+            _ns = segments[0].namespace if segments[0].intent is Intent.ACTION else None
+            self._set_route_label(
+                f"action/{_ns}" if _ns else segments[0].intent.name.lower(),
+                color=_NS_COLORS.get(_ns, _DEFAULT_ROUTE_COLOR) if _ns else None,
+            )
             rejected, reason = await self._agent.check_gate(segments)
             if rejected and self._session.scope_gate:
                 await conversation.mount(
@@ -932,7 +945,7 @@ class GekaiApp(App[None]):
             await conversation.mount(MessageWidget(MessageKind.ERROR, str(error)))
             conversation.scroll_end(animate=False)
         finally:
-            self._set_route_label("default")
+            self._set_route_label("default", color=_DEFAULT_ROUTE_COLOR)
             await self._stop_status_animation()
             if ws_renderer is not None:
                 ws_renderer.stop_spinner()
