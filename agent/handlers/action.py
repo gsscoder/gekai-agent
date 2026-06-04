@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from dataclasses import dataclass
-
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
 from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
@@ -21,10 +19,6 @@ from ..diff import build_diff
 from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..tools import make_tools
 
-@dataclass
-class Artifact:
-    content: str
-
 _TOOL_INSTRUCTION = (
     "the <workspace> block contains verified metadata about this repository: proj_brief, tech_stack, primary_languages, branch, and domain_map; "
     "if these fields fully answer the question, respond directly without using tools; "
@@ -33,6 +27,12 @@ _TOOL_INSTRUCTION = (
 )
 
 _ACTION_COLOR = "#4169E1"
+_RECENCY_N = 2
+
+
+def _recency_turns(messages: list[dict], n: int) -> list[Message]:
+    turns = [m for m in messages[:-1] if m["role"] in ("user", "assistant")]
+    return [Message(role=m["role"], content=m["content"]) for m in turns[-(n * 2):]]
 
 
 def _fmt_tool_call(call: ToolUseBlock) -> str:
@@ -72,11 +72,14 @@ def _build_agent(
     profile: AgentProfile | None = None,
 ) -> Agent:
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
-    directives = f"\n\n{profile.directives}" if profile else ""
+    system = SYSTEM_PROMPT
+    if profile and profile.directives:
+        system += f"\n<directives>\n{profile.directives}"
+    system += f"\n<tools>\n{_TOOL_INSTRUCTION}"
     agent = Agent(
         provider=adapter,
         model=model,
-        system=f"{SYSTEM_PROMPT}{directives}\n\n{_TOOL_INSTRUCTION}",
+        system=system,
         event_bus=bus,
         extra_params=extra_params,
     )
@@ -155,7 +158,7 @@ class ActionHandler:
             color=_ACTION_COLOR,
         )
 
-        prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
+        prior = _recency_turns(session.messages, _RECENCY_N)
         prior.append(Message(role="user", content=user_input))
         agent_task: asyncio.Task = asyncio.create_task(agent.run(prior))
         bus_task: asyncio.Task = asyncio.create_task(_consume_bus())
@@ -189,45 +192,8 @@ class ActionHandler:
                 text = last.content or ""
             if text:
                 yield text
-
-            artifact = _synthesize_artifact(history)
-            if artifact:
-                yield Artifact(content=f"[artifact] {artifact}")
         finally:
             if not agent_task.done():
                 agent_task.cancel()
             if not bus_task.done():
                 bus_task.cancel()
-
-
-def _synthesize_artifact(history: list) -> str | None:
-    """Very conservative: list files actually read + one short fact from final answer."""
-    files: list[str] = []
-    for msg in history:
-        if hasattr(msg, "content") and isinstance(msg.content, list):
-            for block in msg.content:
-                if isinstance(block, ToolUseBlock) and block.name in ("read_file", "grep", "list_files"):
-                    inp = block.input or {}
-                    if block.name == "read_file" and inp.get("path"):
-                        files.append(inp["path"])
-                    elif block.name == "grep" and inp.get("path"):
-                        files.append(inp["path"])
-    files = list(dict.fromkeys(files))[:6]  # dedup, cap
-
-    final = ""
-    if history:
-        last = history[-1]
-        if isinstance(last.content, list):
-            final = " ".join(b.text for b in last.content if isinstance(b, TextBlock))
-        else:
-            final = last.content or ""
-    summary = (final[:140] + "…") if len(final) > 140 else final
-
-    if not files and not summary:
-        return None
-    parts = []
-    if files:
-        parts.append("files: " + ", ".join(files))
-    if summary:
-        parts.append("summary: " + summary)
-    return "; ".join(parts)

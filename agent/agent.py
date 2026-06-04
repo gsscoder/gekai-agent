@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 from .llm.model_caps import resolve_thinking_params
 from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
-from .handlers.action import Artifact, ActionHandler
+from .handlers.action import ActionHandler
 from .permissions import PermissionCallback
 from .profiles import AgentProfile
 from .profile_selector import ProfileSelector
@@ -145,7 +145,6 @@ class GekaiAgent:
         append_message(session, session.messages[-1])
         all_chunks: list[str] = []
         first = True
-        artifact_content: str | None = None
 
         for seg in segments:
             intent, sub_prompt = seg.intent, seg.text
@@ -172,32 +171,11 @@ class GekaiAgent:
                 async for item in stream_iter:
                     if isinstance(item, str):
                         all_chunks.append(item)
-                    elif isinstance(item, Artifact):
-                        artifact_content = item.content
                     yield item
             else:
                 result = await handler.handle(session, sub_prompt)
                 all_chunks.append(result)
                 yield result
 
-        if artifact_content:
-            _append_bounded_artifact(session, artifact_content)
-
         session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
         append_message(session, session.messages[-1])
-
-
-def _append_bounded_artifact(session: Session, content: str) -> None:
-    """Keep at most the last 8 [artifact] system messages in the in-memory transcript."""
-    # Collect non-artifact messages + the most recent 7 artifacts, then append the new one
-    non_artifacts = []
-    recent_artifacts = []
-    for m in session.messages:
-        if m.get("role") == "system" and (m.get("content") or "").startswith("[artifact]"):
-            recent_artifacts.append(m)
-        else:
-            non_artifacts.append(m)
-    # Keep only the last 7 existing artifacts
-    recent_artifacts = recent_artifacts[-7:]
-    session.messages[:] = non_artifacts + recent_artifacts + [{"role": "system", "content": content}]
-    append_message(session, session.messages[-1])
