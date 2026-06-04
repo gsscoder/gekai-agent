@@ -330,6 +330,7 @@ class GekaiApp(App[None]):
         layers: input marker;
         border-top: solid #3a3a3a;
         border-bottom: solid #3a3a3a;
+        border-title-align: left;
         padding: 0;
         background: ansi_default;
     }
@@ -568,6 +569,7 @@ class GekaiApp(App[None]):
                     await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
             self.call_after_refresh(conversation.scroll_end)
 
+        self._set_route_label("__default")
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
 
@@ -852,6 +854,9 @@ class GekaiApp(App[None]):
         if await self._ask_choice("Workspace needs rescan — proceed?", [("y", "Yes"), ("n", "No")]) == "y":
             await self._run_ws_explorer(conversation)
 
+    def _set_route_label(self, label: str) -> None:
+        self.query_one("#input-area", Container).border_title = label
+
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
         verb = random_operative_verb()
@@ -864,9 +869,10 @@ class GekaiApp(App[None]):
         try:
             await self._start_status_animation(verb[0], color)
             segments = await self._agent.classify(user_input)
-            if segments[0][0] is Intent.REJECTED:
-                await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0][1]))
+            if segments[0].intent is Intent.REJECTED:
+                await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0].text))
                 return
+            self._set_route_label("__" + (segments[0].namespace or segments[0].intent.name.lower()))
             rejected, reason = await self._agent.check_gate(segments)
             if rejected and self._session.scope_gate:
                 await conversation.mount(
@@ -874,7 +880,7 @@ class GekaiApp(App[None]):
                 )
                 return
             if self._agent.debug:
-                labels = [intent.name for intent, _ in segments]
+                labels = [f"{s.intent.name}/{s.namespace}" if s.namespace else s.intent.name for s in segments]
                 debug_text = f"\\[classifier: {', '.join(labels)}]"
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
 
@@ -886,12 +892,13 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                 elif isinstance(item, SubAgentEvent):
                     if isinstance(item, SubAgentStartEvent):
+                        self._set_route_label("__" + item.name)
                         ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
                         await ws_renderer.start(item.name, item.description, item.color)
                     elif ws_renderer:
                         if isinstance(item, LogEvent):
                             await ws_renderer.log(item.message, tool_name=item.tool_name)
-                            if ws_renderer.name == "Action":
+                            if item.tool_name:
                                 query_tool_count += 1
                         elif isinstance(item, DiffEvent):
                             await conversation.mount(DiffWidget(item.path, item.diff_lines))
@@ -925,6 +932,7 @@ class GekaiApp(App[None]):
             await conversation.mount(MessageWidget(MessageKind.ERROR, str(error)))
             conversation.scroll_end(animate=False)
         finally:
+            self._set_route_label("__default")
             await self._stop_status_animation()
             if ws_renderer is not None:
                 ws_renderer.stop_spinner()

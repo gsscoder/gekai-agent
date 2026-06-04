@@ -2,17 +2,27 @@
 
 ## Overview
 
-Every turn passes through two layers: **classification → handler dispatch**.
-Each layer uses a distinct model (**support** vs. **core**).
+Every turn passes through three layers: **classification → profile selection → handler dispatch**.
 
 ```
 user input
     │
     ▼
-IntentClassifier          [support model]  — decompose into labeled segments; reject non-English
+IntentClassifier          [core model]    — decompose into Segments; emit namespace label; reject non-English
     │
-    ▼
-Handler(s)                [core model]     — chat / action
+    ├── chat / action/generic ─────────────────────────────────────────┐
+    │                                                                  │
+    └── action/coding | action/management                              │
+              │                                                        │
+              ▼                                                        │
+    ProfileSelector       [support model] — pick specialist profile    │
+              │                             within namespace;          │
+              │                             fallback on none/parse-fail│
+              │                                                        │
+              └───────────────────────────────────────────────────────►┤
+                                                                       ▼
+                                                             Handler(s) [core model]
+                                                               chat / action (+ profile directives)
 ```
 
 ---
@@ -48,12 +58,13 @@ SYSTEM_PROMPT
 └── <file_handling>   show/print/display → full verbatim fenced block
 ```
 
-`ActionHandler` appends `_TOOL_INSTRUCTION` at construction time:
+`ActionHandler._build_agent` composes the system prompt at call time:
 
 ```
-system = SYSTEM_PROMPT + "\n\n" + _TOOL_INSTRUCTION
+system = SYSTEM_PROMPT [+ "\n\n" + profile.directives] + "\n\n" + _TOOL_INSTRUCTION
 ```
 
+`profile.directives` is omitted when no profile is selected (e.g. `action/generic`).  
 `_TOOL_INSTRUCTION` tells the model **when `<workspace>` metadata is sufficient**
 vs. **when tools are mandatory** (file contents, logic, depth).
 
@@ -73,27 +84,102 @@ This is proportionate for a single-user local prototype. Full isolation is **def
 
 ## Intent Classification
 
-`IntentClassifier.classify(user_input, history=None)` makes **one LLM call**.
-Returns `list[tuple[Intent, str]]` — `(intent, sub-prompt)`.
+`IntentClassifier.classify(user_input, history=None)` makes **one LLM call** on the **core model** (non-thinking).
+Returns `list[Segment]`.
+
+```python
+@dataclass
+class Segment:
+    intent: Intent
+    text: str
+    namespace: str | None = None  # populated for Intent.ACTION only
+```
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
 ```
 CLASSIFIER_PROMPT
 ├── output format     label: text  (one line per segment)
-├── <labels>          chat | action
-├── <rules>           prefer chat over action
-└── <examples>        few-shot
+├── <labels>          chat | action/coding | action/management | action/generic
+├── <rules>           prefer chat over action; be cagey — prefer action/generic when unsure
+└── <examples>        few-shot including management (move parsers/), generic (describe project, README typo)
 ```
 
-Fallback on parse failure: `[(Intent.CHAT, user_input)]`.
+Parser: `kind, _, ns = label.partition("/")`. Unknown or missing namespace → `"generic"`.
+
+Fallback on parse failure: `[Segment(Intent.CHAT, user_input)]`.
 
 ### Routing table
 
-| Intent     | Handler        | Notes                              |
-|------------|----------------|------------------------------------|
-| `chat`     | ChatHandler    | knowledge only, no tools           |
-| `action`   | ActionHandler  | tool-calling loop via llmstitch; covers both read and write operations (permission resolved at tool-call time by PermissionGate) |
+| Label                | Intent   | Namespace    | Notes                                              |
+|----------------------|----------|--------------|----------------------------------------------------|
+| `chat`               | `CHAT`   | —            | knowledge only, no tools                           |
+| `action/coding`      | `ACTION` | `coding`     | code edits, refactors, tests → ProfileSelector     |
+| `action/management`  | `ACTION` | `management` | file/dir reorganization → ProfileSelector          |
+| `action/generic`     | `ACTION` | `generic`    | inspect, docs, prose edits → ProfileSelector skipped; innate behavior only |
+| `REJECTED`           | `REJECTED`| —           | non-English input                                  |
+
+---
+
+## Profile Routing
+
+Two-stage design: classifier picks a **namespace** (few, stable labels); `ProfileSelector` picks a **specialist profile** within that namespace (bounded prompt per family). Neither prompt grows with total catalog size.
+
+### AgentProfile
+
+Frozen dataclass in `agent/profiles.py` — not user-definable.
+
+```python
+@dataclass(frozen=True)
+class AgentProfile:
+    name: str
+    namespace: str
+    description: str
+    directives: str          # injected after SYSTEM_PROMPT in ActionHandler
+    tools: list[str] | None  # allowlist; None = all tools
+    permissions: Permissions | None  # AND-restricted overlay
+    is_fallback: bool
+```
+
+Registry helpers: `profiles_for(namespace)`, `fallback_for(namespace)`.  
+`validate_registry()` called at startup — raises if any namespace in `NAMESPACES` has no fallback.
+
+### ProfileSelector
+
+`ProfileSelector.select(namespace, text, history)` — **one LLM call**, temperature 0, **support model**.
+
+```
+SELECTOR_PROMPT
+├── menu              one line per candidate:  name — description
+├── history context   last 6 user/assistant turns
+└── output            profile name only (first whitespace-delimited token, lowercased)
+```
+
+**Cagey fallback policy:** `none` / empty / unparseable / unknown token → `fallback_for(namespace)` + warning log.
+Bias: correct fallback beats wrong specialist.
+
+### Permission overlay
+
+`profile.permissions` is **ANDed** with `session.permissions` per field — a profile can restrict but never escalate beyond what the session granted.
+
+```python
+effective = Permissions(
+    read  = session.read  and profile.read,
+    write = session.write and profile.write,
+    exec  = session.exec  and profile.exec,
+)
+```
+
+### TUI status indicator
+
+`#input-area` container `border_title` always shows current routing state:
+
+| State                     | Label shown         |
+|---------------------------|---------------------|
+| idle / between turns      | `__default`         |
+| after classify            | `__<namespace>`     |
+| sub-agent active          | `__<profile-name>`  |
+| finally (any exit)        | `__default`         |
 
 ---
 

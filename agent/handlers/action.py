@@ -14,6 +14,7 @@ from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 from pathlib import Path
 
 from ..permissions import PermissionCallback, PermissionGate
+from ..profiles import AgentProfile
 from ..router import Session, SYSTEM_PROMPT
 from ..settings import Permissions
 from ..diff import build_diff
@@ -68,19 +69,31 @@ def _build_agent(
     permissions: Permissions,
     permission_callback: PermissionCallback | None,
     bus: EventBus | None = None,
+    profile: AgentProfile | None = None,
 ) -> Agent:
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
+    directives = f"\n\n{profile.directives}" if profile else ""
     agent = Agent(
         provider=adapter,
         model=model,
-        system=f"{SYSTEM_PROMPT}\n\n{_TOOL_INSTRUCTION}",
+        system=f"{SYSTEM_PROMPT}{directives}\n\n{_TOOL_INSTRUCTION}",
         event_bus=bus,
         extra_params=extra_params,
     )
     for t in make_tools(working_dir):
+        if profile and profile.tools is not None and t.name not in profile.tools:
+            continue
         agent.tools.register(t)
+    if profile and profile.permissions is not None:
+        effective = Permissions(
+            read=permissions.read and profile.permissions.read,
+            write=permissions.write and profile.permissions.write,
+            exec=permissions.exec and profile.permissions.exec,
+        )
+    else:
+        effective = permissions
     agent.tools.set_gate(PermissionGate(
-        permissions=permissions,
+        permissions=effective,
         on_request=permission_callback,
     ))
     return agent
@@ -104,11 +117,13 @@ class ActionHandler:
         session: Session,
         user_input: str,
         permission_callback: PermissionCallback | None = None,
+        profile: AgentProfile | None = None,
     ) -> AsyncIterator[SubAgentEvent | str]:
         bus = EventBus()
         agent = _build_agent(
             self._model, self._api_key, self._api_base, self._extra_params,
             session.working_dir, session.permissions, permission_callback, bus,
+            profile=profile,
         )
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
@@ -134,7 +149,11 @@ class ActionHandler:
                     await queue.put(ThinkingTokenEvent(text=event.text))
             await queue.put(None)
 
-        yield SubAgentStartEvent(name="Action", description="Inspecting workspace", color=_ACTION_COLOR)
+        yield SubAgentStartEvent(
+            name=profile.name if profile else "Action",
+            description=profile.description if profile else "Inspecting workspace",
+            color=_ACTION_COLOR,
+        )
 
         prior = [Message(role=m["role"], content=m["content"]) for m in session.messages[1:-1]]
         prior.append(Message(role="user", content=user_input))

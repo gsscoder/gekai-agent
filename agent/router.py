@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 
 _log = logging.getLogger(__name__)
 
+from .profiles import NAMESPACES
 from .settings import Permissions
 
 
@@ -17,6 +18,13 @@ class Intent(enum.Enum):
     CHAT = "chat"
     ACTION = "action"
     REJECTED = "rejected"
+
+
+@dataclass
+class Segment:
+    intent: Intent
+    text: str
+    namespace: str | None = None  # only meaningful for Intent.ACTION
 
 
 SYSTEM_PROMPT = (
@@ -56,36 +64,42 @@ class Session:
 CLASSIFIER_PROMPT = (
     "you route messages for a coding agent working on a local code repository\n"
     "decompose the user message into one or more labeled tasks\n"
-    "output format: each line must be exactly `label: text` where label is one of chat, action\n"
+    "output format: each line must be exactly `label: text` where label is one of chat, action/coding, action/management, action/generic\n"
     "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
     "<labels>\n"
-    " chat      — general coding question, explanation, or conversation; answer from knowledge\n"
-    " action    — needs to inspect or modify the repository: read files, search code, understand structure,\n"
-    "             create, edit, delete, or refactor files\n"
+    " chat                — general coding question, explanation, or conversation; answer from knowledge\n"
+    " action/coding       — create, edit, refactor, or simplify code or tests\n"
+    " action/management   — repository/file organization: scaffolding, moving/renaming files, restructuring layout\n"
+    " action/generic      — any other repo action: reading/inspecting code, prose/markdown/doc text edits, anything not clearly code or repo-structure\n"
     "<rules>\n"
     " assume all requests relate to the current codebase unless clearly otherwise\n"
     " when a message could fit multiple labels, prefer chat over action\n"
+    " be cagey: when unsure between a code namespace and generic, prefer action/generic\n"
     "<examples>\n"
     " input: refactor auth error handling and tell me if GET /users returns JSON\n"
-    "  action: refactor auth error handling\n"
-    "  action: does GET /users return JSON\n"
+    "  action/coding: refactor auth error handling\n"
+    "  action/generic: does GET /users return JSON\n"
     " input: describe the project\n"
-    "  action: describe the project\n"
+    "  action/generic: describe the project\n"
     " input: how does the auth system work\n"
-    "  action: explain how the auth system works\n"
+    "  action/generic: explain how the auth system works\n"
     " input: what's on line 10 of main.py\n"
-    "  action: what is on line 10 of main.py\n"
+    "  action/generic: what is on line 10 of main.py\n"
     " input: refactor error handling across all modules\n"
-    "  action: refactor error handling across all modules\n"
+    "  action/coding: refactor error handling across all modules\n"
     " input: rename the variable on line 5 of utils.py\n"
-    "  action: rename the variable on line 5 of utils.py\n"
+    "  action/coding: rename the variable on line 5 of utils.py\n"
+    " input: move the parsers into a parsers/ package\n"
+    "  action/management: move the parsers into a parsers/ package\n"
+    " input: fix the typo in the README\n"
+    "  action/generic: fix the typo in the README\n"
     "<human_language>\n"
     "if the request is not in English, do not process it and respond exactly: REJECTED\n"
 )
 
 
 def evaluate_single_order_gate(
-    segments: list[tuple[Intent, str]],
+    segments: list[Segment],
 ) -> tuple[bool, str | None]:
     """One order per turn; >1 actionable segment is refused."""
     if len(segments) > 1:
@@ -105,7 +119,7 @@ class IntentClassifier:
 
     async def classify(
         self, user_input: str, history: list[dict] | None = None,
-    ) -> list[tuple[Intent, str]]:
+    ) -> list[Segment]:
         context_msgs: list[dict] = []
         if history:
             turns = [m for m in history if m["role"] in ("user", "assistant")][-6:]
@@ -120,20 +134,25 @@ class IntentClassifier:
         )
         raw: str = response.choices[0].message.content.strip()
         if raw.strip() == "REJECTED":
-            return [(Intent.REJECTED, "User input must be in English")]
-        segments: list[tuple[Intent, str]] = []
+            return [Segment(Intent.REJECTED, "User input must be in English")]
+        segments: list[Segment] = []
         for line in raw.splitlines():
             line = line.strip()
             if not line or ": " not in line:
                 continue
             label, _, sub_prompt = line.partition(": ")
             label = label.strip().lower()
+            kind, _, ns = label.partition("/")
             try:
-                intent = Intent(label)
+                intent = Intent(kind)
             except ValueError:
                 intent = Intent.CHAT
-            segments.append((intent, sub_prompt.strip()))
+            if intent is Intent.ACTION:
+                namespace = ns if ns in NAMESPACES else "generic"
+                segments.append(Segment(Intent.ACTION, sub_prompt.strip(), namespace=namespace))
+            else:
+                segments.append(Segment(intent, sub_prompt.strip()))
         if not segments:
             _log.warning("classifier parse failure — no valid segments; raw output: %r", raw)
-            return [(Intent.CHAT, user_input)]
+            return [Segment(Intent.CHAT, user_input)]
         return segments

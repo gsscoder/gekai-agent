@@ -44,9 +44,10 @@ All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
 - `.gekai/` directory excluded from stale-detection triggers
 
 ### ActionHandler — `agent/handlers/action.py`
-- Not a `SubAgent` subclass; `stream()` is an async generator that yields `SubAgentEvent | str`
-- `name` implicit: yields `SubAgentStartEvent(name="Action", description="Inspecting workspace", color="#4169E1")`
-- Emits only `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), and `DoneEvent`
+- Not a `SubAgent` subclass; `stream(session, user_input, permission_callback, profile)` is an async generator that yields `SubAgentEvent | str`
+- `SubAgentStartEvent` name/description are profile-driven: `name=profile.name if profile else "Action"`, `description=profile.description if profile else "Inspecting workspace"`, `color="#4169E1"`
+- `profile: AgentProfile | None` — injected by `GekaiAgent.process_stream()`; `None` for `action/generic` segments (ProfileSelector skipped)
+- Emits only `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion), `InferEndEvent`, `ThinkingTokenEvent`, and `DoneEvent`
 - After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`
 - Uses `llmstitch` `EventBus` to bridge tool-call events from the agent loop into the subagent event stream
 - Shares the main session: `session.messages[1:-1]` used as prior history (excludes current user turn boundary entries)

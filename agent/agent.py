@@ -13,7 +13,9 @@ from .handlers.base import Handler
 from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.action import Artifact, ActionHandler
 from .permissions import PermissionCallback
-from .router import Intent, IntentClassifier, Session, evaluate_single_order_gate
+from .profiles import AgentProfile
+from .profile_selector import ProfileSelector
+from .router import Intent, IntentClassifier, Segment, Session, evaluate_single_order_gate
 from .settings import Permissions
 from toon import encode as toon_encode
 
@@ -70,6 +72,11 @@ class GekaiAgent:
         self._supp_api_base: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_URL")
         self._supp_client = AsyncOpenAI(api_key=self._supp_api_key, base_url=self._supp_api_base)
         self._classifier = IntentClassifier(
+            model=self.model,
+            api_key=self._api_key,
+            api_base=self._api_base,
+        )
+        self._selector = ProfileSelector(
             model=self._supp_model,
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
@@ -117,10 +124,10 @@ class GekaiAgent:
             session.messages.extend(restored_messages)
         return session
 
-    async def classify(self, user_input: str) -> list[tuple[Intent, str]]:
+    async def classify(self, user_input: str) -> list[Segment]:
         return await self._classifier.classify(user_input)
 
-    async def check_gate(self, segments: list[tuple[Intent, str]]) -> tuple[bool, str | None]:
+    async def check_gate(self, segments: list[Segment]) -> tuple[bool, str | None]:
         return evaluate_single_order_gate(segments)
 
     def update_workspace_context(self, session: "Session", workspace: dict) -> None:
@@ -130,7 +137,7 @@ class GekaiAgent:
         self,
         session: Session,
         user_input: str,
-        segments: list[tuple[Intent, str]],
+        segments: list[Segment],
         original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
     ) -> AsyncIterator[str | UsageInfo | SubAgentEvent]:
@@ -140,18 +147,29 @@ class GekaiAgent:
         first = True
         artifact_content: str | None = None
 
-        for intent, sub_prompt in segments:
+        for seg in segments:
+            intent, sub_prompt = seg.intent, seg.text
             if not first:
                 sep = "\n\n"
                 all_chunks.append(sep)
                 yield sep
             first = False
 
+            profile: AgentProfile | None = None
+            if seg.intent is Intent.ACTION and seg.namespace and seg.namespace != "generic":
+                profile = await self._selector.select(seg.namespace, seg.text, history=session.messages)
+
             handler = self._handlers[intent]
             if hasattr(handler, "stream"):
-                async for item in handler.stream(
-                    session, sub_prompt, permission_callback=permission_callback,
-                ):
+                if intent is Intent.ACTION:
+                    stream_iter = handler.stream(
+                        session, sub_prompt, permission_callback=permission_callback, profile=profile,
+                    )
+                else:
+                    stream_iter = handler.stream(
+                        session, sub_prompt, permission_callback=permission_callback,
+                    )
+                async for item in stream_iter:
                     if isinstance(item, str):
                         all_chunks.append(item)
                     elif isinstance(item, Artifact):
