@@ -94,6 +94,8 @@ class MessageWidget(Widget):
     MessageWidget.assistant { layout: horizontal; margin-top: 1; }
     MessageWidget.assistant > Static { width: 2; height: auto; }
     MessageWidget.assistant > Markdown { width: 1fr; height: auto; padding: 0; }
+    MessageWidget.assistant Markdown MarkdownBlock { margin: 0 0 1 0; }
+    MessageWidget.assistant Markdown MarkdownFence > Label { padding-top: 0; padding-bottom: 0; }
     MessageWidget.assistant > .assistant-body { width: 1fr; height: auto; }
     MessageWidget.header { layout: horizontal; height: auto; }
     MessageWidget.header > .header-dot { width: 2; height: auto; }
