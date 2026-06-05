@@ -294,7 +294,7 @@ async def _make_dir(path: str, *, working_dir: Path) -> str:
         return f"error: {exc}"
 
 
-def make_tools(working_dir: Path) -> list:
+def make_file_tools(working_dir: Path) -> list:
     @tool(is_read_only=True, required_permission="read")
     async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
         """Read a file in the repository.

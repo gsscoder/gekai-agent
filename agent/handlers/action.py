@@ -23,7 +23,10 @@ from ..tools import make_tools
 _TOOL_INSTRUCTION = (
     "if the question requires file contents, implementation details, logic, or architecture depth, "
     "you MUST use tools to read actual files — do not guess or rely on training knowledge; "
-    "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"
+    "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; "
+    "use run_command for build, test, and git operations; "
+    "run_command is stateless — cd does not persist across calls, each call starts in repo root; "
+    "prefer read_file/grep/list_files over shell equivalents for reading files"
 )
 
 _ACTION_COLOR = "#4169E1"
@@ -57,6 +60,8 @@ def _fmt_tool_call(call: ToolUseBlock) -> str:
         return f"Delete {inp.get('path', '')}"
     if call.name == "make_dir":
         return f"Mkdir {inp.get('path', '')}"
+    if call.name == "run_command":
+        return f"Run {inp.get('command', '')[:60]}"
     return call.name.capitalize()
 
 
@@ -88,10 +93,6 @@ def _build_agent(
         event_bus=bus,
         extra_params=extra_params,
     )
-    for t in make_tools(working_dir):
-        if profile and profile.tools is not None and t.name not in profile.tools:
-            continue
-        agent.tools.register(t)
     if profile and profile.permissions is not None:
         effective = Permissions(
             read=permissions.read and profile.permissions.read,
@@ -100,6 +101,13 @@ def _build_agent(
         )
     else:
         effective = permissions
+    for t in make_tools(working_dir):
+        if profile and profile.tools is not None and t.name not in profile.tools:
+            continue
+        perm = t.required_permission
+        if perm != "none" and not getattr(effective, perm, False) and permission_callback is None:
+            continue
+        agent.tools.register(t)
     agent.tools.set_gate(PermissionGate(
         permissions=effective,
         on_request=permission_callback,

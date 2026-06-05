@@ -14,12 +14,14 @@ from .commands.registry import CommandRegistry
 from .persistence import load_session
 from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions, load_scope_gate, validate_gate_config
 from .tui.app import GekaiApp
+from .shell import resolve_shell
 from .workspace import get_git_branch
 
 
 def main() -> None:
     bootstrap_global_settings()
     load_global_settings()
+    resolve_shell()
 
     parser = argparse.ArgumentParser(prog="gekai")
     parser.add_argument(
