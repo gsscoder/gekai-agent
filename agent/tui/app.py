@@ -392,9 +392,9 @@ class GekaiApp(App[None]):
         layers: input marker;
         border-top: solid #3a3a3a;
         border-bottom: solid #3a3a3a;
-        border-title-align: left;
+        border-title-align: right;
         border-title-color: #000000;
-        border-title-background: #3a3a3a;
+        border-title-background: ansi_default;
         padding: 0;
         background: ansi_default;
     }
@@ -909,10 +909,13 @@ class GekaiApp(App[None]):
     def _set_route_label(self, label: str, color: str | None = None) -> None:
         if color is not None:
             self._route_color = color
-        input_area = self.query_one("#input-area", Container)
-        input_area.border_title = f" {label.lower()} "
-        input_area.styles.border_title_background = self._route_color
-        input_area.styles.border_title_color = "#000000"
+        # Inline markup: colored label block + a 2-char border-line segment so the
+        # right-aligned title sits spaced off the corner. The colored span and the
+        # transparent dash tail must be styled per-cell, which a single
+        # border_title_background style can't express.
+        self.query_one("#input-area", Container).border_title = (
+            f"[#000000 on {self._route_color}] {label.lower()} [/][#3a3a3a]─[/]"
+        )
 
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
@@ -935,7 +938,7 @@ class GekaiApp(App[None]):
                 _color = _NS_COLORS.get(_ns, _ACTION_COLOR)
             else:
                 _label = segments[0].intent.name.lower()
-                _color = None
+                _color = _DEFAULT_ROUTE_COLOR
             self._set_route_label(_label, color=_color)
             rejected, reason = await self._agent.check_gate(segments)
             if rejected and self._session.scope_gate:
@@ -956,7 +959,7 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                 elif isinstance(item, SubAgentEvent):
                     if isinstance(item, SubAgentStartEvent):
-                        self._set_route_label(item.name)
+                        self._set_route_label(item.name, color=item.color)
                         ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
                         await ws_renderer.start(item.name, item.description, item.color)
                     elif ws_renderer:
