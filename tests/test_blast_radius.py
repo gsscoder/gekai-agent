@@ -172,6 +172,61 @@ def test_gate_passes_empty_entries() -> None:
     assert not rejected
 
 
+# ---------------------------------------------------------------------------
+# _CODE_EXTENSIONS filtering
+# ---------------------------------------------------------------------------
+
+def test_count_ignores_config_files() -> None:
+    # pyproject.toml and package.json excluded; only .py counts
+    paths = ["agent/tools/shell.py", "pyproject.toml", "package.json"]
+    assert count_blast_areas(paths) == 1
+
+
+def test_count_config_only_is_zero() -> None:
+    paths = ["pyproject.toml", "setup.cfg", "package.json", ".gitignore"]
+    assert count_blast_areas(paths) == 0
+
+
+def test_count_jsx_counts() -> None:
+    paths = ["src/components/Button.jsx", "src/components/Modal.jsx"]
+    assert count_blast_areas(paths) == 1
+
+
+def test_count_jsx_and_ts_two_dirs() -> None:
+    paths = ["src/components/Button.jsx", "src/hooks/useAuth.ts"]
+    assert count_blast_areas(paths) == 2
+
+
+def test_count_md_and_yaml_excluded() -> None:
+    paths = ["docs/guide.md", ".github/workflows/ci.yml", "src/main.py"]
+    assert count_blast_areas(paths) == 1
+
+
+def test_count_vue_and_svelte_count() -> None:
+    paths = ["src/views/Home.vue", "src/components/Nav.svelte"]
+    assert count_blast_areas(paths) == 2
+
+
+def test_gate_passes_when_only_configs_touched() -> None:
+    # config-only change: 0 code areas → always passes regardless of limit
+    entries = [("pyproject.toml", []), ("setup.cfg", []), ("README.md", [])]
+    rejected, reason = evaluate_blast_radius_gate(entries, limit=1)
+    assert not rejected
+
+
+def test_gate_mixed_code_and_config_counts_only_code() -> None:
+    # 3 config files + 2 code files in same dir → 1 area → passes limit=2
+    entries = [
+        ("pyproject.toml", []),
+        ("package.json", []),
+        ("tsconfig.json", []),
+        ("src/main.ts", []),
+        ("src/utils.ts", []),
+    ]
+    rejected, _ = evaluate_blast_radius_gate(entries, limit=2)
+    assert not rejected
+
+
 def test_gate_reason_lists_areas() -> None:
     paths = ["agent/tools/a.py", "agent/helpers/b.py", "frontend/c.tsx"]
     rejected, reason = evaluate_blast_radius_gate(_entries(paths), limit=2)

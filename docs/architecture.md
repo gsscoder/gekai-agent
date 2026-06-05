@@ -140,18 +140,27 @@ Any exception propagates — there is no fail-open; a broken locate blocks the t
 
 ### Area metric
 
-**Ancestor-collapsed directory count:**
+**Ancestor-collapsed directory count, restricted to code files:**
 
 ```
-1. collect parent dir of each located file
-2. drop any dir that has an ancestor also in the set
-3. count the survivors
+1. filter located files to _CODE_EXTENSIONS only (manifests/configs/docs excluded)
+2. collect parent dir of each surviving file
+3. drop any dir that has an ancestor also in the set
+4. count the survivors
 ```
+
+`_CODE_EXTENSIONS` covers all popular compiled and scripted languages:
+`.py .pyi .ipynb` · `.js .jsx .mjs .cjs` · `.ts .tsx` · `.vue .svelte` · `.go` · `.java` · `.cs` · `.kt .kts` · `.swift` · `.rs` · `.c .h .cpp .cc .cxx .hpp` · `.rb` · `.php` · `.scala` · `.dart` · `.ex .exs` · `.lua` · `.hs` · `.r`
+
+Deliberately broader than `_EXT_TO_LANG` (AST/symbol-parse support) — gate coverage ≠ tree-sitter coverage.
+Non-code files (`pyproject.toml`, `package.json`, `.yaml`, `.md`, etc.) are inspected by the locator but never counted toward blast radius.
+A change that touches only non-code files produces 0 areas and always passes the gate.
 
 Examples:
 - `agent/tools/shell.py` + `agent/tools/helpers/fs.py` → `{agent/tools}` = **1**
 - `agent/tools/read.py` + `agent/helpers/sanitizer.py` → `{agent/tools, agent/helpers}` = **2**
 - `agent/foo.py` + `agent/tools/bar.py` → `{agent}` = **1** (root pulls in subdirs)
+- `agent/tools/shell.py` + `pyproject.toml` → `{agent/tools}` = **1** (manifest excluded)
 
 ### Gate evaluation
 

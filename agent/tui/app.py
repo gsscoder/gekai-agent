@@ -24,7 +24,7 @@ from textual.worker import Worker
 from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.persistence import now_utc_str, _normalize_path
+from agent.persistence import append_debug, now_utc_str, _normalize_path
 from agent.router import Intent, Route, Session
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.workspace import list_files
@@ -946,6 +946,8 @@ class GekaiApp(App[None]):
             entries: list[tuple[str, list[str]]] | None = None
             if route.intent is Intent.ACTION and route.profile is not None:
                 entries = await self._agent.locate(self._session.working_dir, user_input)
+                if self._agent.debug:
+                    append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
                 rejected, reason = self._agent.check_gate(entries, self._session.blast_radius_limit)
                 if rejected and self._session.scope_gate:
                     await conversation.mount(

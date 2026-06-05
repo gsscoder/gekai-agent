@@ -8,31 +8,58 @@ Subpackages: `handlers/` (chat, action), `profiles/` (`__init__.py` + one file p
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
 
 ## Session
-`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`, `scope_gate: bool = True`
+`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`, `scope_gate: bool = True`, `blast_radius_limit: int = 5`
 
 `messages` starts with two system entries: `SYSTEM_PROMPT` at `[0]` + workspace context at `[1]` (TOON-encoded)
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
-`GekaiAgent.process_stream(session, user_input, segments, original_input=None, permission_callback=None)` is the sole owner of session writes:
-`segments: list[tuple[Intent, str]]`; `permission_callback: PermissionCallback | None = None` passed to the `PermissionGate` for runtime grant prompts
+`GekaiAgent.process_stream(session, user_input, route, entries=None, permission_callback=None)` is the sole owner of session writes:
+`route: Route`; `entries: list[tuple[str, list[str]]] | None` — pre-computed locate results (None for chat/generic); `permission_callback: PermissionCallback | None`
 - appends `{"role": "user"}` once per turn before dispatching
-- appends `{"role": "assistant"}` once per turn after all segments complete
+- appends `{"role": "assistant"}` once per turn after handler completes
 
-## Intent Routing
-`IntentClassifier.classify(user_input, history=None)` decomposes user input into `list[tuple[Intent, str]]` via one LLM call
-`history` — optional list of session messages; last 6 user/assistant turns prepended as context before the user message
-Returns `[(Intent.CHAT, user_input)]` on unparseable output
+## Router
+`Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-Before classification, `PromptNormalizer` normalizes/translates user input using the support model
-`GekaiAgent.normalize()` returns `(normalized_prompt, source_language_or_None)`; original input stored as the session user message
+`Route` dataclass: `intent: Intent`, `profile: AgentProfile | None`; property `namespace` (derived from `profile.namespace`, or `"generic"` for action/generic, or `None` for chat/rejected).
 
-Intents:
-- `chat` — general coding Q&A; answer from model knowledge + session history
-- `action` — needs to inspect or modify the repository; permission resolved at tool-call time by PermissionGate
+History: last 6 user/assistant turns from session messages prepended before user message.
 
+Router output token → Route mapping:
+- `chat` → `Route(CHAT)`
+- `action/generic` → `Route(ACTION, profile=None)`
+- `REJECTED` → `Route(REJECTED)` — non-English input
+- `<profile-name>` → `Route(ACTION, profile=<matched>)`
+- unknown token → warning log + fallback `Route(ACTION, profile=None)`
+
+Intents: `CHAT`, `ACTION`, `REJECTED`
 `GekaiAgent._handlers` maps `Intent → Handler`; keys are `Intent.CHAT` and `Intent.ACTION`
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated intent
+
+## Blast-Radius Gate
+Applies only to profiled action routes (`route.profile is not None`). `chat` and `action/generic` bypass gate.
+
+Pipeline (in TUI `_stream`):
+1. `Router.route()` → `Route`
+2. If profiled: `BlastRadiusLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
+3. `evaluate_blast_radius_gate(entries, session.blast_radius_limit)` → `(rejected, reason)`
+4. If rejected and `session.scope_gate`: display rejection, return
+
+`BlastRadiusLocator` — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
+
+Area metric — **ancestor-collapsed directory count, code files only:**
+1. Filter `entries` to `_CODE_EXTENSIONS` paths only
+2. Collect parent dir of each surviving file
+3. Drop any dir that has an ancestor also in the set
+4. Count survivors
+
+`_CODE_EXTENSIONS`: all popular languages — `.py .pyi .ipynb` · `.js .jsx .mjs .cjs` · `.ts .tsx` · `.vue .svelte` · `.go` · `.java` · `.cs` · `.kt .kts` · `.swift` · `.rs` · `.c .h .cpp .cc .cxx .hpp` · `.rb` · `.php` · `.scala` · `.dart` · `.ex .exs` · `.lua` · `.hs` · `.r`
+Broader than `_EXT_TO_LANG` (AST support) — gate coverage ≠ symbol-parse coverage.
+Manifests/configs/docs (`pyproject.toml`, `package.json`, `.yaml`, `.md`, etc.) are inspected but never counted.
+All-config change → 0 areas → always passes.
+
+`blast_radius_limit` loaded via `load_blast_radius_limit(working_dir)`: project `.gekai/settings.local.json` overrides user `~/.gekai/settings.json`; absent → `5`. Manual JSON edit only — no slash command. Gate on/off reuses `/config:gate on|off`.
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in ActionHandler
@@ -41,7 +68,7 @@ Env vars (CORE — used by ChatHandler, ActionHandler):
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
 
-Env vars (SUPP — used by `IntentClassifier` and `PromptNormalizer`; `WsManager`/`enrich_workspace` also reference these but are dead code; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
+Env vars (SUPP — used by `Router`, `BlastRadiusLocator`; `WsManager`/`enrich_workspace` also reference these but are dead code; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
 - `GEKAI_SUPPORT_MODEL_NAME`
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
@@ -93,6 +120,6 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/workspace:rebuild` — [dead code] command class exists in `commands/workspace.py` but is not registered; `_rebuild_workspace()` in `app.py` carries a `# [dead code]` marker and is unreachable
 
 ## CLI Flags
-- `--debug` — prints `[classifier: INTENT, ...]` in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
+- `--debug` — prints `[router: INTENT/namespace/profile]` in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

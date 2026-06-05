@@ -9,6 +9,32 @@ from .llm.providers.openai import OpenAIAdapter
 from .llm.types import Message, TextBlock
 from .tools import make_tools
 
+# Extensions that count toward the blast-radius area metric.
+# Broader than _EXT_TO_LANG (symbol-parse support) — gate coverage ≠ AST coverage.
+# Manifests, configs, docs, lockfiles: inspected by locator but never counted.
+_CODE_EXTENSIONS: frozenset[str] = frozenset({
+    ".py", ".pyi",                          # Python
+    ".js", ".jsx", ".mjs", ".cjs",          # JavaScript
+    ".ts", ".tsx",                          # TypeScript
+    ".vue", ".svelte",                      # component frameworks
+    ".go",                                  # Go
+    ".java",                                # Java
+    ".cs",                                  # C#
+    ".kt", ".kts",                          # Kotlin
+    ".swift",                               # Swift
+    ".rs",                                  # Rust
+    ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp",  # C / C++
+    ".rb",                                  # Ruby
+    ".php",                                 # PHP
+    ".scala",                               # Scala
+    ".dart",                                # Dart
+    ".ex", ".exs",                          # Elixir
+    ".lua",                                 # Lua
+    ".hs",                                  # Haskell
+    ".r",                                   # R
+    ".ipynb",                               # Jupyter notebooks
+})
+
 _SYSTEM = (
     "you locate files in a repository that are relevant to a requested change\n"
     "you have read-only tools — use them to verify files exist before listing them\n"
@@ -45,7 +71,8 @@ def _parse_blast_radius_output(text: str) -> list[tuple[str, list[str]]]:
 def _blast_area_survivors(paths: list[str]) -> list[Path]:
     parents: set[Path] = set()
     for p in paths:
-        parents.add(Path(p).parent)
+        if Path(p).suffix.lower() in _CODE_EXTENSIONS:
+            parents.add(Path(p).parent)
     return sorted(
         d for d in parents
         if not any(ancestor != d and d.is_relative_to(ancestor) for ancestor in parents)
