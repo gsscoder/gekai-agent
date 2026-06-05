@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 
 _log = logging.getLogger(__name__)
 
-from .profiles import NAMESPACES
+from .profiles import AgentProfile, PROFILES
 from .settings import Permissions
 
 
@@ -21,10 +21,15 @@ class Intent(enum.Enum):
 
 
 @dataclass
-class Segment:
+class Route:
     intent: Intent
-    text: str
-    namespace: str | None = None  # only meaningful for Intent.ACTION
+    profile: AgentProfile | None = None
+
+    @property
+    def namespace(self) -> str | None:
+        if self.intent is not Intent.ACTION:
+            return None
+        return self.profile.namespace if self.profile else "generic"
 
 
 SYSTEM_PROMPT = (
@@ -59,55 +64,24 @@ class Session:
     working_dir: Path = field(default_factory=Path.cwd)
     permissions: Permissions = field(default_factory=lambda: Permissions(read=True, write=False, exec=False))
     scope_gate: bool = True
+    blast_radius_limit: int = 5
 
 
-CLASSIFIER_PROMPT = (
-    "you route messages for a coding agent working on a local code repository\n"
-    "decompose the user message into one or more labeled tasks\n"
-    "output format: each line must be exactly `label: text` where label is one of chat, action/coding, action/management, action/generic\n"
-    "no preamble, no explanation, no markdown, no numbering — labeled lines only\n"
-    "<labels>\n"
-    " chat                — general coding question, explanation, or conversation; answer from knowledge\n"
-    " action/coding       — create, edit, refactor, or simplify code or tests\n"
-    " action/management   — repository/file organization: scaffolding, moving/renaming files, restructuring layout\n"
-    " action/generic      — any other repo action: reading/inspecting code, prose/markdown/doc text edits, anything not clearly code or repo-structure\n"
-    "<rules>\n"
-    " assume all requests relate to the current codebase unless clearly otherwise\n"
-    " when a message could fit multiple labels, prefer chat over action\n"
-    " be cagey: when unsure between a code namespace and generic, prefer action/generic\n"
-    "<examples>\n"
-    " input: refactor auth error handling and tell me if GET /users returns JSON\n"
-    "  action/coding: refactor auth error handling\n"
-    "  action/generic: does GET /users return JSON\n"
-    " input: describe the project\n"
-    "  action/generic: describe the project\n"
-    " input: how does the auth system work\n"
-    "  action/generic: explain how the auth system works\n"
-    " input: what's on line 10 of main.py\n"
-    "  action/generic: what is on line 10 of main.py\n"
-    " input: refactor error handling across all modules\n"
-    "  action/coding: refactor error handling across all modules\n"
-    " input: rename the variable on line 5 of utils.py\n"
-    "  action/coding: rename the variable on line 5 of utils.py\n"
-    " input: move the parsers into a parsers/ package\n"
-    "  action/management: move the parsers into a parsers/ package\n"
-    " input: fix the typo in the README\n"
-    "  action/generic: fix the typo in the README\n"
-    "<human_language>\n"
-    "if the request is not in English, do not process it and respond exactly: REJECTED\n"
+_ROUTER_PROMPT_BASE = (
+    "you route a user message for a coding agent on a local repository\n"
+    "output exactly one token — no prose, no punctuation\n"
+    "choices:\n"
+    "  chat           — general coding question answered from knowledge; no repo access needed\n"
+    "  action/generic — inspect repo, answer workspace questions, light prose/doc edits\n"
+    "  REJECTED       — user input not in English\n"
+    "  <profile-name> — one of the profiles below; for changes that create or modify code/structure\n"
+    "prefer chat over action when unsure; prefer action/generic over a profile when the change scope is unclear\n"
+    "<profiles>\n"
+    "{menu}"
 )
 
 
-def evaluate_single_order_gate(
-    segments: list[Segment],
-) -> tuple[bool, str | None]:
-    """One order per turn; >1 actionable segment is refused."""
-    if len(segments) > 1:
-        return (True, f"One order per turn — split into {len(segments)} separate messages")
-    return (False, None)
-
-
-class IntentClassifier:
+class Router:
     def __init__(
         self,
         model: str,
@@ -116,43 +90,37 @@ class IntentClassifier:
     ) -> None:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
+        self._profiles = list(PROFILES)
+        menu = "\n".join(f"  {p.name} — {p.description}" for p in self._profiles)
+        self._prompt = _ROUTER_PROMPT_BASE.replace("{menu}", menu)
 
-    async def classify(
+    async def route(
         self, user_input: str, history: list[dict] | None = None,
-    ) -> list[Segment]:
+    ) -> Route:
         context_msgs: list[dict] = []
         if history:
-            turns = [m for m in history if m["role"] in ("user", "assistant")][-6:]
-            context_msgs = turns
+            context_msgs = [m for m in history if m["role"] in ("user", "assistant")][-6:]
         response = await self._client.chat.completions.create(
             model=self._model,
+            temperature=0,
             messages=[
-                {"role": "system", "content": CLASSIFIER_PROMPT},
+                {"role": "system", "content": self._prompt},
                 *context_msgs,
                 {"role": "user", "content": user_input},
             ],
         )
         raw: str = response.choices[0].message.content.strip()
-        if raw.strip() == "REJECTED":
-            return [Segment(Intent.REJECTED, "User input must be in English")]
-        segments: list[Segment] = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or ": " not in line:
-                continue
-            label, _, sub_prompt = line.partition(": ")
-            label = label.strip().lower()
-            kind, _, ns = label.partition("/")
-            try:
-                intent = Intent(kind)
-            except ValueError:
-                intent = Intent.CHAT
-            if intent is Intent.ACTION:
-                namespace = ns if ns in NAMESPACES else "generic"
-                segments.append(Segment(Intent.ACTION, sub_prompt.strip(), namespace=namespace))
-            else:
-                segments.append(Segment(intent, sub_prompt.strip()))
-        if not segments:
-            _log.warning("classifier parse failure — no valid segments; raw output: %r", raw)
-            return [Segment(Intent.CHAT, user_input)]
-        return segments
+        first = raw.split()[0] if raw.split() else ""
+        first_lower = first.lower()
+
+        if first_lower == "rejected":
+            return Route(intent=Intent.REJECTED)
+        if first_lower == "chat":
+            return Route(intent=Intent.CHAT)
+        if first_lower == "action/generic":
+            return Route(intent=Intent.ACTION)
+        for p in self._profiles:
+            if first_lower == p.name.lower():
+                return Route(intent=Intent.ACTION, profile=p)
+        _log.warning("router parse failure — unknown token %r; raw: %r", first, raw)
+        return Route(intent=Intent.ACTION)

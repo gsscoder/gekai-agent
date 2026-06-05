@@ -25,8 +25,8 @@ from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import now_utc_str, _normalize_path
-from agent.router import Intent, Session
-from agent.settings import PERMISSION_CHOICES, load_context_limit, load_scope_gate, load_ws_scan_staleness_min, resolve_permissions, save_permissions
+from agent.router import Intent, Route, Session
+from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.workspace import list_files
 from agent.ws_manager.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
@@ -624,6 +624,7 @@ class GekaiApp(App[None]):
             session_id=self._restored_id,
         )
         self._session.scope_gate = load_scope_gate(self._working_dir)
+        self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
 
         history_path = (
             Path.home() / ".gekai" / "workspaces"
@@ -672,6 +673,7 @@ class GekaiApp(App[None]):
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
         self._session.scope_gate = load_scope_gate(self._working_dir)
+        self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
         self.query_one("#context-bar", Static).update(
             _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
@@ -928,31 +930,41 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(verb[0], color)
-            segments = await self._agent.classify(user_input)
-            if segments[0].intent is Intent.REJECTED:
-                await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0].text))
+            route = await self._agent.route(user_input, history=self._session.messages)
+            if route.intent is Intent.REJECTED:
+                await conversation.mount(MessageWidget(MessageKind.REJECTED, "User input must be in English"))
                 return
-            _ns = segments[0].namespace if segments[0].intent is Intent.ACTION else None
-            if segments[0].intent is Intent.ACTION:
+            _ns = route.namespace
+            if route.intent is Intent.ACTION:
                 _label = f"action/{_ns}" if _ns else "action"
                 _color = _NS_COLORS.get(_ns, _ACTION_COLOR)
             else:
-                _label = segments[0].intent.name.lower()
+                _label = route.intent.name.lower()
                 _color = _DEFAULT_ROUTE_COLOR
             self._set_route_label(_label, color=_color)
-            rejected, reason = await self._agent.check_gate(segments)
-            if rejected and self._session.scope_gate:
-                await conversation.mount(
-                    MessageWidget(MessageKind.REJECTED, reason or "request exceeds scope")
-                )
-                return
+
+            entries: list[tuple[str, list[str]]] | None = None
+            if route.intent is Intent.ACTION and route.profile is not None:
+                entries = await self._agent.locate(self._session.working_dir, user_input)
+                rejected, reason = self._agent.check_gate(entries, self._session.blast_radius_limit)
+                if rejected and self._session.scope_gate:
+                    await conversation.mount(
+                        MessageWidget(MessageKind.REJECTED, reason or "request exceeds scope")
+                    )
+                    return
+
             if self._agent.debug:
-                labels = [f"{s.intent.name}/{s.namespace}" if s.namespace else s.intent.name for s in segments]
-                debug_text = f"\\[classifier: {', '.join(labels)}]"
+                parts = [route.intent.name.lower()]
+                if _ns:
+                    parts.append(_ns)
+                if route.profile:
+                    parts.append(route.profile.name)
+                debug_text = f"\\[router: {'/'.join(parts)}]"
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
 
             async for item in self._agent.process_stream(
-                self._session, user_input, segments,
+                self._session, user_input, route,
+                entries=entries,
                 permission_callback=self._permission_callback,
             ):
                 if isinstance(item, str):

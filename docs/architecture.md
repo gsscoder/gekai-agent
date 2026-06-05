@@ -2,27 +2,31 @@
 
 ## Overview
 
-Every turn passes through three layers: **classification → profile selection → handler dispatch**.
+Every turn passes through three layers: **routing → blast-radius gate → handler dispatch**.
 
 ```
 user input
     │
     ▼
-IntentClassifier          [core model]    — decompose into Segments; emit namespace label; reject non-English
+Router               [support model] — one call; emits a single Route (chat | profile | generic | REJECTED)
     │
-    ├── chat / action/generic ─────────────────────────────────────────┐
-    │                                                                  │
-    └── action/coding | action/management                              │
-              │                                                        │
-              ▼                                                        │
-    ProfileSelector       [support model] — pick specialist profile    │
-              │                             within namespace;          │
-              │                             fallback on none/parse-fail│
-              │                                                        │
-              └───────────────────────────────────────────────────────►┤
-                                                                       ▼
-                                                             Handler(s) [core model]
-                                                               chat / action (+ profile directives)
+    ├── REJECTED ──► reject (non-English)
+    │
+    ├── chat ────────────────────────────────────────────────────────┐
+    │                                                                │
+    ├── action/generic ──────────────────────────────────────────────┤
+    │                                                                │
+    └── action/<profile>                                             │
+              │                                                      │
+              ▼                                                      │
+    BlastRadiusLocator   [support model] — locate affected files;    │
+    + gate               count ancestor-collapsed directory areas;   │
+                         reject if count > blast_radius_limit        │
+              │                                                      │
+              └─────────────────────────────────────────────────────►┤
+                                                                     ▼
+                                                           Handler [core model]
+                                                             chat / action (+ profile directives)
 ```
 
 ---
@@ -39,7 +43,7 @@ index  role      content
   …    user      prior turns
   …    assistant prior turns
   N    user      current input      (appended before dispatch)
-  N+1  assistant response           (appended after all segments complete)
+  N+1  assistant response           (appended after handler completes)
 ```
 
 **System messages** (`[0]`, `[1]`) are excluded from persistence;
@@ -86,48 +90,86 @@ This is proportionate for a single-user local prototype. Full isolation is **def
 
 ---
 
-## Intent Classification
+## Router
 
-`IntentClassifier.classify(user_input, history=None)` makes **one LLM call** on the **core model** (non-thinking).
-Returns `list[Segment]`.
+`Router.route(user_input, history=None)` makes **one LLM call** on the **support model**, temperature 0.
+Returns a single `Route`.
 
 ```python
 @dataclass
-class Segment:
+class Route:
     intent: Intent
-    text: str
-    namespace: str | None = None  # populated for Intent.ACTION only
+    profile: AgentProfile | None = None
+
+    @property
+    def namespace(self) -> str | None: ...  # derived from profile.namespace, or "generic", or None
 ```
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
 ```
-CLASSIFIER_PROMPT
-├── output format     label: text  (one line per segment)
-├── <labels>          chat | action/coding | action/management | action/generic
-├── <rules>           prefer chat over action; be cagey — prefer action/generic when unsure
-└── <examples>        few-shot including management (move parsers/), generic (describe project, README typo)
+ROUTER_PROMPT
+├── choices       chat | action/generic | REJECTED | <profile-name>
+├── <profiles>    flat menu — one line per profile across all namespaces
+└── bias          prefer chat > action/generic > profile when ambiguous
 ```
 
-Parser: `kind, _, ns = label.partition("/")`. Unknown or missing namespace → `"generic"`.
-
-Fallback on parse failure: `[Segment(Intent.CHAT, user_input)]`.
+Output: single token. Unknown token → warning log + fallback `Route(ACTION, profile=None)`.
 
 ### Routing table
 
-| Label                | Intent   | Namespace    | Notes                                              |
-|----------------------|----------|--------------|----------------------------------------------------|
-| `chat`               | `CHAT`   | —            | knowledge only, no tools                           |
-| `action/coding`      | `ACTION` | `coding`     | code edits, refactors, tests → ProfileSelector     |
-| `action/management`  | `ACTION` | `management` | file/dir reorganization → ProfileSelector          |
-| `action/generic`     | `ACTION` | `generic`    | inspect, docs, prose edits → ProfileSelector skipped; innate behavior only |
-| `REJECTED`           | `REJECTED`| —           | non-English input                                  |
+| Output token         | Intent    | Namespace    | Notes                                                 |
+|----------------------|-----------|--------------|-------------------------------------------------------|
+| `chat`               | `CHAT`    | —            | knowledge only, no tools                              |
+| `action/generic`     | `ACTION`  | `generic`    | inspect, docs, prose edits; blast-radius gate skipped |
+| `<profile-name>`     | `ACTION`  | profile.namespace | code/structure change; blast-radius gate applied  |
+| `REJECTED`           | `REJECTED`| —            | non-English input                                     |
+
+---
+
+## Blast-Radius Gate
+
+Applies **only to profiled action routes** (`action/coding`, `action/management`). `action/generic` and `chat` are not gated.
+
+### Locate step
+
+`BlastRadiusLocator.locate(working_dir, request)` — agentic support-model call (up to 5 iterations, read-only tools).
+Returns `list[tuple[path, keywords]]`.
+
+Any exception propagates — there is no fail-open; a broken locate blocks the turn.
+
+### Area metric
+
+**Ancestor-collapsed directory count:**
+
+```
+1. collect parent dir of each located file
+2. drop any dir that has an ancestor also in the set
+3. count the survivors
+```
+
+Examples:
+- `agent/tools/shell.py` + `agent/tools/helpers/fs.py` → `{agent/tools}` = **1**
+- `agent/tools/read.py` + `agent/helpers/sanitizer.py` → `{agent/tools, agent/helpers}` = **2**
+- `agent/foo.py` + `agent/tools/bar.py` → `{agent}` = **1** (root pulls in subdirs)
+
+### Gate evaluation
+
+`evaluate_blast_radius_gate(entries, limit) -> tuple[bool, str | None]`
+
+Rejects when `count > blast_radius_limit`. Rejection reason: `"change spans N areas (limit M): area1, area2, …"`.
+
+### Configuration
+
+`Session.blast_radius_limit` (default `5`). Loaded at session start via `load_blast_radius_limit(working_dir)`:
+project-level `.gekai/settings.local.json` overrides user-level `~/.gekai/settings.json`; absent → `5`.
+Set manually in the JSON file — no slash command.
+
+Gate enable/disable reuses the existing `/config:gate on|off` toggle (`session.scope_gate`).
 
 ---
 
 ## Profile Routing
-
-Two-stage design: classifier picks a **namespace** (few, stable labels); `ProfileSelector` picks a **specialist profile** within that namespace (bounded prompt per family). Neither prompt grows with total catalog size.
 
 ### AgentProfile
 
@@ -153,19 +195,7 @@ Adding a profile = drop one file; zero other changes required.
 Registry helpers: `profiles_for(namespace)`, `fallback_for(namespace)`.  
 `validate_registry()` called at startup — raises if any namespace in `NAMESPACES` has no fallback.
 
-### ProfileSelector
-
-`ProfileSelector.select(namespace, text, history)` — **one LLM call**, temperature 0, **support model**.
-
-```
-SELECTOR_PROMPT
-├── menu              one line per candidate:  name — description
-├── history context   last 6 user/assistant turns
-└── output            profile name only (first whitespace-delimited token, lowercased)
-```
-
-**Cagey fallback policy:** `none` / empty / unparseable / unknown token → `fallback_for(namespace)` + warning log.
-Bias: correct fallback beats wrong specialist.
+Profile selection is now performed by the `Router` in a single merged call — see [Router](#router) above.
 
 ### Permission overlay
 
@@ -186,7 +216,7 @@ effective = Permissions(
 | State                     | Label shown              | Border background color                        |
 |---------------------------|--------------------------|------------------------------------------------|
 | idle / between turns      | `default`                | `#3a3a3a`                                      |
-| after classify            | `action/<namespace>`     | `gold1` (coding) · `cyan` (management) · `#3a3a3a` (others) |
+| after route               | `action/<namespace>`     | `gold1` (coding) · `cyan` (management) · `#3a3a3a` (others) |
 | sub-agent active          | `<profile-name>`         | color from namespace phase — persists          |
 | finally (any exit)        | `default`                | `#3a3a3a`                                      |
 

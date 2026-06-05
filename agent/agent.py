@@ -14,15 +14,14 @@ from .handlers.chat import ChatHandler, UsageInfo
 from .handlers.action import ActionHandler
 from .permissions import PermissionCallback
 from .profiles import AgentProfile
-from .profile_selector import ProfileSelector
-from .router import Intent, IntentClassifier, Segment, Session, evaluate_single_order_gate
+from .router import Intent, Route, Router, Session
 from .settings import Permissions
 from toon import encode as toon_encode
 
 from .ws_manager import WsManager
 from .subagent import SubAgentEvent
 from .persistence import append_message, append_debug
-from .blast_radius import BlastRadiusLocator
+from .blast_radius import BlastRadiusLocator, evaluate_blast_radius_gate
 from . import workspace_db
 
 load_dotenv()
@@ -73,12 +72,7 @@ class GekaiAgent:
         self._supp_api_key: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_KEY")
         self._supp_api_base: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_URL")
         self._supp_client = AsyncOpenAI(api_key=self._supp_api_key, base_url=self._supp_api_base)
-        self._classifier = IntentClassifier(
-            model=self.model,
-            api_key=self._api_key,
-            api_base=self._api_base,
-        )
-        self._selector = ProfileSelector(
+        self._router = Router(
             model=self._supp_model,
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
@@ -128,11 +122,18 @@ class GekaiAgent:
             session.messages.extend(restored_messages)
         return session
 
-    async def classify(self, user_input: str) -> list[Segment]:
-        return await self._classifier.classify(user_input)
+    async def route(self, user_input: str, history: list[dict] | None = None) -> Route:
+        return await self._router.route(user_input, history=history)
 
-    async def check_gate(self, segments: list[Segment]) -> tuple[bool, str | None]:
-        return evaluate_single_order_gate(segments)
+    async def locate(
+        self, working_dir: Path, text: str,
+    ) -> list[tuple[str, list[str]]]:
+        return await self._locator.locate(working_dir, text)
+
+    def check_gate(
+        self, entries: list[tuple[str, list[str]]], limit: int,
+    ) -> tuple[bool, str | None]:
+        return evaluate_blast_radius_gate(entries, limit)
 
     def update_workspace_context(self, session: "Session", workspace: dict) -> None:
         session.messages[1] = {"role": "system", "content": _format_workspace_context(workspace)}
@@ -141,55 +142,41 @@ class GekaiAgent:
         self,
         session: Session,
         user_input: str,
-        segments: list[Segment],
+        route: Route,
+        entries: list[tuple[str, list[str]]] | None = None,
         original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
     ) -> AsyncIterator[str | UsageInfo | SubAgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1])
+
+        if entries:
+            try:
+                conn = workspace_db.ensure(session.working_dir)
+                workspace_db.save_blast_radius(conn, entries)
+                conn.close()
+            except Exception:
+                pass
+
         all_chunks: list[str] = []
-        first = True
-
-        for seg in segments:
-            intent, sub_prompt = seg.intent, seg.text
-            if not first:
-                sep = "\n\n"
-                all_chunks.append(sep)
-                yield sep
-            first = False
-
-            profile: AgentProfile | None = None
-            if seg.intent is Intent.ACTION and seg.namespace and seg.namespace != "generic":
-                profile = await self._selector.select(seg.namespace, seg.text, history=session.messages)
-
-            if seg.intent is Intent.ACTION:
-                try:
-                    entries = await self._locator.locate(session.working_dir, seg.text)
-                    if entries:
-                        conn = workspace_db.ensure(session.working_dir)
-                        workspace_db.save_blast_radius(conn, entries)
-                        conn.close()
-                except Exception:
-                    pass
-
-            handler = self._handlers[intent]
-            if hasattr(handler, "stream"):
-                if intent is Intent.ACTION:
-                    stream_iter = handler.stream(
-                        session, sub_prompt, permission_callback=permission_callback, profile=profile,
-                    )
-                else:
-                    stream_iter = handler.stream(
-                        session, sub_prompt, permission_callback=permission_callback,
-                    )
-                async for item in stream_iter:
-                    if isinstance(item, str):
-                        all_chunks.append(item)
-                    yield item
+        handler = self._handlers[route.intent]
+        if hasattr(handler, "stream"):
+            if route.intent is Intent.ACTION:
+                stream_iter = handler.stream(
+                    session, user_input, permission_callback=permission_callback, profile=route.profile,
+                )
             else:
-                result = await handler.handle(session, sub_prompt)
-                all_chunks.append(result)
-                yield result
+                stream_iter = handler.stream(
+                    session, user_input, permission_callback=permission_callback,
+                )
+            async for item in stream_iter:
+                if isinstance(item, str):
+                    all_chunks.append(item)
+                yield item
+        else:
+            result = await handler.handle(session, user_input)
+            all_chunks.append(result)
+            yield result
 
         session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
         append_message(session, session.messages[-1])

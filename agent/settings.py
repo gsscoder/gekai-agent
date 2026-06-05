@@ -120,6 +120,17 @@ def validate_gate_config(working_dir: Path) -> list[str]:
     return errors
 
 
+def load_blast_radius_limit(working_dir: Path) -> int:
+    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
+        try:
+            val = json.loads(path.read_text()).get("blast_radius_limit")
+            if isinstance(val, int) and val > 0:
+                return val
+        except (OSError, ValueError):
+            pass
+    return 5
+
+
 def load_context_limit(working_dir: Path) -> int | None:
     for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
         try:
