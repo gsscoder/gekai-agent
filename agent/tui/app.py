@@ -8,12 +8,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyfiglet
+from rich.color import Color
+from rich.segment import Segment
+from rich.style import Style
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
+from textual.geometry import Region
 from textual.message import Message
-from textual.widgets import Input, ProgressBar, Static
+from textual.strip import Strip
+from textual.widgets import ProgressBar, Static, TextArea
 from textual.worker import Worker
 
 from agent import __version_core__, __version_label__
@@ -284,6 +289,56 @@ def _estimate_session_tokens(session: Session) -> int:
     return sum(len(str(m.get("content") or "")) for m in session.messages) // 4
 
 
+def _strip_default_bg(style: Style | None) -> Style | None:
+    if style is None or style.bgcolor is None or not style.bgcolor.is_default:
+        return style
+    return Style(
+        color=style.color,
+        bold=style.bold,
+        dim=style.dim,
+        italic=style.italic,
+        underline=style.underline,
+        blink=style.blink,
+        blink2=style.blink2,
+        reverse=style.reverse,
+        conceal=style.conceal,
+        strike=style.strike,
+        underline2=style.underline2,
+        frame=style.frame,
+        encircle=style.encircle,
+        overline=style.overline,
+        link=style.link,
+    )
+
+
+class PromptTextArea(TextArea):
+    """TextArea that renders without explicit default background, preserving terminal transparency."""
+
+    def on_mount(self) -> None:
+        # Non-blinking, always-visible block cursor (the old Input look).
+        self.cursor_blink = False
+
+    def get_component_rich_style(self, *names: str, partial: bool = False, default: Style | None = None) -> Style:
+        # The cursor is painted via theme.cursor_style, which apply_css derives
+        # from this component style each render. Under the transparent ansi theme
+        # the CSS path yields an empty style, so TextArea falls back to the
+        # inverse of the (default) background — a dim gray. Return an explicit
+        # bright-white-on-black block instead.
+        if "text-area--cursor" in names:
+            return Style(bgcolor=Color.from_ansi(15), color=Color.from_ansi(0))
+        return super().get_component_rich_style(*names, partial=partial, default=default)
+
+    def render_lines(self, crop: Region) -> list[Strip]:
+        strips = super().render_lines(crop)
+        return [
+            Strip(
+                [Segment(text, _strip_default_bg(style), ctrl) for text, style, ctrl in strip],
+                strip.cell_length,
+            )
+            for strip in strips
+        ]
+
+
 class GekaiApp(App[None]):
     CSS = """
     App {
@@ -333,7 +388,7 @@ class GekaiApp(App[None]):
     }
 
     #input-area {
-        height: 3;
+        height: auto;
         layers: input marker;
         border-top: solid #3a3a3a;
         border-bottom: solid #3a3a3a;
@@ -360,7 +415,8 @@ class GekaiApp(App[None]):
         layer: input;
         width: 100%;
         min-width: 0;
-        height: 1;
+        height: auto;
+        max-height: 8;
         padding: 0 0 0 2;
         background: ansi_default;
         background-tint: transparent;
@@ -370,6 +426,18 @@ class GekaiApp(App[None]):
     #prompt:focus {
         background: ansi_default;
         background-tint: transparent;
+    }
+
+    #prompt .text-area--cursor-line {
+        background: ansi_default;
+    }
+
+    #prompt .text-area--gutter {
+        background: ansi_default;
+    }
+
+    #prompt .text-area--cursor-gutter {
+        background: ansi_default;
     }
 
     .assistant-spacer {
@@ -514,7 +582,7 @@ class GekaiApp(App[None]):
             yield HistoryPanel(id="history-panel")
             yield Static("", id="copy-notice")
             with Container(id="input-area"):
-                yield Input(id="prompt", compact=True)
+                yield PromptTextArea(id="prompt", show_line_numbers=False, compact=True, highlight_cursor_line=False)
                 yield Static("❯", id="prompt-marker")
             yield Static("", id="context-bar")
             yield Static(f"[dim]{__version_core__}[/dim] [bold white]{__version_label__}[/bold white]", id="version-bar")
@@ -626,25 +694,28 @@ class GekaiApp(App[None]):
         return any(m.get("role") == "user" for m in self._session.messages)
 
     def _focus_prompt(self) -> None:
-        self.query_one("#prompt", Input).focus(scroll_visible=False)
+        self.query_one("#prompt", TextArea).focus(scroll_visible=False)
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    def _prompt_move_to_end(self, prompt: TextArea) -> None:
+        prompt.move_cursor(prompt.document.end)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
         history_panel = self.query_one("#history-panel", HistoryPanel)
         if history_panel.display:
             return
 
         palette = self.query_one(CommandPalette)
-        if event.value.startswith("/"):
-            palette.filter(event.value[1:])
+        value = event.text_area.text
+        if value.startswith("/"):
+            palette.filter(value[1:])
         else:
             palette.hide()
 
         file_panel = self.query_one("#file-panel", FilePanel)
-        value = event.value
         at_pos = value.rfind("@")
         if at_pos != -1:
             query = value[at_pos + 1:]
-            if " " not in query:
+            if " " not in query and "\n" not in query:
                 self._file_at_pos = at_pos
                 if self._file_paths is None:
                     self._file_paths = list_files(self._working_dir)
@@ -675,11 +746,15 @@ class GekaiApp(App[None]):
         if self._esc_pending and event.key != "escape":
             self._clear_hint()
 
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", TextArea)
+        if event.key == "ctrl+j" and prompt.has_focus:
+            prompt.insert("\n")
+            event.stop()
+            return
         if prompt.has_focus or not event.is_printable:
             return
         prompt.focus(scroll_visible=False)
-        prompt.insert_text_at_cursor(event.character)
+        prompt.insert(event.character)
         event.stop()
 
     async def _permission_callback(self, kind: str, tool_name: str) -> bool:
@@ -714,17 +789,7 @@ class GekaiApp(App[None]):
         self.query_one(ChoiceBar).show(question, options, default_index)
         return await self._pending_choice
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self._pending_choice is not None and not self._pending_choice.done():
-            event.input.value = ""
-            choice_bar = self.query_one(ChoiceBar)
-            key = choice_bar.selected_key
-            choice_bar.hide()
-            future = self._pending_choice
-            self._pending_choice = None
-            future.set_result(key)
-            self._focus_prompt()
-            return
+    async def _submit_prompt(self) -> None:
         if self._session is None:
             self._focus_prompt()
             return
@@ -732,18 +797,17 @@ class GekaiApp(App[None]):
             self._focus_prompt()
             return
 
+        prompt = self.query_one("#prompt", TextArea)
         palette = self.query_one(CommandPalette)
-        stripped = event.value.strip()
+        stripped = prompt.text.strip()
         if palette.display:
             cmd = palette.selected_command
             palette.hide()
             if cmd:
                 if cmd in self._COMMANDS_WITH_ARGS:
-                    # Leave in input so user can type the required parameter(s);
-                    # do not mount as USER message or dispatch yet.
                     val = f"/{cmd} "
-                    event.input.value = val
-                    event.input.cursor_position = len(val)
+                    prompt.text = val
+                    self._prompt_move_to_end(prompt)
                     self._focus_prompt()
                     return
                 stripped = f"/{cmd}"
@@ -756,7 +820,7 @@ class GekaiApp(App[None]):
         history_panel = self.query_one("#history-panel", HistoryPanel)
         if history_panel.display:
             history_panel.hide()
-        event.input.value = ""
+        prompt.clear()
         conversation = self.query_one("#conversation", ScrollableContainer)
         if stripped.startswith("/"):
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
@@ -1053,7 +1117,7 @@ class GekaiApp(App[None]):
 
         palette = self.query_one(CommandPalette)
         if palette.display:
-            self.query_one("#prompt", Input).value = ""
+            self.query_one("#prompt", TextArea).clear()
             palette.hide()
             self._clear_hint()
             return
@@ -1065,11 +1129,11 @@ class GekaiApp(App[None]):
             self._focus_prompt()
             return
 
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", TextArea)
         if self._esc_pending:
-            prompt.value = ""
+            prompt.clear()
             self._clear_hint()
-        elif prompt.value:
+        elif prompt.text:
             self._esc_pending = True
             self._show_hint("ESC again to clear input")
 
@@ -1086,17 +1150,28 @@ class GekaiApp(App[None]):
             panel.show(entries_display, selected_index=0)
 
     async def action_confirm_or_submit(self) -> None:
+        if self._pending_choice is not None and not self._pending_choice.done():
+            self.query_one("#prompt", TextArea).clear()
+            choice_bar = self.query_one(ChoiceBar)
+            key = choice_bar.selected_key
+            choice_bar.hide()
+            future = self._pending_choice
+            self._pending_choice = None
+            future.set_result(key)
+            self._focus_prompt()
+            return
+
         file_panel = self.query_one("#file-panel", FilePanel)
         if file_panel.display:
             path = file_panel.selected_text
             file_panel.hide()
             if path is not None:
-                prompt = self.query_one("#prompt", Input)
+                prompt = self.query_one("#prompt", TextArea)
                 at_pos = self._file_at_pos
-                if at_pos != -1 and at_pos < len(prompt.value):
-                    new_value = prompt.value[:at_pos] + f"@{path} "
-                    prompt.value = new_value
-                    prompt.cursor_position = len(new_value)
+                if at_pos != -1 and at_pos < len(prompt.text):
+                    new_value = prompt.text[:at_pos] + f"@{path} "
+                    prompt.text = new_value
+                    self._prompt_move_to_end(prompt)
             self._file_at_pos = -1
             self._focus_prompt()
             return
@@ -1105,13 +1180,14 @@ class GekaiApp(App[None]):
         if panel.display:
             text = panel.selected_text
             panel.hide()
-            prompt = self.query_one("#prompt", Input)
+            prompt = self.query_one("#prompt", TextArea)
             if text:
-                prompt.value = text
-                prompt.action_end()
+                prompt.text = text
+                self._prompt_move_to_end(prompt)
             self._focus_prompt()
-        else:
-            await self.query_one("#prompt", Input).action_submit()
+            return
+
+        await self._submit_prompt()
 
     def on_file_panel_row_clicked(self, event: FilePanel.RowClicked) -> None:
         file_panel = self.query_one("#file-panel", FilePanel)
@@ -1119,12 +1195,12 @@ class GekaiApp(App[None]):
         path = file_panel.selected_text
         file_panel.hide()
         if path is not None:
-            prompt = self.query_one("#prompt", Input)
+            prompt = self.query_one("#prompt", TextArea)
             at_pos = self._file_at_pos
-            if at_pos != -1 and at_pos < len(prompt.value):
-                new_value = prompt.value[:at_pos] + f"@{path} "
-                prompt.value = new_value
-                prompt.cursor_position = len(new_value)
+            if at_pos != -1 and at_pos < len(prompt.text):
+                new_value = prompt.text[:at_pos] + f"@{path} "
+                prompt.text = new_value
+                self._prompt_move_to_end(prompt)
         self._file_at_pos = -1
         self._focus_prompt()
 
@@ -1133,9 +1209,9 @@ class GekaiApp(App[None]):
         panel.select_index(event.index)
         text = panel.selected_text
         if text:
-            prompt = self.query_one("#prompt", Input)
-            prompt.value = text
-            prompt.action_end()
+            prompt = self.query_one("#prompt", TextArea)
+            prompt.text = text
+            self._prompt_move_to_end(prompt)
         panel.hide()
         self._focus_prompt()
 
@@ -1188,13 +1264,17 @@ class GekaiApp(App[None]):
         if panel.display:
             panel.move_up()
             if (text := panel.selected_text) is not None:
-                self.query_one("#prompt", Input).value = text
+                self.query_one("#prompt", TextArea).text = text
             return
         if self.query_one(CommandPalette).display:
             self.query_one(CommandPalette).move_up()
             return
         if self.query_one(ChoiceBar).display:
             self.query_one(ChoiceBar).move_left()
+            return
+        prompt = self.query_one("#prompt", TextArea)
+        if prompt.has_focus and not prompt.cursor_at_first_line:
+            prompt.action_cursor_up()
             return
         self.query_one("#conversation", ConversationContainer).scroll_up(animate=False)
 
@@ -1206,7 +1286,7 @@ class GekaiApp(App[None]):
         if panel.display:
             panel.move_down()
             if (text := panel.selected_text) is not None:
-                self.query_one("#prompt", Input).value = text
+                self.query_one("#prompt", TextArea).text = text
             return
         if self.query_one(CommandPalette).display:
             self.query_one(CommandPalette).move_down()
@@ -1214,31 +1294,35 @@ class GekaiApp(App[None]):
         if self.query_one(ChoiceBar).display:
             self.query_one(ChoiceBar).move_right()
             return
+        prompt = self.query_one("#prompt", TextArea)
+        if prompt.has_focus and not prompt.cursor_at_last_line:
+            prompt.action_cursor_down()
+            return
         self.query_one("#conversation", ConversationContainer).scroll_down(animate=False)
 
-    def action_select_command(self, name: str) -> None:
+    async def action_select_command(self, name: str) -> None:
         palette = self.query_one(CommandPalette)
         palette.hide()
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", TextArea)
         if name in self._COMMANDS_WITH_ARGS:
             val = f"/{name} "
-            prompt.value = val
-            prompt.cursor_position = len(val)
+            prompt.text = val
+            self._prompt_move_to_end(prompt)
             self._focus_prompt()
         else:
-            prompt.value = f"/{name}"
-            prompt.action_submit()
+            prompt.text = f"/{name}"
+            await self._submit_prompt()
 
     @on(events.Click, "#scroll-hint")
     def _scroll_hint_clicked(self, event: events.Click) -> None:
         event.stop()
         self.action_scroll_to_end()
 
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", TextArea)
         if self._esc_pending:
-            prompt.value = ""
+            prompt.clear()
             self._clear_hint()
-        elif prompt.value:
+        elif prompt.text:
             self._esc_pending = True
             self._show_hint("ESC again to clear input")
 
