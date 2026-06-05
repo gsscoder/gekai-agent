@@ -23,7 +23,7 @@ from agent.persistence import now_utc_str, _normalize_path
 from agent.router import Intent, Session
 from agent.settings import PERMISSION_CHOICES, load_context_limit, load_scope_gate, load_ws_scan_staleness_min, resolve_permissions, save_permissions
 from agent.workspace import list_files
-from agent.ws_explorer.enrichment import _get_git_state
+from agent.ws_manager.enrichment import _get_git_state
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
 from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent
 
@@ -32,10 +32,11 @@ from .history import PromptHistory
 from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget
 
 _NS_COLORS: dict[str, str] = {
-    "coding": "gold1",
-    "management": "cyan",
+    "coding": "#FFD700",
+    "management": "#00CED1",
 }
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
+_ACTION_COLOR = "#4169E1"
 
 
 class ConversationContainer(ScrollableContainer):
@@ -337,6 +338,8 @@ class GekaiApp(App[None]):
         border-top: solid #3a3a3a;
         border-bottom: solid #3a3a3a;
         border-title-align: left;
+        border-title-color: #000000;
+        border-title-background: #3a3a3a;
         padding: 0;
         background: ansi_default;
     }
@@ -594,6 +597,8 @@ class GekaiApp(App[None]):
             self._agent.permissions = perms
             self._session.permissions = perms
 
+        await self._run_ws_manager(conversation)
+
     async def _clear_session(self, command_text: str | None = None) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
@@ -776,37 +781,13 @@ class GekaiApp(App[None]):
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
 
-    # [dead code] workspace onboarding — disabled pending redesign
-    async def _run_ws_explorer(self, conversation: ScrollableContainer) -> None:
-        """Run WsExplorer and update session workspace context."""
-        explorer = self._agent.create_ws_explorer(self._working_dir)
-        renderer: SubAgentRenderer | None = None
+    async def _run_ws_manager(self, conversation: ScrollableContainer) -> None:
+        from agent import workspace_db as _wsdb
         try:
-            async for event in explorer.run():
-                if isinstance(event, SubAgentStartEvent):
-                    await self._start_status_animation("scanning workspace", random_accent_color())
-                    renderer = SubAgentRenderer(conversation)
-                    await renderer.start(event.name, event.description, event.color)
-                elif isinstance(event, StatusUpdateEvent) and renderer:
-                    await renderer.status_update(event)
-                elif isinstance(event, LogEvent) and renderer:
-                    await renderer.log(event.message)
-                elif isinstance(event, InferEndEvent) and renderer:
-                    renderer.accumulate_tokens(event)
-                elif isinstance(event, DoneEvent) and renderer:
-                    await renderer.done()
-        except Exception as error:
-            await conversation.mount(MessageWidget(MessageKind.ERROR, f"workspace scan: {error}"))
-            conversation.scroll_end(animate=False)
-        finally:
-            await self._stop_status_animation()
-        cache_path = self._working_dir / ".gekai" / "workspace.json"
-        try:
-            self._workspace = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self._workspace = explorer.workspace or {}
-        if self._workspace and self._session is not None:
-            self._agent.update_workspace_context(self._session, self._workspace)
+            conn = await asyncio.to_thread(_wsdb.ensure, self._working_dir)
+            conn.close()
+        except Exception:
+            pass
 
     # [dead code] workspace staleness rescan — disabled pending redesign
     async def _maybe_rescan_workspace(self, conversation: ScrollableContainer) -> None:
@@ -814,7 +795,7 @@ class GekaiApp(App[None]):
         cache_path = self._working_dir / ".gekai" / "workspace.json"
         if not cache_path.exists():
             # Onboarding fallback — should not normally happen here
-            await self._run_ws_explorer(conversation)
+            await self._run_ws_manager(conversation)
             return
 
         try:
@@ -859,12 +840,15 @@ class GekaiApp(App[None]):
         # Ask user
         await asyncio.to_thread(_update_scan_state_key, cache_path, "asked_timestamp", now_utc_str())
         if await self._ask_choice("Workspace needs rescan — proceed?", [("y", "Yes"), ("n", "No")]) == "y":
-            await self._run_ws_explorer(conversation)
+            await self._run_ws_manager(conversation)
 
     def _set_route_label(self, label: str, color: str | None = None) -> None:
         if color is not None:
             self._route_color = color
-        self.query_one("#input-area", Container).border_title = f"─[#000000 on {self._route_color}]{label}[/]"
+        input_area = self.query_one("#input-area", Container)
+        input_area.border_title = f" {label.lower()} "
+        input_area.styles.border_title_background = self._route_color
+        input_area.styles.border_title_color = "#000000"
 
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
@@ -882,10 +866,13 @@ class GekaiApp(App[None]):
                 await conversation.mount(MessageWidget(MessageKind.REJECTED, segments[0].text))
                 return
             _ns = segments[0].namespace if segments[0].intent is Intent.ACTION else None
-            self._set_route_label(
-                f"action/{_ns}" if _ns else segments[0].intent.name.lower(),
-                color=_NS_COLORS.get(_ns, _DEFAULT_ROUTE_COLOR) if _ns else None,
-            )
+            if segments[0].intent is Intent.ACTION:
+                _label = f"action/{_ns}" if _ns else "action"
+                _color = _NS_COLORS.get(_ns, _ACTION_COLOR)
+            else:
+                _label = segments[0].intent.name.lower()
+                _color = None
+            self._set_route_label(_label, color=_color)
             rejected, reason = await self._agent.check_gate(segments)
             if rejected and self._session.scope_gate:
                 await conversation.mount(
@@ -962,7 +949,7 @@ class GekaiApp(App[None]):
     async def _rebuild_workspace(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         try:
-            await self._run_ws_explorer(conversation)
+            await self._run_ws_manager(conversation)
             self._session = self._agent.start_session(self._workspace or {})
             conversation.scroll_end(animate=False)
         except Exception as error:

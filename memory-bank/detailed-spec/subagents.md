@@ -34,10 +34,10 @@ All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
 
 ## Existing Subagents
 
-### WsExplorer — `agent/ws_explorer/subagent.py`
-- `name = "ws-explorer"`, `color = "#008000"`
+### WsManager — `agent/ws_manager/subagent.py`
+- `name = "ws-manager"`, `color = "#008000"`
 - `description` — `"Onboarding workspace"` when `.gekai/workspace.json` absent, `"Scan workspace"` otherwise
-- Constructor: `__init__(working_dir, client, model)` — support-model client injected by `GekaiAgent.create_ws_explorer()`
+- Constructor: `__init__(working_dir, client, model)` — support-model client injected by `GekaiAgent.create_ws_manager()`
 - Activation: at startup when `workspace.json` absent; on `/workspace:rebuild`; on `query+plan` intent when workspace may be stale (Y/N confirmation shown first)
 - Flow: `scan_workspace()` (sync, thread) → `StatusUpdateEvent(0, total)` → `enrich_workspace()` via async queue draining → `DoneEvent`
 - Post-run state: `.workspace` and `.enrichment` attributes populated; caller reads them to update session context

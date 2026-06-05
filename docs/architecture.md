@@ -58,15 +58,19 @@ SYSTEM_PROMPT
 └── <file_handling>   show/print/display → full verbatim fenced block
 ```
 
-`ActionHandler._build_agent` composes the system prompt at call time:
+`ActionHandler._build_system(profile)` composes the system prompt at call time:
 
 ```
-system = SYSTEM_PROMPT [+ "\n\n" + profile.directives] + "\n\n" + _TOOL_INSTRUCTION
+SYSTEM_PROMPT
+\n<directives>\n{profile.directives}   ← only when profile exists and profile.directives non-empty
+\n<tools>\n{_TOOL_INSTRUCTION}
 ```
 
-`profile.directives` is omitted when no profile is selected (e.g. `action/generic`).  
-`_TOOL_INSTRUCTION` tells the model **when `<workspace>` metadata is sufficient**
-vs. **when tools are mandatory** (file contents, logic, depth).
+Tags are non-closing (no `</tag>`), matching `SYSTEM_PROMPT` convention.  
+`profile.directives` block is omitted when no profile is selected (e.g. `action/generic`).  
+`_TOOL_INSTRUCTION` tells the model when tools are mandatory: if the question requires file
+contents, implementation details, logic, or architecture depth, use tools — do not guess or
+rely on training knowledge.
 
 ---
 
@@ -127,7 +131,7 @@ Two-stage design: classifier picks a **namespace** (few, stable labels); `Profil
 
 ### AgentProfile
 
-Frozen dataclass in `agent/profiles.py` — not user-definable.
+Frozen dataclass defined in `agent/profiles/` package — not user-definable.
 
 ```python
 @dataclass(frozen=True)
@@ -140,6 +144,11 @@ class AgentProfile:
     permissions: Permissions | None  # AND-restricted overlay
     is_fallback: bool
 ```
+
+Package layout: `__init__.py` exports `AgentProfile`, `PROFILES`, `profiles_for`, `fallback_for`, `validate_registry`, and `_discover()` auto-discovery.
+One file per profile: `code_expert.py`, `code_refactorer.py`, `code_simplifier.py`, `ws_manager.py`.
+Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) — composed into `profile.directives` at import time via `dataclasses.replace`.
+Adding a profile = drop one file; zero other changes required.
 
 Registry helpers: `profiles_for(namespace)`, `fallback_for(namespace)`.  
 `validate_registry()` called at startup — raises if any namespace in `NAMESPACES` has no fallback.
@@ -174,16 +183,26 @@ effective = Permissions(
 
 `#input-area` container `border_title` always shows current routing state:
 
-| State                     | Label shown         |
-|---------------------------|---------------------|
-| idle / between turns      | `default`           |
-| after classify            | `<namespace>`       |
-| sub-agent active          | `<profile-name>`    |
-| finally (any exit)        | `default`           |
+| State                     | Label shown              | Border background color                        |
+|---------------------------|--------------------------|------------------------------------------------|
+| idle / between turns      | `default`                | `#3a3a3a`                                      |
+| after classify            | `action/<namespace>`     | `gold1` (coding) · `cyan` (management) · `#3a3a3a` (others) |
+| sub-agent active          | `<profile-name>`         | color from namespace phase — persists          |
+| finally (any exit)        | `default`                | `#3a3a3a`                                      |
 
 ---
 
 ## ActionHandler — Tool Loop
+
+### Transient incarnation / recency window
+
+The action agent is a **transient incarnation** — it does not receive the full session history.
+`_recency_turns(session.messages, _RECENCY_N)` extracts the last `_RECENCY_N=2` user/assistant
+pairs (skipping system messages, excluding the current trailing user input); the current user
+input is then appended explicitly. The agent receives: last 2 turns + current request.
+
+When `--debug` is active, `stream()` calls `append_debug(session, {"content": system})` before
+dispatching — the transient system string lands in `.debug.jsonl` alongside the workspace context block.
 
 Uses `llmstitch.Agent` with `OpenAIAdapter`; tools registered from `make_tools(working_dir)`.
 
@@ -213,11 +232,11 @@ Events flow through `EventBus` → async queue → TUI stream.
 
 ---
 
-## WsExplorer SubAgent [dead code]
+## WsManager SubAgent [dead code]
 
-> **Note:** `WsExplorer`, `scan_workspace`, `enrich_workspace`, and all scan activation paths are currently dead code. They are present in source (`ws_explorer/` subpackage) but not called from any live path. `_run_ws_explorer()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers. `/workspace:rebuild` is not registered in the command palette. No live code writes `workspace.json`.
+> **Note:** `WsManager`, `scan_workspace`, `enrich_workspace`, and all scan activation paths are currently dead code. They are present in source (`ws_manager/` subpackage) but not called from any live path. `_run_ws_manager()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers. `/workspace:rebuild` is not registered in the command palette. No live code writes `workspace.json`.
 
-`WsExplorer` (`ws_explorer/subagent.py`) is a `SubAgent` that **enriches workspace metadata**.
+`WsManager` (`ws_manager/subagent.py`) is a `SubAgent` that **enriches workspace metadata**.
 It streams `SubAgentEvent` instances to the TUI for live progress display.
 
 ### Activation [dead code]

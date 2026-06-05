@@ -19,9 +19,11 @@ from .router import Intent, IntentClassifier, Segment, Session, evaluate_single_
 from .settings import Permissions
 from toon import encode as toon_encode
 
-from .ws_explorer import WsExplorer
+from .ws_manager import WsManager
 from .subagent import SubAgentEvent
 from .persistence import append_message, append_debug
+from .blast_radius import BlastRadiusLocator
+from . import workspace_db
 
 load_dotenv()
 
@@ -81,6 +83,11 @@ class GekaiAgent:
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
         )
+        self._locator = BlastRadiusLocator(
+            model=self._supp_model,
+            api_key=self._supp_api_key,
+            api_base=self._supp_api_base,
+        )
         self._handlers: dict[Intent, Handler] = {
             Intent.CHAT: ChatHandler(
                 model=self.model,
@@ -101,12 +108,8 @@ class GekaiAgent:
     def client(self) -> AsyncOpenAI:
         return self._client
 
-    def create_ws_explorer(self, working_dir: Path) -> WsExplorer:
-        return WsExplorer(
-            working_dir=working_dir,
-            client=self._supp_client,
-            model=self._supp_model,
-        )
+    def create_ws_manager(self, working_dir: Path) -> WsManager:
+        return WsManager(working_dir=working_dir)
 
     def start_session(
         self,
@@ -158,6 +161,16 @@ class GekaiAgent:
             profile: AgentProfile | None = None
             if seg.intent is Intent.ACTION and seg.namespace and seg.namespace != "generic":
                 profile = await self._selector.select(seg.namespace, seg.text, history=session.messages)
+
+            if seg.intent is Intent.ACTION:
+                try:
+                    entries = await self._locator.locate(session.working_dir, seg.text)
+                    if entries:
+                        conn = workspace_db.ensure(session.working_dir)
+                        workspace_db.save_blast_radius(conn, entries)
+                        conn.close()
+                except Exception:
+                    pass
 
             handler = self._handlers[intent]
             if hasattr(handler, "stream"):

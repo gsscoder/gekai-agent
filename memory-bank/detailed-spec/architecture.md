@@ -4,7 +4,7 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 ## Package Layout
 `agent/` root: `agent.py` (orchestration), `router.py` (intents + session), `tools.py` (read/search/grep),
 `settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (support infrastructure)
-Subpackages: `handlers/` (chat, action), `ws_explorer/` (workspace enrichment + SubAgent — dead code),
+Subpackages: `handlers/` (chat, action), `profiles/` (`__init__.py` + one file per profile + `_coding.py` shared directives), `ws_manager/` (workspace enrichment + SubAgent — dead code),
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
 
 ## Session
@@ -41,19 +41,22 @@ Env vars (CORE — used by ChatHandler, ActionHandler):
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
 
-Env vars (SUPP — used by `IntentClassifier` and `PromptNormalizer`; `WsExplorer`/`enrich_workspace` also reference these but are dead code; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
+Env vars (SUPP — used by `IntentClassifier` and `PromptNormalizer`; `WsManager`/`enrich_workspace` also reference these but are dead code; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
 - `GEKAI_SUPPORT_MODEL_NAME`
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
 
-`ActionHandler` appends `_TOOL_INSTRUCTION` to `SYSTEM_PROMPT` at agent construction — balanced rule: `<workspace>` block is authoritative for high-level questions (proj_brief, tech_stack, primary_languages, branch, domain_map); tools are mandatory for file contents, implementation details, logic, or architecture depth
+`ActionHandler._build_system(profile)` composes the transient system prompt: `SYSTEM_PROMPT` + optional `<directives>` block (profile.directives when non-empty) + `<tools>` block (`_TOOL_INSTRUCTION`); tags are non-closing
+`_TOOL_INSTRUCTION` — if the question requires file contents, implementation details, logic, or architecture depth, use tools to read actual files; do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; no `<workspace>` reference
+`ActionHandler.stream()` is a transient incarnation: passes `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages skipped, trailing user input excluded) + current user input; full session history is NOT passed to the action agent
+`--debug` active: `stream()` calls `append_debug(session, {"content": system})` before dispatch — transient system string written to `.debug.jsonl`
 
-## Workspace Scan / WsExplorer [dead code]
-`WsExplorer` (`ws_explorer/subagent.py`), `scan_workspace`, `enrich_workspace`, and all activation logic are dead code — present in source but not called from any live path; disabled pending redesign
+## Workspace Scan / WsManager [dead code]
+`WsManager` (`ws_manager/subagent.py`), `scan_workspace`, `enrich_workspace`, and all activation logic are dead code — present in source but not called from any live path; disabled pending redesign
 
-`GekaiAgent.create_ws_explorer()` and `GekaiAgent.update_workspace_context()` exist but are only reachable from dead methods
+`GekaiAgent.create_ws_manager()` and `GekaiAgent.update_workspace_context()` exist but are only reachable from dead methods
 
-`_run_ws_explorer()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers; none are reachable from the live startup or stream path
+`_run_ws_manager()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers; none are reachable from the live startup or stream path
 
 `/workspace:rebuild` command (`commands/workspace.py`) carries a `# [dead code]` marker; the command class is not registered and `execute()` returns an empty `CommandResult`
 
@@ -67,7 +70,7 @@ Staleness logic (`_maybe_rescan_workspace` + `load_ws_scan_staleness_min`) is de
 3. extension frequency (top 15) → `extensions` map; used as primary signal only when no manifests
 4. AI instruction file detection (root + one level deep): `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, etc.
 
-`enrich_workspace` (`ws_explorer/enrichment.py`) — inactive: two parallel LLM calls (proj_brief + domain_map); fires async callbacks `on_file` and `on_infer_end` for TUI progress
+`enrich_workspace` (`ws_manager/enrichment.py`) — inactive: two parallel LLM calls (proj_brief + domain_map); fires async callbacks `on_file` and `on_infer_end` for TUI progress
 
 ## Session Persistence
 Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped message appended via `append_message()`
