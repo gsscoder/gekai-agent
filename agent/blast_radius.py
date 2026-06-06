@@ -35,9 +35,11 @@ _CODE_EXTENSIONS: frozenset[str] = frozenset({
     ".ipynb",                               # Jupyter notebooks
 })
 
-_SYSTEM = (
-    "you locate the SMALLEST set of files a requested change would touch\n"
+_SYSTEM_TEMPLATE = (
+    "you locate the SMALLEST set of files a user request needs to touch\n"
     "you SCOPE the change — you do not plan or perform it\n"
+    "<user_request>\n"
+    "{request}\n"
     "<strategy>\n"
     "the request itself is your richest clue — drain every drop from it:\n"
     "1. mine it for concrete signals: identifiers, class/function/symbol names, "
@@ -53,7 +55,7 @@ _SYSTEM = (
     "<output>\n"
     "output ONLY a plain list: one line per file\n"
     "format each line exactly as:\n"
-    "  <relative/path/to/file> | keyword1, keyword2, keyword3\n"
+    "  `relative/path/to/file` | keyword1, keyword2, keyword3\n"
     "keywords must be expanded and normalized — include synonyms and related terms "
     "the original request may not have named explicitly\n"
     "no prose, no explanation, no markdown, no extra lines\n"
@@ -71,7 +73,7 @@ def _parse_blast_radius_output(text: str) -> list[tuple[str, list[str]]]:
         if "|" not in line:
             continue
         path_part, _, kw_part = line.partition("|")
-        path = path_part.strip()
+        path = path_part.strip().strip("`")
         if not path:
             continue
         keywords = [k.strip().lower() for k in kw_part.split(",") if k.strip()]
@@ -125,16 +127,19 @@ class BlastRadiusLocator:
         request: str,
     ) -> list[tuple[str, list[str]]]:
         adapter = OpenAIAdapter(api_key=self._api_key, base_url=self._api_base)
+        system = _SYSTEM_TEMPLATE.format(request=request)
         agent = Agent(
             provider=adapter,
             model=self._model,
-            system=_SYSTEM,
+            system=system,
         )
         for t in make_tools(working_dir):
             if t.is_read_only:
                 agent.tools.register(t)
 
-        history = await agent.run([Message(role="user", content=request)])
+        history = await agent.run([
+            Message(role="user", content="locate the files"),
+        ])
 
         last = history[-1]
         if isinstance(last.content, list):
