@@ -875,12 +875,9 @@ class GekaiApp(App[None]):
                 farewell = random_farewell()
                 await conversation.mount(MessageWidget(MessageKind.ASSISTANT, farewell))
                 conversation.scroll_end(animate=False)
-                if self._session is not None:
-                    if had_prior:
-                        append_event(self._session, farewell, source="farewell")
-                    else:
-                        from agent.persistence import session_file
-                        session_file(self._session).unlink(missing_ok=True)
+                if self._session is not None and not had_prior:
+                    from agent.persistence import session_file
+                    session_file(self._session).unlink(missing_ok=True)
                 await asyncio.sleep(0.8 + len(farewell.split(" ")) * 0.20)
                 self.exit()
                 return
