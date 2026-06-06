@@ -98,6 +98,7 @@ def test_rewrite_passes_request_and_files_to_model() -> None:
     run(rw.rewrite("update the passcode dialog", [("src/auth/pass.tsx", ["passcode", "dialog"])]))
     messages = create.call_args.kwargs["messages"]
     assert messages[0]["role"] == "system"
+    system = messages[0]["content"]
+    assert "update the passcode dialog" in system
     user = messages[1]["content"]
-    assert "update the passcode dialog" in user
     assert "src/auth/pass.tsx | passcode, dialog" in user

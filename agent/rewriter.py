@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from openai import AsyncOpenAI
 
-_SYSTEM = (
-    "you rewrite a coding-change request so a downstream agent knows exactly which files to touch\n"
-    "you are given the original request and a list of files already located for it, each as: path | keywords\n"
+_SYSTEM_TEMPLATE = (
+    "you rewrite a user request so a downstream agent knows exactly which files to touch\n"
+    "you are given the original user request and a list of files already located for it, "
+    "each as: `path` | keyword1, keyword2, ...\n"
     "the files are verified to exist — your job is attribution, not discovery\n"
+    "<user_request>\n"
+    "{request}\n"
     "<rules>\n"
+    "if no files are provided, output the original request unchanged — do not modify it\n"
     "preserve the user's intent and constraints exactly — never add, drop, or reinterpret what is asked\n"
     "weave the full relative path inline wherever a file clearly corresponds to something the request names\n"
     "  e.g. 'update the passcode dialog to allow 8 chars' + 'src/app/auth/passcoder.tsx | passcode, dialog'\n"
-    "       -> \"update 'src/app/auth/passcoder.tsx' to allow 8 chars\"\n"
-    "quote paths verbatim from the provided list — never invent, guess, or alter a path\n"
+    "       -> \"update `src/app/auth/passcoder.tsx` to allow 8 chars\"\n"
+    "wrap paths in backticks — quote verbatim from the provided list — never invent, guess, or alter a path\n"
     "for located files you cannot confidently tie to a phrase, list them under a trailing <reference_files> block, "
-    "one path per line\n"
+    "one backtick-quoted path per line\n"
     "if every located file is woven inline, omit the <reference_files> block entirely\n"
     "<output>\n"
     "output ONLY the rewritten request, optionally followed by the <reference_files> block\n"
@@ -44,12 +48,13 @@ class PromptRewriter:
         request: str,
         entries: list[tuple[str, list[str]]],
     ) -> str:
-        user = f"request:\n{request}\n\nlocated files:\n{_format_entries(entries)}"
+        system = _SYSTEM_TEMPLATE.format(request=request)
+        user = f"located files:\n{_format_entries(entries)}\n\nrewrite the request"
         response = await self._client.chat.completions.create(
             model=self._model,
             temperature=0,
             messages=[
-                {"role": "system", "content": _SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         )
