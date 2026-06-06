@@ -23,6 +23,11 @@ Router               [support model] — one call; emits a single Route (chat | 
     + gate               count ancestor-collapsed directory areas;   │
                          reject if count > blast_radius_limit        │
               │                                                      │
+              ▼                                                      │
+    PromptRewriter       [core model, non-thinking] — weave located  │
+                         paths into the request; leftover candidates │
+                         go in a <reference_files> block             │
+              │                                                      │
               └─────────────────────────────────────────────────────►┤
                                                                      ▼
                                                            Handler [core model]
@@ -178,6 +183,35 @@ Gate enable/disable reuses the existing `/config:gate on|off` toggle (`session.s
 
 ---
 
+## Prompt Rewriter
+
+Runs **only on profiled action routes that produced located files**, *after* the gate passes.
+`chat`, `action/generic`, and any profiled route where the locator found nothing all skip it.
+
+`PromptRewriter.rewrite(request, entries) -> str` — a single **core-model** call, temperature 0,
+**no thinking params** (non-thinking even on a reasoning-capable core model). Not agentic, no tools:
+the locator already discovered and verified the files, so this stage only *attributes* them.
+
+It takes the original request plus the located `path | keywords` list and returns a rewritten request:
+
+```
+1. weave the full path inline wherever a file clearly maps to a phrase in the request
+   "update the passcode dialog to allow 8 chars" + "src/app/auth/passcoder.tsx | passcode, dialog"
+   -> "update 'src/app/auth/passcoder.tsx' to allow 8 chars"
+2. located files it cannot confidently attribute go in a trailing <reference_files> block
+3. paths are quoted verbatim from the list — never invented or altered
+```
+
+**Fail-hard:** any exception (including empty output → `ValueError`) propagates and blocks the turn,
+same contract as `BlastRadiusLocator`.
+
+**Original vs processed input:** the rewritten string is fed to the action handler as the live user
+turn (`process_stream`'s `user_input`), while the user's verbatim text is passed as `original_input`
+and is what gets **persisted and displayed**. Later recency windows therefore show the user's real
+phrasing, not the rewrite. When `--debug` is active the rewritten text is written to `.debug.jsonl`.
+
+---
+
 ## Profile Routing
 
 ### AgentProfile
@@ -268,6 +302,33 @@ sequenceDiagram
 ```
 
 Events flow through `EventBus` → async queue → TUI stream.
+
+---
+
+## Session Persistence
+
+Sessions stored at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`.
+Every entry is timestamped JSON with a `kind` field:
+
+```
+{ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context only
+{ts, kind:"command", content:"/config:gate off"}              ← slash command typed by user
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side, non-LLM
+```
+
+Event sources: `gate` · `router` · `error` · `interrupted` · `farewell` · `max_iterations` · `command` (command result).
+Entries without `kind` (legacy) default to `"turn"`.
+
+**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, route tokens, locate list, rewritten text) — `--debug` only.
+Litmus: *did the user see it on screen?* → session; *did only the developer need it?* → debug.
+
+**Two readers:**
+- `load_session(id)` → turns only — model context for resuming the LLM conversation.
+- `load_timeline(id)` → full ordered list — drives visual chat rebuild on `--resume`.
+
+**Max-iterations:** on agent hit with no text, writes `event(source="max_iterations")` instead of an empty assistant turn. Context stays clean; rebuild shows the warning.
+
+**`/clear` is the first entry of the new session** — `/clear` is persisted to the *new* session immediately after creation, marking it visually at the top. The old session retains the `/clear` command entry too (no result entry, since execution returns early).
 
 ---
 

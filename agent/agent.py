@@ -19,9 +19,10 @@ from .settings import Permissions
 from toon import encode as toon_encode
 
 from .ws_manager import WsManager
-from .subagent import SubAgentEvent
-from .persistence import append_message, append_debug
+from .subagent import MaxIterationsEvent, SubAgentEvent
+from .persistence import append_message, append_debug, append_event
 from .blast_radius import BlastRadiusLocator, evaluate_blast_radius_gate
+from .rewriter import PromptRewriter
 from . import workspace_db
 
 load_dotenv()
@@ -82,6 +83,12 @@ class GekaiAgent:
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
         )
+        # rewriter runs on CORE with no thinking params (non-thinking call)
+        self._rewriter = PromptRewriter(
+            model=self.model,
+            api_key=self._api_key,
+            api_base=self._api_base,
+        )
         self._handlers: dict[Intent, Handler] = {
             Intent.CHAT: ChatHandler(
                 model=self.model,
@@ -135,6 +142,11 @@ class GekaiAgent:
     ) -> tuple[bool, str | None]:
         return evaluate_blast_radius_gate(entries, limit)
 
+    async def rewrite(
+        self, request: str, entries: list[tuple[str, list[str]]],
+    ) -> str:
+        return await self._rewriter.rewrite(request, entries)
+
     def update_workspace_context(self, session: "Session", workspace: dict) -> None:
         session.messages[1] = {"role": "system", "content": _format_workspace_context(workspace)}
 
@@ -148,7 +160,6 @@ class GekaiAgent:
         permission_callback: PermissionCallback | None = None,
     ) -> AsyncIterator[str | UsageInfo | SubAgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
-        append_message(session, session.messages[-1])
 
         if entries:
             try:
@@ -159,6 +170,7 @@ class GekaiAgent:
                 pass
 
         all_chunks: list[str] = []
+        max_iter_hit = False
         handler = self._handlers[route.intent]
         if hasattr(handler, "stream"):
             if route.intent is Intent.ACTION:
@@ -172,11 +184,16 @@ class GekaiAgent:
             async for item in stream_iter:
                 if isinstance(item, str):
                     all_chunks.append(item)
+                elif isinstance(item, MaxIterationsEvent):
+                    max_iter_hit = True
                 yield item
         else:
             result = await handler.handle(session, user_input)
             all_chunks.append(result)
             yield result
 
-        session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
-        append_message(session, session.messages[-1])
+        if max_iter_hit and not all_chunks:
+            append_event(session, "agent hit iteration limit without producing a response", source="max_iterations")
+        else:
+            session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
+            append_message(session, session.messages[-1])

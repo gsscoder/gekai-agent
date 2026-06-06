@@ -58,6 +58,12 @@ class DoneEvent(SubAgentEvent):
     thinking_chars: int = 0
 
 
+@dataclass
+class MaxIterationsEvent(SubAgentEvent):
+    """Emitted instead of a text response when the agent hit its iteration limit."""
+    pass
+
+
 class SubAgent(ABC):
     name: str
     color: str = ""

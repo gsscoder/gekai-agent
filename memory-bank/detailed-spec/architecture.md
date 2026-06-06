@@ -3,6 +3,7 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 
 ## Package Layout
 `agent/` root: `agent.py` (orchestration), `router.py` (intents + session), `tools.py` (read/search/grep),
+`blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter),
 `settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (support infrastructure)
 Subpackages: `handlers/` (chat, action), `profiles/` (`__init__.py` + one file per profile + `_coding.py` shared directives), `ws_manager/` (workspace enrichment + SubAgent — dead code),
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
@@ -14,9 +15,9 @@ Subpackages: `handlers/` (chat, action), `profiles/` (`__init__.py` + one file p
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
-`GekaiAgent.process_stream(session, user_input, route, entries=None, permission_callback=None)` is the sole owner of session writes:
-`route: Route`; `entries: list[tuple[str, list[str]]] | None` — pre-computed locate results (None for chat/generic); `permission_callback: PermissionCallback | None`
-- appends `{"role": "user"}` once per turn before dispatching
+`GekaiAgent.process_stream(session, user_input, route, entries=None, original_input=None, permission_callback=None)` is the sole owner of session writes:
+`route: Route`; `entries: list[tuple[str, list[str]]] | None` — pre-computed locate results (None for chat/generic); `original_input: str | None` — user's verbatim text when `user_input` has been rewritten (see Prompt Rewriter); `permission_callback: PermissionCallback | None`
+- appends `{"role": "user"}` once per turn before dispatching — persists `original_input` when set, else `user_input`
 - appends `{"role": "assistant"}` once per turn after handler completes
 
 ## Router
@@ -45,6 +46,7 @@ Pipeline (in TUI `_stream`):
 2. If profiled: `BlastRadiusLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
 3. `evaluate_blast_radius_gate(entries, session.blast_radius_limit)` → `(rejected, reason)`
 4. If rejected and `session.scope_gate`: display rejection, return
+5. If `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → rewritten text becomes `processed_input`; `original_input = user_input` (see Prompt Rewriter)
 
 `BlastRadiusLocator` — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
 
@@ -60,6 +62,17 @@ Manifests/configs/docs (`pyproject.toml`, `package.json`, `.yaml`, `.md`, etc.) 
 All-config change → 0 areas → always passes.
 
 `blast_radius_limit` loaded via `load_blast_radius_limit(working_dir)`: project `.gekai/settings.local.json` overrides user `~/.gekai/settings.json`; absent → `5`. Manual JSON edit only — no slash command. Gate on/off reuses `/config:gate on|off`.
+
+## Prompt Rewriter
+`PromptRewriter` (`rewriter.py`) runs **only on profiled action routes whose locator returned entries**, *after* the gate passes. `chat`, `action/generic`, and profiled routes with empty `entries` skip it.
+
+`PromptRewriter.rewrite(request, entries) -> str` — single **CORE-model** call, temperature 0, **no thinking params** (constructed with no `extra_params`, so non-thinking even on a reasoning-capable core model). Not agentic, no tools — the locator already discovered/verified files, so this stage only *attributes* them.
+
+Behavior: weave each located path inline where it maps to a phrase in the request; leftover located files go in a trailing `<reference_files>` block; paths quoted verbatim from the list. Output (rewritten request + optional block) becomes the live user turn.
+
+Fail-hard: any exception, including empty output (`ValueError`), propagates and blocks the turn — same contract as `BlastRadiusLocator`.
+
+Original vs processed input: rewritten string → `process_stream`'s `user_input` (what the action handler sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in ActionHandler
@@ -100,11 +113,31 @@ Staleness logic (`_maybe_rescan_workspace` + `load_ws_scan_staleness_min`) is de
 `enrich_workspace` (`ws_manager/enrichment.py`) — inactive: two parallel LLM calls (proj_brief + domain_map); fires async callbacks `on_file` and `on_infer_end` for TUI progress
 
 ## Session Persistence
-Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped message appended via `append_message()`
-Debug messages written to `{session-id}.debug.jsonl` via `append_debug()`
-`load_session()` returns `(session_id, working_dir, user/assistant + persistent system messages)`; always-fresh system messages (SYSTEM_PROMPT, workspace) are excluded and re-injected on startup
+Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped entry with a `kind` field:
 
-On resume (`--resume <session-id>`): restores session ID and user/assistant messages; re-injects fresh system messages; prints conversation history to terminal; reads `workspace.json` cache if present (workspace scan is dead code — no rescan occurs)
+```
+{ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
+{ts, kind:"command", content:"/config:gate off"}              ← slash command typed by user
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: gate, router, error, interrupted, farewell, max_iterations
+```
+
+Entries without `kind` (legacy files) default to `"turn"`.
+
+**Boundary — session vs debug:**
+`session.jsonl` = everything the user saw on screen (turns + commands + events). Litmus: *did the user see it?*
+`debug.jsonl` = internal plumbing (system prompts, route tokens, locate list, rewritten text) — written only with `--debug`, never for visual rebuild.
+
+**Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`.
+
+**Two readers:**
+- `load_session(id)` → `(session_id, working_dir, turns_only)` — only `kind=="turn"` entries (model context). Always-fresh system messages (SYSTEM_PROMPT, workspace) excluded and re-injected on startup.
+- `load_timeline(id)` → `(working_dir, all_entries)` — full ordered list for visual rebuild; non-persistent system turns excluded.
+
+**Max-iterations:** when handler hits limit with no text produced, `process_stream` writes `append_event(source="max_iterations")` instead of an empty assistant turn — context stays clean, rebuild shows the warning.
+
+**`/clear` is the first entry of the new session:** command text is persisted to the *new* session (not the old one) immediately after it is created, making it the marker at the top of that session's timeline.
+
+On resume (`--resume <session-id>`): `load_session` restores model context; `load_timeline` drives visual rebuild; fresh system messages re-injected; scroll to bottom.
 
 ## Streaming UX
 Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.

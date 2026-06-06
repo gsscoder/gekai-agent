@@ -36,9 +36,22 @@ _CODE_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 _SYSTEM = (
-    "you locate files in a repository that are relevant to a requested change\n"
-    "you have read-only tools — use them to verify files exist before listing them\n"
-    "when done, output ONLY a plain list: one line per file\n"
+    "you locate the SMALLEST set of files a requested change would touch\n"
+    "you SCOPE the change — you do not plan or perform it\n"
+    "<strategy>\n"
+    "the request itself is your richest clue — drain every drop from it:\n"
+    "1. mine it for concrete signals: identifiers, class/function/symbol names, "
+    "module or file names, domain nouns and verbs\n"
+    "2. expand each signal into search variants across casings and joins — "
+    "e.g. 'prompt builder' -> prompt, builder, promptbuilder, PromptBuilder, prompt_builder, build_prompt\n"
+    "3. grep those variants to find where they live; confirm hits with read_file / symbols\n"
+    "4. use list_files ONLY with a targeted glob once a name hint points at it\n"
+    "   NEVER enumerate the repo root or walk broad trees blindly — that is not your job\n"
+    "<scope>\n"
+    "stay narrow: report the few files the change lands in, not the whole subsystem around them\n"
+    "verify every file exists before listing it\n"
+    "<output>\n"
+    "output ONLY a plain list: one line per file\n"
     "format each line exactly as:\n"
     "  <relative/path/to/file> | keyword1, keyword2, keyword3\n"
     "keywords must be expanded and normalized — include synonyms and related terms "
@@ -47,7 +60,6 @@ _SYSTEM = (
     "do not edit or create any files"
 )
 
-_MAX_ITERATIONS = 5
 
 
 def _parse_blast_radius_output(text: str) -> list[tuple[str, list[str]]]:
@@ -117,7 +129,6 @@ class BlastRadiusLocator:
             provider=adapter,
             model=self._model,
             system=_SYSTEM,
-            max_iterations=_MAX_ITERATIONS,
         )
         for t in make_tools(working_dir):
             if t.is_read_only:

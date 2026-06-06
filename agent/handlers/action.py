@@ -17,7 +17,7 @@ from ..profiles import AgentProfile
 from ..router import Session, SYSTEM_PROMPT
 from ..settings import Permissions
 from ..diff import build_diff
-from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..tools import make_tools
 
 _TOOL_INSTRUCTION = (
@@ -191,6 +191,7 @@ class ActionHandler:
             try:
                 history = await agent_task
             except MaxIterationsExceeded:
+                yield MaxIterationsEvent()
                 yield DoneEvent(thinking_chars=0)
                 return
 

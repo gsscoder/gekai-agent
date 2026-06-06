@@ -11,7 +11,7 @@ from .commands.clear import ClearCommand
 from .commands.config import ConfigGateCommand
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
-from .persistence import load_session
+from .persistence import load_session, load_timeline
 from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions, load_scope_gate, validate_gate_config
 from .tui.app import GekaiApp
 from .shell import resolve_shell
@@ -41,6 +41,7 @@ def main() -> None:
 
     restored_id: str | None = None
     restored_messages: list[dict] | None = None
+    restored_timeline: list[dict] | None = None
 
     if args.resume and args.working_dir is not None:
         print("error: --resume and --working-dir cannot be used together")
@@ -52,6 +53,9 @@ def main() -> None:
             print(f"session {args.resume} not found")
             raise SystemExit(1)
         restored_id, working_dir, restored_messages = result
+        timeline_result = load_timeline(args.resume)
+        if timeline_result is not None:
+            _, restored_timeline = timeline_result
     else:
         working_dir = (args.working_dir or Path.cwd()).resolve()
 
@@ -83,6 +87,7 @@ def main() -> None:
         branch=branch,
         restored_id=restored_id,
         restored_messages=restored_messages,
+        restored_timeline=restored_timeline,
         needs_permissions=needs_permissions,
     )
     app.run()
