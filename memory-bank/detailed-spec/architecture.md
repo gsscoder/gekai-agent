@@ -2,10 +2,10 @@
 Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed intent routing
 
 ## Package Layout
-`agent/` root: `agent.py` (orchestration), `router.py` (intents + session), `tools.py` (read/search/grep),
-`blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter),
-`settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (support infrastructure)
-Subpackages: `handlers/` (chat, action), `profiles/` (`__init__.py` + one file per profile + `_coding.py` shared directives), `ws_manager/` (workspace enrichment + SubAgent — dead code),
+`agent/` root: `agent.py` (orchestration), `router.py` (`Route`, `Session`, guard router), `tools.py` (read/search/grep),
+`blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter), `persona.py` (`SYSTEM_PROMPT`, `TOOL_INSTRUCTION` — neutral module shared by `subagents`, `router`, `handlers`),
+`settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (`SubAgentEvent` taxonomy)
+Subpackages: `handlers/` (`main_agent.py` — `MainAgent`), `subagents/` (`__init__.py` + one file per subagent + `_coding.py` shared directives),
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
 
 ## Session
@@ -16,34 +16,40 @@ Workspace context `<workspace>` block begins with `"verified repository metadata
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
 `GekaiAgent.process_stream(session, user_input, route, entries=None, original_input=None, permission_callback=None)` is the sole owner of session writes:
-`route: Route`; `entries: list[tuple[str, list[str]]] | None` — pre-computed locate results (None for chat/generic); `original_input: str | None` — user's verbatim text when `user_input` has been rewritten (see Prompt Rewriter); `permission_callback: PermissionCallback | None`
+`route: Route`; `entries: list[tuple[str, list[str]]] | None` — pre-computed locate results (None when no subagent selected); `original_input: str | None` — user's verbatim text when `user_input` has been rewritten (see Prompt Rewriter); `permission_callback: PermissionCallback | None`
 - appends `{"role": "user"}` once per turn before dispatching — persists `original_input` when set, else `user_input`
 - appends `{"role": "assistant"}` once per turn after handler completes
 
 ## Router
+`Router` is a pure **guard**, not an intent classifier — it makes one decision: does this turn
+stay with `MainAgent` directly, or does it match a specialist subagent (or get rejected)?
+
 `Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-`Route` dataclass: `intent: Intent`, `profile: AgentProfile | None`; property `namespace` (derived from `profile.namespace`, or `"generic"` for action/generic, or `None` for chat/rejected).
+`Route` dataclass: `subagent: Subagent | None = None`, `rejected: bool = False`. No `namespace`
+property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Router output token → Route mapping:
-- `chat` → `Route(CHAT)`
-- `action/generic` → `Route(ACTION, profile=None)`
-- `REJECTED` → `Route(REJECTED)` — non-English input
-- `<profile-name>` → `Route(ACTION, profile=<matched>)`
-- unknown token → warning log + fallback `Route(ACTION, profile=None)`
+Router prompt offers exactly three kinds of output token:
+- `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `MainAgent` handles directly. Bias: prefer `main` unless a specialist clearly fits
+- `REJECTED` — non-English input
+- `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty
 
-Intents: `CHAT`, `ACTION`, `REJECTED`
-`GekaiAgent._handlers` maps `Intent → Handler`; keys are `Intent.CHAT` and `Intent.ACTION`
-Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated intent
+Router output token → Route mapping:
+- `"main"` → `Route()`
+- `"rejected"` → `Route(rejected=True)`
+- `<subagent-name>` (matched) → `Route(subagent=p)`
+- unknown token → warning log + fallback `Route()` (same as `main`)
+
+Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
 
 ## Blast-Radius Gate
-Applies only to profiled action routes (`route.profile is not None`). `chat` and `action/generic` bypass gate.
+Applies only when a subagent is selected (`route.subagent is not None`). `main` routes bypass the gate.
 
 Pipeline (in TUI `_stream`):
 1. `Router.route()` → `Route`
-2. If profiled: `BlastRadiusLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
+2. If `route.subagent is not None`: `BlastRadiusLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
 3. `evaluate_blast_radius_gate(entries, session.blast_radius_limit)` → `(rejected, reason)`
 4. If rejected and `session.scope_gate`: display rejection, return
 5. If `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → rewritten text becomes `processed_input`; `original_input = user_input` (see Prompt Rewriter)
@@ -64,7 +70,7 @@ All-config change → 0 areas → always passes.
 `blast_radius_limit` loaded via `load_blast_radius_limit(working_dir)`: project `.gekai/settings.local.json` overrides user `~/.gekai/settings.json`; absent → `5`. Manual JSON edit only — no slash command. Gate on/off reuses `/config:gate on|off`.
 
 ## Prompt Rewriter
-`PromptRewriter` (`rewriter.py`) runs **only on profiled action routes whose locator returned entries**, *after* the gate passes. `chat`, `action/generic`, and profiled routes with empty `entries` skip it.
+`PromptRewriter` (`rewriter.py`) runs **only on routes with a selected subagent whose locator returned entries**, *after* the gate passes. `main` routes, and subagent routes with empty `entries`, skip it.
 
 `PromptRewriter.rewrite(request, entries) -> str` — single **CORE-model** call, temperature 0, **no thinking params** (constructed with no `extra_params`, so non-thinking even on a reasoning-capable core model). Not agentic, no tools — the locator already discovered/verified files, so this stage only *attributes* them.
 
@@ -72,45 +78,24 @@ Behavior: weave each located path inline where it maps to a phrase in the reques
 
 Fail-hard: any exception, including empty output (`ValueError`), propagates and blocks the turn — same contract as `BlastRadiusLocator`.
 
-Original vs processed input: rewritten string → `process_stream`'s `user_input` (what the action handler sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
+Original vs processed input: rewritten string → `process_stream`'s `user_input` (what `MainAgent` sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
 
 ## LLM Integration
-`openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` for tool-calling loop in ActionHandler
-Env vars (CORE — used by ChatHandler, ActionHandler):
+`openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `MainAgent`
+Env vars (CORE — used by `MainAgent`, `PromptRewriter`):
 - `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
 
-Env vars (SUPP — used by `Router`, `BlastRadiusLocator`; `WsManager`/`enrich_workspace` also reference these but are dead code; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
+Env vars (SUPP — used by `Router`, `BlastRadiusLocator`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
 - `GEKAI_SUPPORT_MODEL_NAME`
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
 
-`ActionHandler._build_system(profile)` composes the transient system prompt: `SYSTEM_PROMPT` + optional `<directives>` block (profile.directives when non-empty) + `<tools>` block (`_TOOL_INSTRUCTION`); tags are non-closing
-`_TOOL_INSTRUCTION` — if the question requires file contents, implementation details, logic, or architecture depth, use tools to read actual files; do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; no `<workspace>` reference
-`ActionHandler.stream()` is a transient incarnation: passes `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages skipped, trailing user input excluded) + current user input; full session history is NOT passed to the action agent
-`--debug` active: `stream()` calls `append_debug(session, {"content": system})` before dispatch — transient system string written to `.debug.jsonl`
-
-## Workspace Scan / WsManager [dead code]
-`WsManager` (`ws_manager/subagent.py`), `scan_workspace`, `enrich_workspace`, and all activation logic are dead code — present in source but not called from any live path; disabled pending redesign
-
-`GekaiAgent.create_ws_manager()` and `GekaiAgent.update_workspace_context()` exist but are only reachable from dead methods
-
-`_run_ws_manager()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers; none are reachable from the live startup or stream path
-
-`/workspace:rebuild` command (`commands/workspace.py`) carries a `# [dead code]` marker; the command class is not registered and `execute()` returns an empty `CommandResult`
-
-Staleness logic (`_maybe_rescan_workspace` + `load_ws_scan_staleness_min`) is dead for the same reason
-
-**What remains active:** `_init_session()` still reads `.gekai/workspace.json` unconditionally if it exists and passes the dict to `agent.start_session()`, which injects the `<workspace>` block into `session.messages[1]` via `_format_workspace_context()`. The cache file can exist from a prior run; if absent, an empty dict is used and the block is injected with default/unknown values. No live code writes `workspace.json`.
-
-`scan_workspace(working_dir)` (in `workspace.py`) — phases below are inactive:
-1. repo name (git remote) + branch
-2. manifest scan (recursive, root + subdirs, skip hidden/vendor) → `projects` list with lang + path
-3. extension frequency (top 15) → `extensions` map; used as primary signal only when no manifests
-4. AI instruction file detection (root + one level deep): `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`, etc.
-
-`enrich_workspace` (`ws_manager/enrichment.py`) — inactive: two parallel LLM calls (proj_brief + domain_map); fires async callbacks `on_file` and `on_infer_end` for TUI progress
+`Subagent.build_system()` assembles the spawn-mode system prompt: `SYSTEM_PROMPT` + optional `<core_mandate>` block (`subagent.mandate` when non-empty) + optional `<directives>` block (`subagent.directives` when non-empty) + `<tools>` block (`TOOL_INSTRUCTION`); tags are non-closing. In direct mode `MainAgent` composes `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION` itself — no mandate/directives. `SYSTEM_PROMPT` and `TOOL_INSTRUCTION` live in `agent/persona.py`.
+`TOOL_INSTRUCTION` — if the question requires file contents, implementation details, logic, or architecture depth, use tools to read actual files; do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; no `<workspace>` reference
+`MainAgent.stream(session, user_input, permission_callback=None, subagent=None)` selects mode by the `subagent` param: direct mode (`subagent=None`) passes `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages skipped, trailing user input excluded) + current input; spawn mode (`subagent=<Subagent>`) runs cold — `prior = []` + current input only, no recency context, no async/resume
+`--debug` active: `stream()` calls `append_debug(session, {"content": system})` before dispatch — the system string written to `.debug.jsonl`
 
 ## Session Persistence
 Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped entry with a `kind` field:
@@ -150,9 +135,8 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/exit` — exit to terminal (with farewell message + delay)
 - `/clear` — clears chat and starts a new session (resets session ID)
 - `/config:gate on|off` — enable or disable the scope gate for the current project; persists to `.gekai/settings.local.json`; updates `session.scope_gate` immediately
-- `/workspace:rebuild` — [dead code] command class exists in `commands/workspace.py` but is not registered; `_rebuild_workspace()` in `app.py` carries a `# [dead code]` marker and is unreachable
 
 ## CLI Flags
-- `--debug` — prints `[router: INTENT/namespace/profile]` in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
+- `--debug` — prints `[router: main]` (no subagent) or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

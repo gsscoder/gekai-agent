@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent.handlers.action import _recency_turns, _build_agent, _RECENCY_N, _TOOL_INSTRUCTION
+from agent.handlers.main_agent import _recency_turns, _build_agent, _RECENCY_N
 from agent.llm.types import Message
-from agent.router import SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -67,51 +66,23 @@ def test_recency_n_constant():
 
 
 # ---------------------------------------------------------------------------
-# system prompt structure
+# direct vs spawn mode: recency selection
 # ---------------------------------------------------------------------------
+# `MainAgent.stream` picks `prior = [] if subagent else _recency_turns(...)`.
+# Direct mode (no subagent) carries recency context; spawn mode (a subagent
+# is given) starts cold. This mirrors that selection without exercising the
+# full Agent/EventBus loop.
 
-def _fake_profile(directives: str):
-    from agent.profiles import AgentProfile
-    return AgentProfile(
-        name="test-profile",
-        namespace="coding",
-        description="test",
-        directives=directives,
-    )
-
-
-def _compose_system(profile=None) -> str:
-    system = SYSTEM_PROMPT
-    if profile and profile.directives:
-        system += f"\n<directives>\n{profile.directives}"
-    system += f"\n<tools>\n{_TOOL_INSTRUCTION}"
-    return system
+def test_direct_mode_carries_recency():
+    messages = _msgs(("u1", "a1"), ("u2", "a2"))
+    subagent = None
+    prior = [] if subagent else _recency_turns(messages, _RECENCY_N)
+    assert prior != []
+    assert [m.content for m in prior] == ["u1", "a1", "u2", "a2"]
 
 
-def test_system_prompt_has_tools_block_always():
-    system = _compose_system(profile=None)
-    assert "<tools>\n" in system
-
-
-def test_system_prompt_has_directives_block_with_profile():
-    profile = _fake_profile("do not invent features")
-    system = _compose_system(profile=profile)
-    assert "<directives>\n" in system
-    assert "do not invent features" in system
-
-
-def test_system_prompt_no_directives_block_without_profile():
-    system = _compose_system(profile=None)
-    assert "<directives>" not in system
-
-
-def test_system_prompt_no_directives_block_empty_directives():
-    profile = _fake_profile("")
-    system = _compose_system(profile=profile)
-    assert "<directives>" not in system
-
-
-def test_system_prompt_no_closing_tags():
-    profile = _fake_profile("some directive")
-    system = _compose_system(profile=profile)
-    assert "</" not in system
+def test_spawn_mode_is_cold():
+    messages = _msgs(("u1", "a1"), ("u2", "a2"))
+    subagent = object()  # stand-in: any truthy subagent value
+    prior = [] if subagent else _recency_turns(messages, _RECENCY_N)
+    assert prior == []

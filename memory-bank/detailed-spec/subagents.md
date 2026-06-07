@@ -1,25 +1,19 @@
 # Subagent System
 Structured async generators that stream typed events to the TUI for live progress rendering
 
-## SubAgent Protocol
-Abstract base class in `agent/subagent.py`
+## SubAgentEvent Protocol
+There is no enforced base class — `agent/subagent.py` holds only the `SubAgentEvent` taxonomy
+(plain no-field dataclass + its typed subclasses). The `SubAgent(ABC)` protocol class that used
+to live there was deleted as dead code once its only subclass was removed; nothing inherits from
+it today.
 
-```python
-class SubAgent(ABC):
-    name: str          # class-level; used as TUI badge label
-    color: str = ""    # class-level; hex color for the TUI header badge background
-
-    @property
-    def description(self) -> str: ...  # optional; shown in header parenthetical
-
-    @abstractmethod
-    def run(self) -> AsyncIterator[SubAgentEvent]: ...
-```
-
-`run()` is an async generator. Convention enforced by docstring, not type system:
+The convention lives on **by usage, not by enforcement**: anything that streams typed progress to
+the TUI is an `AsyncIterator[SubAgentEvent | str]` generator following this shape:
 - First yield must be `SubAgentStartEvent` — triggers `SubAgentRenderer` construction and header mount
 - Last yield must be `DoneEvent` — triggers progress bar removal and summary line mount
 - Intermediate yields: any `SubAgentEvent` subclass in any order
+
+`MainAgent.stream()` is the live example — see [MainAgent](#mainagent) below.
 
 ## Event Catalog
 All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
@@ -32,36 +26,39 @@ All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
 | `StatusUpdateEvent` | `progress: int`, `total: int \| None` | lazily mounts a `ProgressBar` (40% width, no ETA, percentage shown) on first call; subsequent calls update `progress`/`total` |
 | `DoneEvent` | _(none)_ | removes progress bar if present, mounts `⎿ Done ({tokens} tokens · {elapsed})` summary line |
 
-## Existing Subagents
+## Existing Streamers
 
-### WsManager — `agent/ws_manager/subagent.py`
-- `name = "ws-manager"`, `color = "#008000"`
-- `description` — `"Onboarding workspace"` when `.gekai/workspace.json` absent, `"Scan workspace"` otherwise
-- Constructor: `__init__(working_dir, client, model)` — support-model client injected by `GekaiAgent.create_ws_manager()`
-- Activation: at startup when `workspace.json` absent; on `/workspace:rebuild`; on `query+plan` intent when workspace may be stale (Y/N confirmation shown first)
-- Flow: `scan_workspace()` (sync, thread) → `StatusUpdateEvent(0, total)` → `enrich_workspace()` via async queue draining → `DoneEvent`
-- Post-run state: `.workspace` and `.enrichment` attributes populated; caller reads them to update session context
-- `.gekai/` directory excluded from stale-detection triggers
+### MainAgent — `agent/handlers/main_agent.py`
+- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None)` is an async generator that yields `SubAgentEvent | str`, the live example of the protocol-by-convention above
+- One method, two modes selected by the `subagent` param:
+  - **direct** (`subagent=None`): system = `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input; `SubAgentStartEvent(name="Gekai", description="thinking", color="#4169E1")`
+  - **spawn** (`subagent=<Subagent>`): system = `subagent.build_system()`; prior context = `[]` (cold — no recency, no inheritance, no async/resume); `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
+- Emits `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion when `old_str != new_str`), `InferEndEvent`, `ThinkingTokenEvent`, `MaxIterationsEvent` (iteration-limit path), and `DoneEvent`
+- After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. There is no live token-by-token text streaming; the final answer is assembled once from the completed history's `TextBlock`s
+- Uses `llmstitch` (`agent.llm.Agent`) `EventBus` to bridge tool-call events from the agent loop into the typed event stream
+- `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, and computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`)
 
-### ActionHandler — `agent/handlers/action.py`
-- Not a `SubAgent` subclass; `stream(session, user_input, permission_callback, profile)` is an async generator that yields `SubAgentEvent | str`
-- `SubAgentStartEvent` name/description are profile-driven: `name=profile.name if profile else "Action"`, `description=profile.description if profile else "Inspecting workspace"`, `color="#4169E1"`
-- `profile: AgentProfile | None` — injected by `GekaiAgent.process_stream()`; `None` for `action/generic` segments (ProfileSelector skipped)
-- Emits only `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion), `InferEndEvent`, `ThinkingTokenEvent`, and `DoneEvent`
-- After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`
-- Uses `llmstitch` `EventBus` to bridge tool-call events from the agent loop into the subagent event stream
-- Shares the main session: `session.messages[1:-1]` used as prior history (excludes current user turn boundary entries)
+> **Subagent vs harness-worker:** `Subagent` (and the streamers spawned for it) serve a
+> *user-turn* — selected by the router from user intent. A reserved-but-unbuilt `harness-worker`
+> category would instead serve the system/lifecycle directly (e.g. a future workspace-scan
+> revival) — work that runs outside any single user turn. Zero code exists for this yet; the
+> name marks the conceptual slot for a future evolution.
 
-## Adding a New Subagent
-1. Inherit `SubAgent` from `agent/subagent.py`
-2. Set `name` (class-level `str`) and `color` (class-level hex string, e.g. `"#8B0000"`)
-3. Optionally override `description` property
-4. Implement `run()` as `async def run(self) -> AsyncIterator[SubAgentEvent]:`
-   - First yield: `SubAgentStartEvent(name=self.name, description=self.description, color=self.color)`
-   - Last yield: `DoneEvent()`
-5. Wire into `app.py`: instantiate the subagent, iterate `run()` in a worker, dispatch events to a `SubAgentRenderer` instance — follow the pattern in `_init_session()` or `_stream()`
+## Adding a New Subagent-Style Streamer
+There is no base class to inherit — any async generator yielding `SubAgentEvent`s following the
+start/done convention qualifies. To add one:
+1. Implement an `async def stream(...) -> AsyncIterator[SubAgentEvent | str]:` (or similarly named) generator
+   - First yield: `SubAgentStartEvent(name=..., description=..., color=...)`
+   - Last yield: `DoneEvent(...)`
+   - Intermediate yields: any `SubAgentEvent` subclass, in any order
+2. Bridge tool/inference events into the typed stream via `EventBus` if the streamer runs an `Agent` tool loop — follow `MainAgent.stream()`'s `_consume_bus()` pattern
+3. Wire into `app.py`: iterate the generator in a worker, dispatch events to a `SubAgentRenderer` instance — follow the pattern in `_stream()`
 
-No base class registration — discovery is explicit at call sites
+No registration mechanism — discovery is explicit at call sites.
+
+To add a new **`Subagent`** (the routable specialist entity, distinct from the streamer
+protocol above): drop one file in `agent/subagents/` exporting a module-level `subagent =
+Subagent(...)`; `_discover()` picks it up automatically — see `architecture.md → Subagent Routing`.
 
 ## SubAgentRenderer
 Full implementation detail in `tui-layout.md → SubAgentRenderer`. Contract summary:

@@ -53,8 +53,7 @@ All widgets use `background: ansi_default` / `color: ansi_default` for terminal 
 ## Startup Flow
 1. `main.py` resolves permissions, creates `GekaiApp`, calls `.run()`
 2. `on_mount`: disables terminal mouse tracking; spawns clipboard poll task; runs `_init_session()` as exclusive worker
-3. `_init_session()`: mounts BANNER widget; loads `workspace.json` unconditionally if it exists (no live code writes this file — WsManager scan is dead code); starts session via `agent.start_session()`; loads `scope_gate` from settings; sets context limit from settings or model-prefix lookup; updates `#context-bar`; replays restored messages as USER/ASSISTANT widgets; if `needs_permissions` → calls `_ask_choice()` with `PERMISSION_CHOICES`, resolves + saves result
-— [dead code] no workspace scan or enrichment runs at startup; `_run_ws_manager()` and `_maybe_rescan_workspace()` are unreachable from this path
+3. `_init_session()`: mounts BANNER widget; loads `workspace.json` if it exists (no code writes this file — it's a cache read only); starts session via `agent.start_session()`; loads `scope_gate` from settings; sets context limit from settings or model-prefix lookup; updates `#context-bar`; replays restored messages as USER/ASSISTANT widgets; if `needs_permissions` → calls `_ask_choice()` with `PERMISSION_CHOICES`, resolves + saves result
 
 ## Input Handling
 `on_input_submitted`:

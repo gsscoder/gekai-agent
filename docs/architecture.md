@@ -2,21 +2,19 @@
 
 ## Overview
 
-Every turn passes through three layers: **routing → blast-radius gate → handler dispatch**.
+Every turn passes through three layers: **routing → blast-radius gate → MainAgent dispatch**.
 
 ```
 user input
     │
     ▼
-Router               [support model] — one call; emits a single Route (chat | profile | generic | REJECTED)
+Router               [support model] — one call; emits a single Route (subagent | rejected)
     │
-    ├── REJECTED ──► reject (non-English)
+    ├── rejected ──► reject (non-English)
     │
-    ├── chat ────────────────────────────────────────────────────────┐
+    ├── main (Route(), no subagent) ─────────────────────────────────┐
     │                                                                │
-    ├── action/generic ──────────────────────────────────────────────┤
-    │                                                                │
-    └── action/<profile>                                             │
+    └── <subagent>                                                   │
               │                                                      │
               ▼                                                      │
     BlastRadiusLocator   [support model] — locate affected files;    │
@@ -30,8 +28,9 @@ Router               [support model] — one call; emits a single Route (chat | 
               │                                                      │
               └─────────────────────────────────────────────────────►┤
                                                                      ▼
-                                                           Handler [core model]
-                                                             chat / action (+ profile directives)
+                                                           MainAgent [core model]
+                                                             direct mode (no subagent, with recency)
+                                                             spawn mode  (subagent.build_system(), cold)
 ```
 
 ---
@@ -54,9 +53,23 @@ index  role      content
 **System messages** (`[0]`, `[1]`) are excluded from persistence;
 they are re-injected fresh on every startup or resume.
 
+**Workspace context injection:** `_init_session()` reads `.gekai/workspace.json` from disk at
+startup if present, and passes the parsed dict to `agent.start_session()`, which builds the
+`<workspace>` block via `_format_workspace_context()` and appends it as `Session.messages[1]`.
+If the file is absent, an empty dict is used and the block is injected with default/unknown
+values (`workspace_type: "files"`, empty `primary_languages`/`projects`, etc.).
+
+Injected fields — **always:** `workspace_name`, `workspace_type`, `branch`, `primary_languages`,
+`projects`; **conditional:** `extensions` (when `projects` is empty), `domain_map` (when present).
+Preamble: `"verified repository metadata — treat as authoritative for high-level questions:"`.
+
 ---
 
 ## SYSTEM_PROMPT Blocks
+
+`SYSTEM_PROMPT` and `TOOL_INSTRUCTION` live in the neutral module `agent/persona.py` — extracted
+there to break an import cycle (`subagents` needs them to build its own prompts; `router` and
+`handlers` need `Subagent`, which lives in `subagents`).
 
 ```
 SYSTEM_PROMPT
@@ -67,17 +80,21 @@ SYSTEM_PROMPT
 └── <file_handling>   show/print/display → full verbatim fenced block
 ```
 
-`ActionHandler._build_system(profile)` composes the system prompt at call time:
+In **direct mode** `MainAgent` composes the system prompt itself: `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION`.
+
+In **spawn mode** the selected `Subagent` assembles its own complete system prompt via `build_system()`:
 
 ```
 SYSTEM_PROMPT
-\n<directives>\n{profile.directives}   ← only when profile exists and profile.directives non-empty
-\n<tools>\n{_TOOL_INSTRUCTION}
+\n<core_mandate>\n{subagent.mandate}      ← only when subagent.mandate is non-empty
+\n<directives>\n{subagent.directives}     ← only when subagent.directives is non-empty
+\n<tools>\n{TOOL_INSTRUCTION}             ← always
 ```
 
-Tags are non-closing (no `</tag>`), matching `SYSTEM_PROMPT` convention.  
-`profile.directives` block is omitted when no profile is selected (e.g. `action/generic`).  
-`_TOOL_INSTRUCTION` tells the model when tools are mandatory: if the question requires file
+Tags are non-closing (no `</tag>`), matching `SYSTEM_PROMPT` convention.
+`<core_mandate>` is the "who you are right now" activation hook — a 1-2 line mission statement
+("your specialization is …"), distinct from `<directives>`, which is the operational *how*.
+`TOOL_INSTRUCTION` tells the model when tools are mandatory: if the question requires file
 contents, implementation details, logic, or architecture depth, use tools — do not guess or
 rely on training knowledge.
 
@@ -97,44 +114,49 @@ This is proportionate for a single-user local prototype. Full isolation is **def
 
 ## Router
 
-`Router.route(user_input, history=None)` makes **one LLM call** on the **support model**, temperature 0.
-Returns a single `Route`.
+`Router` is a pure **guard**, not an intent classifier. `Router.route(user_input, history=None)`
+makes **one LLM call** on the **support model**, temperature 0, and returns a single `Route`.
 
 ```python
 @dataclass
 class Route:
-    intent: Intent
-    profile: AgentProfile | None = None
-
-    @property
-    def namespace(self) -> str | None: ...  # derived from profile.namespace, or "generic", or None
+    subagent: Subagent | None = None
+    rejected: bool = False
 ```
+
+There is no `namespace` property — callers read `route.subagent.namespace` directly when
+`route.subagent is not None`.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
+The router prompt offers exactly three kinds of output:
+
 ```
 ROUTER_PROMPT
-├── choices       chat | action/generic | REJECTED | <profile-name>
-├── <profiles>    flat menu — one line per profile across all namespaces
-└── bias          prefer chat > action/generic > profile when ambiguous
+├── main             default — chat, inspection, workspace questions, general code
+│                    changes, light edits — anything MainAgent handles directly
+├── REJECTED         non-English input
+├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
+│                    "name — description"); only when the request clearly and
+│                    specifically matches that subagent's specialty
+└── bias             prefer main unless a specialist clearly fits
 ```
-
-Output: single token. Unknown token → warning log + fallback `Route(ACTION, profile=None)`.
 
 ### Routing table
 
-| Output token         | Intent    | Namespace    | Notes                                                 |
-|----------------------|-----------|--------------|-------------------------------------------------------|
-| `chat`               | `CHAT`    | —            | knowledge only, no tools                              |
-| `action/generic`     | `ACTION`  | `generic`    | inspect, docs, prose edits; blast-radius gate skipped |
-| `<profile-name>`     | `ACTION`  | profile.namespace | code/structure change; blast-radius gate applied  |
-| `REJECTED`           | `REJECTED`| —            | non-English input                                     |
+| Output token        | Route                  | Notes                                              |
+|---------------------|------------------------|----------------------------------------------------|
+| `main`              | `Route()`              | MainAgent handles directly, no subagent spawned    |
+| `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies|
+| `rejected`          | `Route(rejected=True)` | non-English input                                  |
+| unknown token       | `Route()`              | warning log + fallback, same as `main`             |
 
 ---
 
 ## Blast-Radius Gate
 
-Applies **only to profiled action routes** (`action/coding`, `action/management`). `action/generic` and `chat` are not gated.
+Applies **only when a subagent is selected** (`route.subagent is not None`). Routes that resolve
+to `main` (`Route()`) are not gated.
 
 ### Locate step
 
@@ -185,8 +207,8 @@ Gate enable/disable reuses the existing `/config:gate on|off` toggle (`session.s
 
 ## Prompt Rewriter
 
-Runs **only on profiled action routes that produced located files**, *after* the gate passes.
-`chat`, `action/generic`, and any profiled route where the locator found nothing all skip it.
+Runs **only on routes with a selected subagent that produced located files**, *after* the gate
+passes. `main` routes, and subagent routes where the locator found nothing, all skip it.
 
 `PromptRewriter.rewrite(request, entries) -> str` — a single **core-model** call, temperature 0,
 **no thinking params** (non-thinking even on a reasoning-capable core model). Not agentic, no tools:
@@ -205,50 +227,71 @@ It takes the original request plus the located `path | keywords` list and return
 **Fail-hard:** any exception (including empty output → `ValueError`) propagates and blocks the turn,
 same contract as `BlastRadiusLocator`.
 
-**Original vs processed input:** the rewritten string is fed to the action handler as the live user
+**Original vs processed input:** the rewritten string is fed to `MainAgent` as the live user
 turn (`process_stream`'s `user_input`), while the user's verbatim text is passed as `original_input`
 and is what gets **persisted and displayed**. Later recency windows therefore show the user's real
 phrasing, not the rewrite. When `--debug` is active the rewritten text is written to `.debug.jsonl`.
 
 ---
 
-## Profile Routing
+## Subagent Routing
 
-### AgentProfile
+### Subagent
 
-Frozen dataclass defined in `agent/profiles/` package — not user-definable.
+Frozen dataclass defined in `agent/subagents/` package — not user-definable. It is a real entity
+that owns the assembly of its own system prompt:
 
 ```python
 @dataclass(frozen=True)
-class AgentProfile:
+class Subagent:
     name: str
     namespace: str
-    description: str
-    directives: str          # injected after SYSTEM_PROMPT in ActionHandler
-    tools: list[str] | None  # allowlist; None = all tools
-    permissions: Permissions | None  # AND-restricted overlay
-    is_fallback: bool
+    description: str       # router's selection signal — positive scope + "Not for…" boundary
+    mandate: str = ""      # 1-2 line activation hook: "your specialization is…"
+    directives: str = ""   # the *how* — operational specifics
+    tools: list[str] | None = None
+    permissions: Permissions | None = None
+    is_fallback: bool = False
+
+    def build_system(self) -> str: ...  # assembles SYSTEM_PROMPT + <core_mandate> + <directives> + <tools>
 ```
 
-Package layout: `__init__.py` exports `AgentProfile`, `PROFILES`, `profiles_for`, `fallback_for`, `validate_registry`, and `_discover()` auto-discovery.
-One file per profile: `code_expert.py`, `code_refactorer.py`, `code_simplifier.py`, `ws_manager.py`.
-Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) — composed into `profile.directives` at import time via `dataclasses.replace`.
-Adding a profile = drop one file; zero other changes required.
+`description` doubles as the router's menu entry (`name — description`) and carries a "Not for…"
+boundary clause to sharpen the router's selection. `mandate` is the activation hook fed into the
+agent's own context once spawned — "who you are right now," distinct from `directives` ("how to
+do it"). See [SYSTEM_PROMPT Blocks](#system_prompt-blocks) for the full assembly funnel.
 
-Registry helpers: `profiles_for(namespace)`, `fallback_for(namespace)`.  
-`validate_registry()` called at startup — raises if any namespace in `NAMESPACES` has no fallback.
+Package layout: `__init__.py` exports `Subagent`, `SUBAGENTS`, `NAMESPACES`, `validate_registry`,
+and `_discover()` auto-discovery (plus the internal `_by_namespace` index it relies on).
+One file per subagent — currently just `code_expert.py`.
+Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) — composed into
+`subagent.directives` at import time via `dataclasses.replace`.
+Adding a subagent = drop one file; zero other changes required.
 
-Profile selection is now performed by the `Router` in a single merged call — see [Router](#router) above.
+`NAMESPACES = ("coding", "generic")` — `"generic"` is innate (no subagents; selector skipped).
+The only `coding`-namespace member is `code_expert` (`is_fallback=True`): general code changes —
+features, fixes, tests — when no specialized subagent fits; its `description` explicitly excludes
+pure refactors / complexity-reduction passes with no behavior change.
+
+`validate_registry()` runs at startup — raises if any non-`generic` namespace in `NAMESPACES` has
+no members, has duplicate names, or doesn't have exactly one fallback.
+
+Subagent selection is performed by the `Router` in a single guard call — see [Router](#router) above.
+
+> **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
+> intent via routing. A reserved-but-unbuilt `harness-worker` category would instead serve the
+> *system/lifecycle* (e.g. a future workspace-scan revival) — a system-serving worker that runs
+> outside any single user turn. Zero code exists for this yet; the name marks the conceptual slot.
 
 ### Permission overlay
 
-`profile.permissions` is **ANDed** with `session.permissions` per field — a profile can restrict but never escalate beyond what the session granted.
+`subagent.permissions` is **ANDed** with `session.permissions` per field — a subagent can restrict but never escalate beyond what the session granted.
 
 ```python
 effective = Permissions(
-    read  = session.read  and profile.read,
-    write = session.write and profile.write,
-    exec  = session.exec  and profile.exec,
+    read  = session.read  and subagent.read,
+    write = session.write and subagent.write,
+    exec  = session.exec  and subagent.exec,
 )
 ```
 
@@ -259,49 +302,69 @@ effective = Permissions(
 | State                     | Label shown              | Border background color                        |
 |---------------------------|--------------------------|------------------------------------------------|
 | idle / between turns      | `default`                | `#3a3a3a`                                      |
-| after route               | `action/<namespace>`     | `gold1` (coding) · `cyan` (management) · `#3a3a3a` (others) |
-| sub-agent active          | `<profile-name>`         | color from namespace phase — persists          |
+| `route.subagent is not None` | `<namespace>/<name>`  | `_NS_COLORS.get(namespace, _ACTION_COLOR)` — `#FFD700` for `coding`, `#4169E1` otherwise |
+| `route.subagent is None`  | `main`                   | `#3a3a3a` (`_DEFAULT_ROUTE_COLOR`)             |
 | finally (any exit)        | `default`                | `#3a3a3a`                                      |
+
+Debug label (`--debug`, shown as `[router: ...]`): `[subagent.namespace, subagent.name]` joined
+by `/` when a subagent is selected, else just `["main"]`.
 
 ---
 
-## ActionHandler — Tool Loop
+## MainAgent — Tool Loop
 
-### Transient incarnation / recency window
+`MainAgent` is the single, always-on session holder users always talk to. Every turn that
+doesn't spawn a subagent is handled directly by it — chat, inspection, and action all flow
+through one `Agent`-tool-loop. One method, two modes selected by a single parameter:
 
-The action agent is a **transient incarnation** — it does not receive the full session history.
+```python
+async def stream(self, session, user_input, permission_callback=None, subagent: Subagent | None = None)
+```
+
+| Mode                       | Trigger              | System prompt                              | Prior context                                  |
+|----------------------------|----------------------|--------------------------------------------|------------------------------------------------|
+| **direct**                 | `subagent=None`      | `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION` | `_recency_turns(session.messages, _RECENCY_N=2)` — last 2 user/assistant pairs + current input |
+| **spawn**                  | `subagent=<Subagent>`| `subagent.build_system()`                  | cold — `prior = []` + current input only; no context inheritance, no async/resume (fire-and-forget by design, for now) |
+
+`SubAgentStartEvent` carries `name="Gekai"` / `description="thinking"` in direct mode, or
+`subagent.name` / `subagent.description` in spawn mode — both paths emit it; both stream through
+the same unified event flow.
+
 `_recency_turns(session.messages, _RECENCY_N)` extracts the last `_RECENCY_N=2` user/assistant
 pairs (skipping system messages, excluding the current trailing user input); the current user
-input is then appended explicitly. The agent receives: last 2 turns + current request.
+input is then appended explicitly.
 
 When `--debug` is active, `stream()` calls `append_debug(session, {"content": system})` before
-dispatching — the transient system string lands in `.debug.jsonl` alongside the workspace context block.
+dispatching — the system string lands in `.debug.jsonl` alongside the workspace context block.
 
-Uses `llmstitch.Agent` with `OpenAIAdapter`; tools registered from `make_tools(working_dir)`.
+Uses `llmstitch.Agent` (`agent.llm.Agent`) with `OpenAIAdapter`; tools registered from
+`make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set.
 
 ```mermaid
 sequenceDiagram
     participant TUI
-    participant ActionHandler
+    participant MainAgent
     participant llmstitch
     participant CoreModel
 
-    TUI->>ActionHandler: stream(session, user_input)
-    ActionHandler->>llmstitch: agent.run(prior_messages)
+    TUI->>MainAgent: stream(session, user_input, subagent=route.subagent)
+    MainAgent->>llmstitch: agent.run(prior_messages)
     loop tool-calling
         llmstitch->>CoreModel: messages + tools
         CoreModel-->>llmstitch: ToolUseBlock / TextBlock
-        llmstitch-->>ActionHandler: ToolExecutionStarted event
-        ActionHandler-->>TUI: LogEvent (e.g. "Edit src/main.py")
+        llmstitch-->>MainAgent: ToolExecutionStarted event
+        MainAgent-->>TUI: LogEvent (e.g. "Edit src/main.py")
         llmstitch->>llmstitch: execute tool, append result
-        llmstitch-->>ActionHandler: ToolExecutionCompleted event
-        ActionHandler-->>TUI: DiffEvent (edit_file only; old_str vs new_str)
+        llmstitch-->>MainAgent: ToolExecutionCompleted event
+        MainAgent-->>TUI: DiffEvent (edit_file only; old_str vs new_str)
     end
-    llmstitch-->>ActionHandler: final history
-    ActionHandler-->>TUI: DoneEvent → text response
+    llmstitch-->>MainAgent: final history
+    MainAgent-->>TUI: DoneEvent → text response
 ```
 
-Events flow through `EventBus` → async queue → TUI stream.
+Events flow through `EventBus` → async queue → TUI stream. The final answer text is yielded
+once, after `DoneEvent` — there is no live token-by-token streaming to the user (the `Agent`
+loop's internal streaming is only used to simplify token accounting via `InferEndEvent`).
 
 ---
 
@@ -329,58 +392,3 @@ Litmus: *did the user see it on screen?* → session; *did only the developer ne
 **Max-iterations:** on agent hit with no text, writes `event(source="max_iterations")` instead of an empty assistant turn. Context stays clean; rebuild shows the warning.
 
 **`/clear` is the first entry of the new session** — `/clear` is persisted to the *new* session immediately after creation, marking it visually at the top. The old session retains the `/clear` command entry too (no result entry, since execution returns early).
-
----
-
-## WsManager SubAgent [dead code]
-
-> **Note:** `WsManager`, `scan_workspace`, `enrich_workspace`, and all scan activation paths are currently dead code. They are present in source (`ws_manager/` subpackage) but not called from any live path. `_run_ws_manager()`, `_maybe_rescan_workspace()`, and `_rebuild_workspace()` in `tui/app.py` carry `# [dead code]` markers. `/workspace:rebuild` is not registered in the command palette. No live code writes `workspace.json`.
-
-`WsManager` (`ws_manager/subagent.py`) is a `SubAgent` that **enriches workspace metadata**.
-It streams `SubAgentEvent` instances to the TUI for live progress display.
-
-### Activation [dead code]
-
-- **Startup** — was intended to run on first launch; on resume, any cached `workspace.json` would be loaded immediately while enrichment could refresh it
-- **`/workspace:rebuild`** — not registered; handler is dead code
-
-`.gekai/` directory excluded from workspace scan activation triggers.
-
-### Scan phases (`scan_workspace` → `.gekai/workspace.json`) [dead code]
-
-```
-1. repo name (git remote) + branch
-2. manifest scan  →  projects[]  (lang + path; skip hidden/vendor)
-3. extension frequency  →  extensions{}  (top 15; fallback when no manifests)
-4. AI instruction file detection  (root + one level deep)
-```
-
-**Cache read (still active):** `_init_session()` reads `.gekai/workspace.json` at startup if present and passes it to `agent.start_session()`. No live code writes the file; the `<workspace>` block in `Session.messages[1]` reflects whatever the file contains (or defaults to empty/unknown values if absent). Staleness enforcement and the enrichment write path are dead.
-
-### Enrichment (`enrich_workspace`) [dead code]
-
-**Two parallel** support-model calls — inactive:
-
-```
-┌─────────────────┐     ┌──────────────────┐
-│   proj_brief    │     │   domain_map     │
-│  (summary +     │     │  (feature areas  │
-│   tech stack)   │     │   → file paths)  │
-└─────────────────┘     └──────────────────┘
-         └──────────────────┘
-                 ▼
-         workspace.json  (merged)  ← never reached; write path is dead
-                 ▼
-         injected into Session.messages[1]
-         as <workspace> block      ← injection at startup is active; enrichment write is not
-```
-
-Async callbacks fired during enrichment: `on_file` · `on_infer_end`.
-
-### Injected workspace fields
-
-**Always:** `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`
-**Conditional:** `extensions` (when `projects` empty) · `domain_map` (when present)
-**Preamble:** `"verified repository metadata — treat as authoritative for high-level questions:"`
-
-> The injection format above describes what `_format_workspace_context()` produces. This function is called by the active `agent.start_session()` path. The fields will reflect an existing `workspace.json` cache if one is present, otherwise default/empty values.

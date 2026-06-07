@@ -9,16 +9,13 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from .llm.model_caps import resolve_thinking_params
-from .handlers.base import Handler
-from .handlers.chat import ChatHandler, UsageInfo
-from .handlers.action import ActionHandler
+from .handlers.main_agent import MainAgent
 from .permissions import PermissionCallback
-from .profiles import AgentProfile
-from .router import Intent, Route, Router, Session
+from .subagents import Subagent
+from .router import Route, Router, Session
 from .settings import Permissions
 from toon import encode as toon_encode
 
-from .ws_manager import WsManager
 from .subagent import MaxIterationsEvent, SubAgentEvent
 from .persistence import append_message, append_debug, append_event
 from .blast_radius import BlastRadiusLocator, evaluate_blast_radius_gate
@@ -89,28 +86,17 @@ class GekaiAgent:
             api_key=self._api_key,
             api_base=self._api_base,
         )
-        self._handlers: dict[Intent, Handler] = {
-            Intent.CHAT: ChatHandler(
-                model=self.model,
-                api_key=self._api_key,
-                api_base=self._api_base,
-                extra_params=self._extra_params,
-            ),
-            Intent.ACTION: ActionHandler(
-                model=self.model,
-                api_key=self._api_key,
-                api_base=self._api_base,
-                extra_params=self._extra_params,
-                debug=self.debug,
-            ),
-        }
+        self._main = MainAgent(
+            model=self.model,
+            api_key=self._api_key,
+            api_base=self._api_base,
+            extra_params=self._extra_params,
+            debug=self.debug,
+        )
 
     @property
     def client(self) -> AsyncOpenAI:
         return self._client
-
-    def create_ws_manager(self, working_dir: Path) -> WsManager:
-        return WsManager(working_dir=working_dir)
 
     def start_session(
         self,
@@ -147,9 +133,6 @@ class GekaiAgent:
     ) -> str:
         return await self._rewriter.rewrite(request, entries)
 
-    def update_workspace_context(self, session: "Session", workspace: dict) -> None:
-        session.messages[1] = {"role": "system", "content": _format_workspace_context(workspace)}
-
     async def process_stream(
         self,
         session: Session,
@@ -158,8 +141,9 @@ class GekaiAgent:
         entries: list[tuple[str, list[str]]] | None = None,
         original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
-    ) -> AsyncIterator[str | UsageInfo | SubAgentEvent]:
+    ) -> AsyncIterator[str | SubAgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
+        append_message(session, session.messages[-1])
 
         if entries:
             try:
@@ -171,26 +155,17 @@ class GekaiAgent:
 
         all_chunks: list[str] = []
         max_iter_hit = False
-        handler = self._handlers[route.intent]
-        if hasattr(handler, "stream"):
-            if route.intent is Intent.ACTION:
-                stream_iter = handler.stream(
-                    session, user_input, permission_callback=permission_callback, profile=route.profile,
-                )
-            else:
-                stream_iter = handler.stream(
-                    session, user_input, permission_callback=permission_callback,
-                )
-            async for item in stream_iter:
-                if isinstance(item, str):
-                    all_chunks.append(item)
-                elif isinstance(item, MaxIterationsEvent):
-                    max_iter_hit = True
-                yield item
-        else:
-            result = await handler.handle(session, user_input)
-            all_chunks.append(result)
-            yield result
+        stream_iter = self._main.stream(
+            session, user_input,
+            permission_callback=permission_callback,
+            subagent=route.subagent,
+        )
+        async for item in stream_iter:
+            if isinstance(item, str):
+                all_chunks.append(item)
+            elif isinstance(item, MaxIterationsEvent):
+                max_iter_hit = True
+            yield item
 
         if max_iter_hit and not all_chunks:
             append_event(session, "agent hit iteration limit without producing a response", source="max_iterations")

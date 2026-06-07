@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 
@@ -62,21 +60,3 @@ class DoneEvent(SubAgentEvent):
 class MaxIterationsEvent(SubAgentEvent):
     """Emitted instead of a text response when the agent hit its iteration limit."""
     pass
-
-
-class SubAgent(ABC):
-    name: str
-    color: str = ""
-
-    @property
-    def description(self) -> str:
-        return ""
-
-    @abstractmethod
-    def run(self) -> AsyncIterator[SubAgentEvent]:
-        """
-        Async generator of events. Convention:
-        - First yield: SubAgentStartEvent(name=self.name)
-        - Last yield: DoneEvent()
-        """
-        ...

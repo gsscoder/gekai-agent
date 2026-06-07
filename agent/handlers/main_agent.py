@@ -13,23 +13,15 @@ from pathlib import Path
 
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
-from ..profiles import AgentProfile
-from ..router import Session, SYSTEM_PROMPT
+from ..persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
+from ..router import Session
 from ..settings import Permissions
 from ..diff import build_diff
 from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..subagents import Subagent
 from ..tools import make_tools
 
-_TOOL_INSTRUCTION = (
-    "if the question requires file contents, implementation details, logic, or architecture depth, "
-    "you MUST use tools to read actual files — do not guess or rely on training knowledge; "
-    "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; "
-    "use run_command for build, test, and git operations; "
-    "run_command is stateless — cd does not persist across calls, each call starts in repo root; "
-    "prefer read_file/grep/list_files over shell equivalents for reading files"
-)
-
-_ACTION_COLOR = "#4169E1"
+_MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
 
 
@@ -65,14 +57,6 @@ def _fmt_tool_call(call: ToolUseBlock) -> str:
     return call.name.capitalize()
 
 
-def _build_system(profile: AgentProfile | None) -> str:
-    system = SYSTEM_PROMPT
-    if profile and profile.directives:
-        system += f"\n<directives>\n{profile.directives}"
-    system += f"\n<tools>\n{_TOOL_INSTRUCTION}"
-    return system
-
-
 def _build_agent(
     model: str,
     api_key: str | None,
@@ -83,7 +67,7 @@ def _build_agent(
     permission_callback: PermissionCallback | None,
     system: str,
     bus: EventBus | None = None,
-    profile: AgentProfile | None = None,
+    subagent: Subagent | None = None,
 ) -> Agent:
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
     agent = Agent(
@@ -93,16 +77,16 @@ def _build_agent(
         event_bus=bus,
         extra_params=extra_params,
     )
-    if profile and profile.permissions is not None:
+    if subagent and subagent.permissions is not None:
         effective = Permissions(
-            read=permissions.read and profile.permissions.read,
-            write=permissions.write and profile.permissions.write,
-            exec=permissions.exec and profile.permissions.exec,
+            read=permissions.read and subagent.permissions.read,
+            write=permissions.write and subagent.permissions.write,
+            exec=permissions.exec and subagent.permissions.exec,
         )
     else:
         effective = permissions
     for t in make_tools(working_dir):
-        if profile and profile.tools is not None and t.name not in profile.tools:
+        if subagent and subagent.tools is not None and t.name not in subagent.tools:
             continue
         perm = t.required_permission
         if perm != "none" and not getattr(effective, perm, False) and permission_callback is None:
@@ -115,7 +99,7 @@ def _build_agent(
     return agent
 
 
-class ActionHandler:
+class MainAgent:
     def __init__(
         self,
         model: str,
@@ -135,16 +119,16 @@ class ActionHandler:
         session: Session,
         user_input: str,
         permission_callback: PermissionCallback | None = None,
-        profile: AgentProfile | None = None,
+        subagent: Subagent | None = None,
     ) -> AsyncIterator[SubAgentEvent | str]:
         bus = EventBus()
-        system = _build_system(profile)
+        system = subagent.build_system() if subagent else f"{SYSTEM_PROMPT}\n<tools>\n{TOOL_INSTRUCTION}"
         if self._debug:
             append_debug(session, {"content": system})
         agent = _build_agent(
             self._model, self._api_key, self._api_base, self._extra_params,
             session.working_dir, session.permissions, permission_callback, system, bus,
-            profile=profile,
+            subagent=subagent,
         )
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
@@ -171,12 +155,12 @@ class ActionHandler:
             await queue.put(None)
 
         yield SubAgentStartEvent(
-            name=profile.name if profile else "Action",
-            description=profile.description if profile else "Inspecting workspace",
-            color=_ACTION_COLOR,
+            name=subagent.name if subagent else "Gekai",
+            description=subagent.description if subagent else "thinking",
+            color=_MAIN_COLOR,
         )
 
-        prior = _recency_turns(session.messages, _RECENCY_N)
+        prior = [] if subagent else _recency_turns(session.messages, _RECENCY_N)
         prior.append(Message(role="user", content=user_input))
         agent_task: asyncio.Task = asyncio.create_task(agent.run(prior))
         bus_task: asyncio.Task = asyncio.create_task(_consume_bus())
