@@ -78,7 +78,7 @@ async def _read_file(
     except FileNotFoundError:
         return f"error: file not found: {path}"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 async def _list_files(pattern: str, *, working_dir: Path) -> str:
@@ -106,7 +106,7 @@ async def _file_info(path: str, *, working_dir: Path) -> str:
     except FileNotFoundError:
         return f"error: file not found: {path}"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> str:
@@ -151,7 +151,7 @@ async def _edit_file(path: str, old_str: str, new_str: str, *, working_dir: Path
     except FileNotFoundError:
         return f"error: file not found: {path}"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
     if old_str not in text:
         return f"error: old_str not found in {path}"
     target.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
@@ -167,7 +167,7 @@ async def _write_file(path: str, content: str, *, working_dir: Path) -> str:
         target.write_text(content, encoding="utf-8")
         return "ok"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 async def _symbols(
@@ -196,7 +196,7 @@ async def _symbols(
     except FileNotFoundError:
         return f"error: file not found: {path}"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
     mod_name, fn_name = _LANG_TO_MODULE[lang_name]
     try:
@@ -246,7 +246,7 @@ async def _move_file(src: str, dst: str, *, working_dir: Path) -> str:
         shutil.move(str(src_path), str(dst_path))
         return "ok"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 async def _copy_file(src: str, dst: str, *, working_dir: Path) -> str:
@@ -265,7 +265,7 @@ async def _copy_file(src: str, dst: str, *, working_dir: Path) -> str:
         shutil.copy2(str(src_path), str(dst_path))
         return "ok"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 async def _delete_file(path: str, *, working_dir: Path) -> str:
@@ -280,7 +280,7 @@ async def _delete_file(path: str, *, working_dir: Path) -> str:
         target.unlink()
         return "ok"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 async def _make_dir(path: str, *, working_dir: Path) -> str:
@@ -291,7 +291,7 @@ async def _make_dir(path: str, *, working_dir: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
         return "ok"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
 
 def make_file_tools(working_dir: Path) -> list:

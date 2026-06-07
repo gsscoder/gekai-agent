@@ -35,7 +35,7 @@ async def _run_command(
                 pass
             return f"error: timeout after {timeout}s"
     except Exception as exc:
-        return f"error: {exc}"
+        return f"error: {exc or type(exc).__name__}"
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")

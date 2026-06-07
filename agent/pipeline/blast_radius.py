@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from openai import AsyncOpenAI
+import httpx
 
 from ..llm import Agent
 from ..llm.providers.openai import OpenAIAdapter
@@ -126,7 +126,11 @@ class BlastRadiusLocator:
         working_dir: Path,
         request: str,
     ) -> list[tuple[str, list[str]]]:
-        adapter = OpenAIAdapter(api_key=self._api_key, base_url=self._api_base)
+        adapter = OpenAIAdapter(
+            api_key=self._api_key,
+            base_url=self._api_base,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
+        )
         system = _SYSTEM_TEMPLATE.format(request=request)
         agent = Agent(
             provider=adapter,

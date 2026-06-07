@@ -17,6 +17,6 @@ class CommandRegistry:
         args = parts[1:]
 
         if name not in self._commands:
-            return CommandResult(output=f"UPnknown command: {name}")
+            return CommandResult(output=f"Unknown command: {name}")
 
         return await self._commands[name].execute(args)

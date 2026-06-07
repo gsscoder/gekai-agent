@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from openai import AsyncOpenAI
 
 _SYSTEM_TEMPLATE = (
@@ -41,7 +42,11 @@ class PromptRewriter:
         api_base: str | None = None,
     ) -> None:
         self._model = model
-        self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=api_base,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
+        )
 
     async def rewrite(
         self,

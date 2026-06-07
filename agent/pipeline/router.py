@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+import httpx
 from openai import AsyncOpenAI
 
 _log = logging.getLogger(__name__)
@@ -37,7 +38,11 @@ class Router:
         api_base: str | None = None,
     ) -> None:
         self._model = model
-        self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=api_base,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
+        )
         self._subagents = list(SUBAGENTS)
         menu = "\n".join(f"  {p.name} — {p.description}" for p in self._subagents)
         self._prompt = _ROUTER_PROMPT_BASE.replace("{menu}", menu)

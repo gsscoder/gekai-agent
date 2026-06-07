@@ -984,7 +984,7 @@ class GekaiApp(App[None]):
                 )
             conversation.scroll_end(animate=False)
         except Exception as error:
-            error_msg = str(error)
+            error_msg = str(error) or type(error).__name__
             await conversation.mount(MessageWidget(MessageKind.ERROR, error_msg))
             append_event(self._session, error_msg, source="error")
             conversation.scroll_end(animate=False)
