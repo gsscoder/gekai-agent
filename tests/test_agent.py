@@ -9,7 +9,8 @@ from typing import cast
 from agent.agent import GekaiAgent
 from agent.harness import Harness
 from agent.persistence import session_file
-from agent.router import Route, Session
+from agent.pipeline import Route
+from agent.session import Session
 
 
 def run(coro):

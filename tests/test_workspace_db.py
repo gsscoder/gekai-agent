@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent import __version__
-from agent.workspace_db import SCHEMA_VERSION, ensure, save_blast_radius, files_for_keywords
+from agent.workspace.db import SCHEMA_VERSION, ensure, save_blast_radius, files_for_keywords
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:

@@ -11,15 +11,15 @@ from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
 from pathlib import Path
 
-from .permissions import PermissionCallback, PermissionGate
-from .persistence import append_debug
-from .persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
-from .router import Session
-from .settings import Permissions
-from .diff import build_diff
-from .subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
-from .subagents import Subagent
-from .tools import make_tools
+from ..permissions import PermissionCallback, PermissionGate
+from ..persistence import append_debug
+from ..persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
+from ..session import Session
+from ..settings import Permissions
+from ..diff import build_diff
+from ..events import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..subagents import Subagent
+from ..tools import make_tools
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
@@ -155,7 +155,7 @@ class Harness:
             await queue.put(None)
 
         yield SubAgentStartEvent(
-            name=subagent.name if subagent else "Gekai",
+            name=subagent.name if subagent else "main",
             description=subagent.description if subagent else "thinking",
             color=_MAIN_COLOR,
         )

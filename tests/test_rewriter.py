@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.rewriter import PromptRewriter, _format_entries
+from agent.pipeline.rewriter import PromptRewriter, _format_entries
 
 
 def run(coro):
@@ -14,7 +14,7 @@ def run(coro):
 
 
 def _make_rewriter() -> PromptRewriter:
-    with patch("agent.rewriter.AsyncOpenAI"):
+    with patch("agent.pipeline.rewriter.AsyncOpenAI"):
         return PromptRewriter(model="core-model", api_key="key", api_base="http://localhost")
 
 

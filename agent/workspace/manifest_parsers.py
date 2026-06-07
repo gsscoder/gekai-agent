@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# dormant — not wired into the workspace scan/db pipeline yet; kept for future re-activation
+
 import json
 import re
 import xml.etree.ElementTree as ET

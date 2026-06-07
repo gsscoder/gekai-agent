@@ -14,7 +14,7 @@ from agent.persistence import (
     load_timeline,
     session_file,
 )
-from agent.router import Session
+from agent.session import Session
 
 
 def _make_session(tmp_path: Path) -> Session:

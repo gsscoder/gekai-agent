@@ -24,11 +24,12 @@ from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import append_command, append_debug, append_event, _normalize_path
-from agent.router import Route, Session
+from agent.pipeline import Route
+from agent.session import Session
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
 from agent.workspace import list_files
-from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
+from agent.tui.styles import random_accent_color, random_farewell, random_operative_verb
+from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
 
 from .palette import CommandPalette
 from .history import PromptHistory
@@ -658,7 +659,7 @@ class GekaiApp(App[None]):
                     await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
             self.call_after_refresh(conversation.scroll_end)
 
-        self._set_route_label("default")
+        self._set_route_label("waiting")
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
 
@@ -988,7 +989,7 @@ class GekaiApp(App[None]):
             append_event(self._session, error_msg, source="error")
             conversation.scroll_end(animate=False)
         finally:
-            self._set_route_label("default", color=_DEFAULT_ROUTE_COLOR)
+            self._set_route_label("waiting", color=_DEFAULT_ROUTE_COLOR)
             await self._stop_status_animation()
             if ws_renderer is not None:
                 ws_renderer.stop_spinner()

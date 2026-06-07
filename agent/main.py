@@ -94,7 +94,8 @@ def main() -> None:
 
     session_id = app.session_id
     if session_id and app.session_has_interactions:
-        from .ui import console
+        from rich.console import Console
+        console = Console()
         console.print()
         console.print(f"[grey50]resume session:\ngekai --resume {session_id}[/grey50]")
 

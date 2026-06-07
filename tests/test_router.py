@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.router import Route, Router
+from agent.pipeline.router import Route, Router
 
 
 def run(coro):
@@ -14,7 +14,7 @@ def run(coro):
 
 
 def _make_router() -> Router:
-    with patch("agent.router.AsyncOpenAI"):
+    with patch("agent.pipeline.router.AsyncOpenAI"):
         return Router(model="test-model", api_key="key", api_base="http://localhost")
 
 

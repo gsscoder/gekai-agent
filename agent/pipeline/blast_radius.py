@@ -4,10 +4,10 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from .llm import Agent
-from .llm.providers.openai import OpenAIAdapter
-from .llm.types import Message, TextBlock
-from .tools import make_tools
+from ..llm import Agent
+from ..llm.providers.openai import OpenAIAdapter
+from ..llm.types import Message, TextBlock
+from ..tools import make_tools
 
 # Extensions that count toward the blast-radius area metric.
 # Broader than _EXT_TO_LANG (symbol-parse support) — gate coverage ≠ AST coverage.

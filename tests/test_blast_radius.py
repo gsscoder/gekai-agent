@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.blast_radius import _parse_blast_radius_output, count_blast_areas, evaluate_blast_radius_gate
+from agent.pipeline.blast_radius import _parse_blast_radius_output, count_blast_areas, evaluate_blast_radius_gate
 
 
 def test_parse_well_formed_line() -> None:

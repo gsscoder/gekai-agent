@@ -1,4 +1,4 @@
-from agent.manifest_parsers import (
+from agent.workspace.manifest_parsers import (
     _parse_build_gradle,
     _parse_cargo_toml,
     _parse_csproj,

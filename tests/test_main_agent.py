@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.harness import _recency_turns, _build_agent, _RECENCY_N
+from agent.harness.core import _recency_turns, _build_agent, _RECENCY_N
 from agent.llm.types import Message
 
 
