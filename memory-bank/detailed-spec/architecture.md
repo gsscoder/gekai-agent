@@ -4,7 +4,7 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 ## Package Layout
 `agent/` root: `agent.py` (orchestration), `router.py` (`Route`, `Session`, guard router), `tools.py` (read/search/grep),
 `blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter), `persona.py` (`SYSTEM_PROMPT`, `TOOL_INSTRUCTION` — neutral module shared by `subagents`, `router`, `handlers`),
-`settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (`SubAgentEvent` taxonomy)
+`settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (`AgentEvent` taxonomy)
 Subpackages: `handlers/` (`main_agent.py` — `MainAgent`), `subagents/` (`__init__.py` + one file per subagent + `_coding.py` shared directives),
 `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
 

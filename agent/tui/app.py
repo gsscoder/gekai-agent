@@ -28,7 +28,7 @@ from agent.router import Route, Session
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
 from agent.workspace import list_files
 from agent.ui import random_accent_color, random_farewell, random_operative_verb
-from agent.subagent import SubAgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
+from agent.subagent import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
 
 from .palette import CommandPalette
 from .history import PromptHistory
@@ -939,7 +939,7 @@ class GekaiApp(App[None]):
             ):
                 if isinstance(item, str):
                     answer_chunks.append(item)
-                elif isinstance(item, SubAgentEvent):
+                elif isinstance(item, AgentEvent):
                     if isinstance(item, SubAgentStartEvent):
                         self._set_route_label(item.name, color=item.color)
                         ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)

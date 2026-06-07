@@ -87,7 +87,7 @@ Runs as exclusive Textual worker.
 - if `--debug`: mount `OPERATION` widget with `[classifier: ...]` labels in `#BA55D3`; mount second OPERATION with normalization result
 - language detection: if `src_lang` differs from `_current_lang` → appends `<lang>` system message to session
 - iterates `agent.process_stream`; `str` items → `answer_chunks`
-- `SubAgentEvent` items dispatched to a `SubAgentRenderer` instance:
+- `AgentEvent` items dispatched to a `SubAgentRenderer` instance:
   - `SubAgentStartEvent` → construct renderer, call `renderer.start()`
   - `LogEvent` → `renderer.log(item.message, tool_name=item.tool_name)`; increments `query_tool_count` if renderer name is `"query"`
   - `InferEndEvent` → `renderer.accumulate_tokens(event)`

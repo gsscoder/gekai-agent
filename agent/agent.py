@@ -16,7 +16,7 @@ from .router import Route, Router, Session
 from .settings import Permissions
 from toon import encode as toon_encode
 
-from .subagent import MaxIterationsEvent, SubAgentEvent
+from .subagent import MaxIterationsEvent, AgentEvent
 from .persistence import append_message, append_debug, append_event
 from .blast_radius import BlastRadiusLocator, evaluate_blast_radius_gate
 from .rewriter import PromptRewriter
@@ -141,7 +141,7 @@ class GekaiAgent:
         entries: list[tuple[str, list[str]]] | None = None,
         original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
-    ) -> AsyncIterator[str | SubAgentEvent]:
+    ) -> AsyncIterator[str | AgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1])
 

@@ -1,22 +1,22 @@
 # Subagent System
 Structured async generators that stream typed events to the TUI for live progress rendering
 
-## SubAgentEvent Protocol
-There is no enforced base class — `agent/subagent.py` holds only the `SubAgentEvent` taxonomy
+## AgentEvent Protocol
+There is no enforced base class — `agent/subagent.py` holds only the `AgentEvent` taxonomy
 (plain no-field dataclass + its typed subclasses). The `SubAgent(ABC)` protocol class that used
 to live there was deleted as dead code once its only subclass was removed; nothing inherits from
 it today.
 
 The convention lives on **by usage, not by enforcement**: anything that streams typed progress to
-the TUI is an `AsyncIterator[SubAgentEvent | str]` generator following this shape:
+the TUI is an `AsyncIterator[AgentEvent | str]` generator following this shape:
 - First yield must be `SubAgentStartEvent` — triggers `SubAgentRenderer` construction and header mount
 - Last yield must be `DoneEvent` — triggers progress bar removal and summary line mount
-- Intermediate yields: any `SubAgentEvent` subclass in any order
+- Intermediate yields: any `AgentEvent` subclass in any order
 
 `MainAgent.stream()` is the live example — see [MainAgent](#mainagent) below.
 
 ## Event Catalog
-All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
+All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
 
 | Event | Fields | TUI action |
 |---|---|---|
@@ -29,7 +29,7 @@ All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
 ## Existing Streamers
 
 ### MainAgent — `agent/handlers/main_agent.py`
-- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None)` is an async generator that yields `SubAgentEvent | str`, the live example of the protocol-by-convention above
+- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
 - One method, two modes selected by the `subagent` param:
   - **direct** (`subagent=None`): system = `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input; `SubAgentStartEvent(name="Gekai", description="thinking", color="#4169E1")`
   - **spawn** (`subagent=<Subagent>`): system = `subagent.build_system()`; prior context = `[]` (cold — no recency, no inheritance, no async/resume); `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
@@ -45,12 +45,12 @@ All dataclasses inherit from `SubAgentEvent` (itself a no-field dataclass)
 > name marks the conceptual slot for a future evolution.
 
 ## Adding a New Subagent-Style Streamer
-There is no base class to inherit — any async generator yielding `SubAgentEvent`s following the
+There is no base class to inherit — any async generator yielding `AgentEvent`s following the
 start/done convention qualifies. To add one:
-1. Implement an `async def stream(...) -> AsyncIterator[SubAgentEvent | str]:` (or similarly named) generator
+1. Implement an `async def stream(...) -> AsyncIterator[AgentEvent | str]:` (or similarly named) generator
    - First yield: `SubAgentStartEvent(name=..., description=..., color=...)`
    - Last yield: `DoneEvent(...)`
-   - Intermediate yields: any `SubAgentEvent` subclass, in any order
+   - Intermediate yields: any `AgentEvent` subclass, in any order
 2. Bridge tool/inference events into the typed stream via `EventBus` if the streamer runs an `Agent` tool loop — follow `MainAgent.stream()`'s `_consume_bus()` pattern
 3. Wire into `app.py`: iterate the generator in a worker, dispatch events to a `SubAgentRenderer` instance — follow the pattern in `_stream()`
 

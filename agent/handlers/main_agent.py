@@ -17,7 +17,7 @@ from ..persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
 from ..router import Session
 from ..settings import Permissions
 from ..diff import build_diff
-from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, SubAgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..subagents import Subagent
 from ..tools import make_tools
 
@@ -120,7 +120,7 @@ class MainAgent:
         user_input: str,
         permission_callback: PermissionCallback | None = None,
         subagent: Subagent | None = None,
-    ) -> AsyncIterator[SubAgentEvent | str]:
+    ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
         system = subagent.build_system() if subagent else f"{SYSTEM_PROMPT}\n<tools>\n{TOOL_INSTRUCTION}"
         if self._debug:
