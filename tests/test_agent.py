@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.agent import GekaiAgent
-from agent.handlers.main_agent import MainAgent
+from agent.harness import Harness
 from agent.persistence import session_file
 from agent.router import Route, Session
 
@@ -33,7 +33,7 @@ def _make_session(tmp_path: Path) -> Session:
 
 def _stub_agent(chunks: list[str]) -> GekaiAgent:
     stub = object.__new__(GekaiAgent)
-    stub._main = cast(MainAgent, _FakeMain(chunks))
+    stub._main = cast(Harness, _FakeMain(chunks))
     return stub
 
 

@@ -11,15 +11,15 @@ from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
 from pathlib import Path
 
-from ..permissions import PermissionCallback, PermissionGate
-from ..persistence import append_debug
-from ..persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
-from ..router import Session
-from ..settings import Permissions
-from ..diff import build_diff
-from ..subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
-from ..subagents import Subagent
-from ..tools import make_tools
+from .permissions import PermissionCallback, PermissionGate
+from .persistence import append_debug
+from .persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
+from .router import Session
+from .settings import Permissions
+from .diff import build_diff
+from .subagent import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from .subagents import Subagent
+from .tools import make_tools
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
@@ -99,7 +99,7 @@ def _build_agent(
     return agent
 
 
-class MainAgent:
+class Harness:
     def __init__(
         self,
         model: str,

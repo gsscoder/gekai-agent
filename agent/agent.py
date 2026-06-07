@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from .llm.model_caps import resolve_thinking_params
-from .handlers.main_agent import MainAgent
+from .harness import Harness
 from .permissions import PermissionCallback
 from .subagents import Subagent
 from .router import Route, Router, Session
@@ -86,7 +86,7 @@ class GekaiAgent:
             api_key=self._api_key,
             api_base=self._api_base,
         )
-        self._main = MainAgent(
+        self._main = Harness(
             model=self.model,
             api_key=self._api_key,
             api_base=self._api_base,

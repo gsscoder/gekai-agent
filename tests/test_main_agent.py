@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.handlers.main_agent import _recency_turns, _build_agent, _RECENCY_N
+from agent.harness import _recency_turns, _build_agent, _RECENCY_N
 from agent.llm.types import Message
 
 
@@ -68,7 +68,7 @@ def test_recency_n_constant():
 # ---------------------------------------------------------------------------
 # direct vs spawn mode: recency selection
 # ---------------------------------------------------------------------------
-# `MainAgent.stream` picks `prior = [] if subagent else _recency_turns(...)`.
+# `Harness.stream` picks `prior = [] if subagent else _recency_turns(...)`.
 # Direct mode (no subagent) carries recency context; spawn mode (a subagent
 # is given) starts cold. This mirrors that selection without exercising the
 # full Agent/EventBus loop.
