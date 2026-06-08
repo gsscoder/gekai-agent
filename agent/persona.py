@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from .tools.catalog import READ_TOOLS, SHELL_TOOLS
+
 SYSTEM_PROMPT = (
     "you are Gekai, a coding agent operating on a local repository\n"
     "you can read, search, and modify files in the repository through tool calls\n"
@@ -22,11 +26,28 @@ SYSTEM_PROMPT = (
     "never output horizontal separators of any kind: not ---, not ───, not ===, not ***, not any sequence of repeated characters forming a line"
 )
 
-TOOL_INSTRUCTION = (
-    "if the question requires file contents, implementation details, logic, or architecture depth, "
-    "you MUST use tools to read actual files — do not guess or rely on training knowledge; "
-    "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; "
-    "use run_command for build, test, and git operations; "
-    "run_command is stateless — cd does not persist across calls, each call starts in repo root; "
-    "prefer read_file/grep/list_files over shell equivalents for reading files"
+# Each fragment fires when the assigned tool set intersects ("any") or
+# fully contains ("all") its trigger group — keeps the activation prompt
+# from referencing tools the agent doesn't actually have.
+_TOOL_GUIDANCE: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (READ_TOOLS, "any",
+     "if the question requires file contents, implementation details, logic, or architecture depth, "
+     "you MUST use tools to read actual files — do not guess or rely on training knowledge"),
+    (("read_file",), "any",
+     "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"),
+    (SHELL_TOOLS, "any",
+     "use run_command for build, test, and git operations; "
+     "run_command is stateless — cd does not persist across calls, each call starts in repo root"),
+    (("read_file",) + SHELL_TOOLS, "all",
+     "prefer read_file/grep/list_files over shell equivalents for reading files"),
 )
+
+
+def render_tool_instruction(assigned: Sequence[str]) -> str:
+    have = set(assigned)
+    fragments = []
+    for trigger, mode, text in _TOOL_GUIDANCE:
+        hit = have.issuperset(trigger) if mode == "all" else bool(have & set(trigger))
+        if hit:
+            fragments.append(text)
+    return "; ".join(fragments)

@@ -4,7 +4,7 @@ import importlib
 import pkgutil
 from dataclasses import dataclass
 
-from ..persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
+from ..persona import SYSTEM_PROMPT
 from ..settings import Permissions
 
 # action namespaces; "generic" is innate — no subagents, selector skipped
@@ -22,13 +22,14 @@ class Subagent:
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     is_fallback: bool = False  # marks the per-namespace residual fallback
 
-    def build_system(self) -> str:
+    def build_system_base(self) -> str:
+        """SYSTEM_PROMPT + mandate + directives — the <tools> block is appended by the
+        harness once the effective (allowlist + permission filtered) tool set is known."""
         system = SYSTEM_PROMPT
         if self.mandate:
             system += f"\n<core_mandate>\n{self.mandate}"
         if self.directives:
             system += f"\n<directives>\n{self.directives}"
-        system += f"\n<tools>\n{TOOL_INSTRUCTION}"
         return system
 
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent.harness.core import _recency_turns, _build_agent, _RECENCY_N
 from agent.llm.types import Message
+from agent.settings import Permissions
+from agent.subagents import Subagent
+from agent.tools.catalog import ALL_TOOLS, READ_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -86,3 +91,57 @@ def test_spawn_mode_is_cold():
     subagent = object()  # stand-in: any truthy subagent value
     prior = [] if subagent else _recency_turns(messages, _RECENCY_N)
     assert prior == []
+
+
+# ---------------------------------------------------------------------------
+# _build_agent: <tools> block reflects the effective (allowlist + permission
+# filtered) registered tool set, not the subagent's declared allowlist
+# ---------------------------------------------------------------------------
+
+_FULL_PERMS = Permissions(read=True, write=True, exec=True)
+
+
+def _build(tmp_path: Path, subagent: Subagent | None, permissions: Permissions = _FULL_PERMS) -> tuple:
+    base = subagent.build_system_base() if subagent else "base prompt"
+    agent = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, permissions, None, base, None,
+        subagent=subagent,
+    )
+    assert agent.system is not None
+    registered = {t.name for t in agent.tools._tools.values()}
+    return agent.system, registered
+
+
+def test_tools_block_matches_subagent_allowlist(tmp_path: Path):
+    sub = Subagent(name="t", namespace="coding", description="d", tools=list(READ_TOOLS))
+    system, registered = _build(tmp_path, sub)
+    assert registered == set(READ_TOOLS)
+    assert "run_command" not in system
+    assert "edit_file" not in system
+    assert "you MUST use tools to read actual files" in system
+
+
+def test_tools_block_narrows_with_permissions(tmp_path: Path):
+    # full allowlist but read-only session permissions and no permission_callback
+    # -> write/exec tools are filtered out, and the prompt must not reference them
+    sub = Subagent(name="t", namespace="coding", description="d", tools=list(ALL_TOOLS))
+    system, registered = _build(tmp_path, sub, permissions=Permissions(read=True, write=False, exec=False))
+    assert "run_command" not in registered
+    assert "edit_file" not in registered
+    assert "use run_command for build, test, and git operations" not in system
+
+
+def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
+    sub = Subagent(name="t", namespace="coding", description="d")  # tools=None -> all
+    system, registered = _build(tmp_path, sub)
+    assert registered == set(ALL_TOOLS)
+    assert "use run_command for build, test, and git operations" in system
+    assert "prefer read_file/grep/list_files over shell equivalents" in system
+
+
+def test_direct_mode_tools_block_uses_full_set(tmp_path: Path):
+    system, registered = _build(tmp_path, subagent=None)
+    assert registered == set(ALL_TOOLS)
+    assert system.startswith("base prompt")
+    assert "<tools>" in system

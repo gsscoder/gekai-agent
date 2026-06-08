@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
-from ..persona import SYSTEM_PROMPT, TOOL_INSTRUCTION
+from ..persona import SYSTEM_PROMPT, render_tool_instruction
 from ..session import Session
 from ..settings import Permissions
 from ..diff import build_diff
@@ -65,18 +65,10 @@ def _build_agent(
     working_dir: Path,
     permissions: Permissions,
     permission_callback: PermissionCallback | None,
-    system: str,
+    system_base: str,
     bus: EventBus | None = None,
     subagent: Subagent | None = None,
 ) -> Agent:
-    adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
-    agent = Agent(
-        provider=adapter,
-        model=model,
-        system=system,
-        event_bus=bus,
-        extra_params=extra_params,
-    )
     if subagent and subagent.permissions is not None:
         effective = Permissions(
             read=permissions.read and subagent.permissions.read,
@@ -85,12 +77,27 @@ def _build_agent(
         )
     else:
         effective = permissions
+
+    selected = []
     for t in make_tools(working_dir):
         if subagent and subagent.tools is not None and t.name not in subagent.tools:
             continue
         perm = t.required_permission
         if perm != "none" and not getattr(effective, perm, False) and permission_callback is None:
             continue
+        selected.append(t)
+
+    system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected])}"
+
+    adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
+    agent = Agent(
+        provider=adapter,
+        model=model,
+        system=system,
+        event_bus=bus,
+        extra_params=extra_params,
+    )
+    for t in selected:
         agent.tools.register(t)
     agent.tools.set_gate(PermissionGate(
         permissions=effective,
@@ -122,14 +129,14 @@ class Harness:
         subagent: Subagent | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
-        system = subagent.build_system() if subagent else f"{SYSTEM_PROMPT}\n<tools>\n{TOOL_INSTRUCTION}"
-        if self._debug:
-            append_debug(session, {"content": system})
+        system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
         agent = _build_agent(
             self._model, self._api_key, self._api_base, self._extra_params,
-            session.working_dir, session.permissions, permission_callback, system, bus,
+            session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
         )
+        if self._debug:
+            append_debug(session, {"content": agent.system})
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
 
