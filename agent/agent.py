@@ -129,7 +129,7 @@ class GekaiAgent:
 
     async def rewrite(
         self, request: str, entries: list[tuple[str, list[str]]],
-    ) -> str:
+    ) -> tuple[str, str]:
         return await self._rewriter.rewrite(request, entries)
 
     async def process_stream(

@@ -7,8 +7,14 @@ from dataclasses import dataclass
 from ..persona import _IDENTITY_SUB, _SHARED_BODY
 from ..settings import Permissions
 
-# action namespaces; "generic" is innate — no subagents, selector skipped
-NAMESPACES = ("coding", "generic")
+# action namespaces and their TUI badge colors — co-located so a namespace
+# cannot be declared without a color (no fallback color at render time);
+# "generic" is innate — no subagents, selector skipped
+NAMESPACE_COLORS: dict[str, str] = {
+    "coding": "#FFD700",
+    "generic": "#7FDBCA",
+}
+NAMESPACES = tuple(NAMESPACE_COLORS)
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,9 @@ for _p in SUBAGENTS:
 
 def validate_registry() -> None:
     """Startup validation; raises ValueError on any violation."""
+    for ns in NAMESPACES:
+        if not NAMESPACE_COLORS.get(ns):
+            raise ValueError(f"namespace {ns!r} has no badge color defined")
     seen: set[str] = set()
     for p in SUBAGENTS:
         if p.namespace not in NAMESPACES:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
+from agent import subagents as subagents_module
 from agent.persona import _SHARED_BODY
-from agent.subagents import Subagent
+from agent.subagents import NAMESPACE_COLORS, NAMESPACES, Subagent, validate_registry
 
 
 def _subagent(mandate: str = "", directives: str = "") -> Subagent:
@@ -68,3 +71,24 @@ def test_build_system_base_order_identity_role_body_directives():
 def test_build_system_base_no_closing_tags():
     system = _subagent(mandate="you act as X", directives="do Y").build_system_base()
     assert "</" not in system
+
+
+# ---------------------------------------------------------------------------
+# Namespace badge colors — co-located with the namespace, no fallback at
+# render time: a namespace cannot exist without a color
+# ---------------------------------------------------------------------------
+
+def test_namespaces_derive_from_namespace_colors():
+    assert NAMESPACES == tuple(NAMESPACE_COLORS)
+
+
+def test_every_declared_namespace_has_a_non_empty_color():
+    for ns in NAMESPACES:
+        assert NAMESPACE_COLORS.get(ns)
+
+
+def test_validate_registry_raises_when_a_namespace_has_no_color(monkeypatch):
+    monkeypatch.setattr(subagents_module, "NAMESPACES", (*NAMESPACES, "ghost"))
+    monkeypatch.setattr(subagents_module, "NAMESPACE_COLORS", {**NAMESPACE_COLORS, "ghost": ""})
+    with pytest.raises(ValueError, match="ghost"):
+        validate_registry()

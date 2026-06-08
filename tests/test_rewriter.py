@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.pipeline.rewriter import PromptRewriter, _format_entries
+from agent.pipeline.rewriter import PromptRewriter, _format_entries, _split_ui_label
 
 
 def run(coro):
@@ -46,13 +46,24 @@ def test_format_entries_multiple_lines() -> None:
 # rewrite
 # ---------------------------------------------------------------------------
 
-def test_rewrite_returns_stripped_text() -> None:
+def test_rewrite_returns_stripped_text_and_empty_label_when_absent() -> None:
     rw = _make_rewriter()
     rw._client.chat.completions.create = AsyncMock(
         return_value=_mock_response("  update 'src/a.py' to do x  ")
     )
-    out = run(rw.rewrite("update the thing to do x", [("src/a.py", ["thing"])]))
-    assert out == "update 'src/a.py' to do x"
+    rewritten, ui_label = run(rw.rewrite("update the thing to do x", [("src/a.py", ["thing"])]))
+    assert rewritten == "update 'src/a.py' to do x"
+    assert ui_label == ""
+
+
+def test_rewrite_splits_off_ui_label() -> None:
+    rw = _make_rewriter()
+    rw._client.chat.completions.create = AsyncMock(
+        return_value=_mock_response("<ui_label>fix login bug</ui_label>\nupdate `src/a.py` to do x")
+    )
+    rewritten, ui_label = run(rw.rewrite("fix the login bug", [("src/a.py", ["login"])]))
+    assert rewritten == "update `src/a.py` to do x"
+    assert ui_label == "fix login bug"
 
 
 def test_rewrite_raises_on_empty_output() -> None:
@@ -102,3 +113,26 @@ def test_rewrite_passes_request_and_files_to_model() -> None:
     assert "update the passcode dialog" in system
     user = messages[1]["content"]
     assert "src/auth/pass.tsx | passcode, dialog" in user
+
+
+# ---------------------------------------------------------------------------
+# _split_ui_label — fail-soft: a missing/malformed label must never propagate
+# an error, only degrade to "" so the caller can fall back
+# ---------------------------------------------------------------------------
+
+def test_split_ui_label_extracts_label_and_strips_it_from_body() -> None:
+    label, rest = _split_ui_label("<ui_label>fix login bug</ui_label>\nupdate `src/a.py`")
+    assert label == "fix login bug"
+    assert rest == "update `src/a.py`"
+
+
+def test_split_ui_label_returns_empty_label_when_tag_absent() -> None:
+    label, rest = _split_ui_label("update `src/a.py` to do x")
+    assert label == ""
+    assert rest == "update `src/a.py` to do x"
+
+
+def test_split_ui_label_falls_back_to_full_text_when_body_would_be_empty() -> None:
+    label, rest = _split_ui_label("<ui_label>only a label</ui_label>")
+    assert label == "only a label"
+    assert rest == "<ui_label>only a label</ui_label>"

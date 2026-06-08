@@ -26,6 +26,7 @@ from agent.commands.registry import CommandRegistry
 from agent.persistence import append_command, append_debug, append_event, _normalize_path
 from agent.pipeline import Route
 from agent.session import Session
+from agent.subagents import NAMESPACE_COLORS
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
 from agent.workspace import list_files
 from agent.tui.styles import random_accent_color, random_farewell, random_operative_verb
@@ -35,11 +36,7 @@ from .palette import CommandPalette
 from .history import PromptHistory
 from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget
 
-_NS_COLORS: dict[str, str] = {
-    "coding": "#FFD700",
-}
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
-_ACTION_COLOR = "#4169E1"
 
 
 class ConversationContainer(ScrollableContainer):
@@ -78,29 +75,40 @@ class SubAgentRenderer:
         self._header_widget: MessageWidget | None = None
         self._spinner_task: asyncio.Task | None = None
         self._thinking_buf: str = ""
+        self._badge_namespace: str | None = None
+        self._tool_calls: int = 0
 
     async def _animate_dot(self) -> None:
         frame = 0
+        dot_color = "white" if self._badge_namespace is not None else "#666666"
         try:
             while True:
                 if self._header_widget is not None:
                     char = _BRAILLE_FRAMES[frame % len(_BRAILLE_FRAMES)]
-                    self._header_widget.query_one(".header-dot", Static).update(f"[#666666]{char}[/#666666]")
+                    self._header_widget.query_one(".header-dot", Static).update(f"[{dot_color}]{char}[/{dot_color}]")
                 frame += 1
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             pass
 
-    async def start(self, name: str, description: str, color: str) -> None:
+    async def start(self, name: str, *, namespace: str | None = None, ui_label: str = "", bg_color: str = "") -> None:
         self.name = name
+        self._badge_namespace = namespace
         await self._conversation.mount(Static("", classes="assistant-spacer"))
-        header_markup = "[bold #666666]Thinking...[/bold #666666]"
+        if namespace is not None:
+            header_markup = f"[black on {bg_color} bold] {name} [/]"
+            if ui_label:
+                header_markup += f" [white]({ui_label})[/white]"
+        else:
+            header_markup = "[bold #666666]Thinking...[/bold #666666]"
         widget = MessageWidget(MessageKind.HEADER, header_markup)
         await self._conversation.mount(widget)
         self._header_widget = widget
         self._spinner_task = asyncio.create_task(self._animate_dot())
 
     async def log(self, message: str, tool_name: str = "") -> None:
+        if tool_name:
+            self._tool_calls += 1
         if message.endswith("..."):
             return
         if not self._debug and tool_name:
@@ -138,6 +146,8 @@ class SubAgentRenderer:
             self._progress_bar.update(total=event.total, progress=event.progress)
 
     def thinking_chunk(self, text: str) -> None:
+        if self._badge_namespace is not None:
+            return  # badge header is persistent — never overwrite it with a thinking preview
         self._thinking_buf += text
         snippet = _last_sentence(self._thinking_buf)
         if snippet and self._header_widget is not None:
@@ -168,19 +178,44 @@ class SubAgentRenderer:
             await self._progress_bar.remove()
             self._progress_bar = None
         elapsed = time.monotonic() - self._start_time
-        parts: list[str] = []
-        if self._total_tokens > 0:
-            parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
-        parts.append(_fmt_duration_verbose(elapsed))
-        if self._infer_count > 0:
-            calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
-            parts.append(calls)
-        summary = " · ".join(parts)
-        if self._header_widget is not None:
-            self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
-            self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought ({summary})[/#666666]")
-            self._header_widget = None
+        if self._badge_namespace is not None:
+            parts: list[str] = []
+            if self._tool_calls > 0:
+                parts.append(f"{self._tool_calls} tool" + ("s" if self._tool_calls != 1 else ""))
+            if self._total_tokens > 0:
+                parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
+            parts.append(_fmt_duration_verbose(elapsed))
+            summary = " · ".join(parts)
+            if self._header_widget is not None:
+                self._header_widget.query_one(".header-dot", Static).update("[white]●[/white]")
+                self._header_widget = None
+            # badge header persists untouched — mount the Done summary as a
+            # permanent connector line beneath it (it is now the sole survivor
+            # under the header, so it always anchors the L-connector)
+            await self._conversation.mount(Static(f"  ⎿ Done ({summary})"))
+        else:
+            parts = []
+            if self._total_tokens > 0:
+                parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
+            parts.append(_fmt_duration_verbose(elapsed))
+            if self._infer_count > 0:
+                calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
+                parts.append(calls)
+            summary = " · ".join(parts)
+            if self._header_widget is not None:
+                self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
+                self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought ({summary})[/#666666]")
+                self._header_widget = None
         self._conversation.scroll_end(animate=False)
+
+
+def _fallback_ui_label(text: str, max_words: int = 6) -> str:
+    """Cheap stand-in for the rewriter's <ui_label> when rewriting is skipped
+    (no located entries) or the label comes back empty — strips backtick-quoted
+    paths so file names don't leak into the badge, then takes the leading words."""
+    stripped = re.sub(r"`[^`]*`", "", text)
+    words = stripped.split()
+    return " ".join(words[:max_words])
 
 
 def _last_sentence(text: str, max_chars: int = 60) -> str:
@@ -898,8 +933,8 @@ class GekaiApp(App[None]):
                 append_event(self._session, msg, source="router")
                 return
             if route.subagent is not None:
-                _label = f"{route.subagent.namespace}/{route.subagent.name}"
-                _color = _NS_COLORS.get(route.subagent.namespace, _ACTION_COLOR)
+                _label = route.subagent.namespace
+                _color = NAMESPACE_COLORS[route.subagent.namespace]
             else:
                 _label = "main"
                 _color = _DEFAULT_ROUTE_COLOR
@@ -908,6 +943,7 @@ class GekaiApp(App[None]):
             entries: list[tuple[str, list[str]]] | None = None
             processed_input = user_input
             original_input: str | None = None
+            ui_label = ""
             if route.subagent is not None:
                 entries = await self._agent.locate(self._session.working_dir, user_input)
                 if self._agent.debug:
@@ -919,10 +955,12 @@ class GekaiApp(App[None]):
                     append_event(self._session, reason_text, source="gate")
                     return
                 if entries:
-                    processed_input = await self._agent.rewrite(user_input, entries)
+                    processed_input, ui_label = await self._agent.rewrite(user_input, entries)
                     original_input = user_input
                     if self._agent.debug:
                         append_debug(self._session, {"content": {"rewritten": processed_input}})
+                if not ui_label:
+                    ui_label = _fallback_ui_label(original_input or user_input)
 
             if self._agent.debug:
                 if route.subagent is not None:
@@ -942,9 +980,19 @@ class GekaiApp(App[None]):
                     answer_chunks.append(item)
                 elif isinstance(item, AgentEvent):
                     if isinstance(item, SubAgentStartEvent):
-                        self._set_route_label(item.name, color=item.color)
                         ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
-                        await ws_renderer.start(item.name, item.description, item.color)
+                        if route.subagent is not None:
+                            # input-box label stays the bare namespace (set above);
+                            # do not override it with item.name/item.color here
+                            await ws_renderer.start(
+                                item.name,
+                                namespace=route.subagent.namespace,
+                                ui_label=ui_label,
+                                bg_color=NAMESPACE_COLORS[route.subagent.namespace],
+                            )
+                        else:
+                            self._set_route_label(item.name, color=item.color)
+                            await ws_renderer.start(item.name)
                     elif ws_renderer:
                         if isinstance(item, LogEvent):
                             await ws_renderer.log(item.message, tool_name=item.tool_name)
