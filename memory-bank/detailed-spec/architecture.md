@@ -2,11 +2,18 @@
 Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed intent routing
 
 ## Package Layout
-`agent/` root: `agent.py` (orchestration), `router.py` (`Route`, `Session`, guard router), `tools.py` (read/search/grep),
-`blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter), `persona.py` (`SYSTEM_PROMPT`, `TOOL_INSTRUCTION` — neutral module shared by `subagents`, `router`, `handlers`),
-`settings.py` (permissions), `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `normalizer.py` + `subagent.py` (`AgentEvent` taxonomy)
-Subpackages: `handlers/` (`main_agent.py` — `MainAgent`), `subagents/` (`__init__.py` + one file per subagent + `_coding.py` shared directives),
-`tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry)
+`agent/` root: `agent.py` (`GekaiAgent` orchestration — owns `Harness` as `self._main`), `session.py` (`Session`),
+`persona.py` (`SYSTEM_PROMPT` + `_IDENTITY_MAIN`/`_IDENTITY_SUB`/`_SHARED_BODY` + `render_tool_instruction` —
+neutral module shared by `subagents`, `pipeline.router`, `harness`), `settings.py` (`Permissions`),
+`permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `events.py` (`AgentEvent` taxonomy),
+`diff.py` (diff rendering), `shell.py` (TUI shell helper)
+Subpackages:
+- `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`)
+- `pipeline/` — `router.py` (`Route`, guard router), `blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter)
+- `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`) + one file per subagent + `_coding.py` shared directives
+- `tools/` — `__init__.py` (`make_tools`), `catalog.py` (tool-name groups: `READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`
+  — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`
+- `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry), `workspace/` (workspace context)
 
 ## Session
 `Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`, `scope_gate: bool = True`, `blast_radius_limit: int = 5`
@@ -22,7 +29,7 @@ Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_language
 
 ## Router
 `Router` is a pure **guard**, not an intent classifier — it makes one decision: does this turn
-stay with `MainAgent` directly, or does it match a specialist subagent (or get rejected)?
+stay with `Harness` directly, or does it match a specialist subagent (or get rejected)?
 
 `Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
@@ -32,7 +39,7 @@ property — callers read `route.subagent.namespace` directly when `route.subage
 History: last 6 user/assistant turns from session messages prepended before user message.
 
 Router prompt offers exactly three kinds of output token:
-- `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `MainAgent` handles directly. Bias: prefer `main` unless a specialist clearly fits
+- `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `Harness` handles directly. Bias: prefer `main` unless a specialist clearly fits
 - `REJECTED` — non-English input
 - `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty
 
@@ -78,11 +85,11 @@ Behavior: weave each located path inline where it maps to a phrase in the reques
 
 Fail-hard: any exception, including empty output (`ValueError`), propagates and blocks the turn — same contract as `BlastRadiusLocator`.
 
-Original vs processed input: rewritten string → `process_stream`'s `user_input` (what `MainAgent` sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
+Original vs processed input: rewritten string → `process_stream`'s `user_input` (what `Harness` sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
 
 ## LLM Integration
-`openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `MainAgent`
-Env vars (CORE — used by `MainAgent`, `PromptRewriter`):
+`openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `Harness`
+Env vars (CORE — used by `Harness`, `PromptRewriter`):
 - `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
@@ -92,10 +99,42 @@ Env vars (SUPP — used by `Router`, `BlastRadiusLocator`; `GEKAI_SUPPORT_MODEL_
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
 
-`Subagent.build_system()` assembles the spawn-mode system prompt: `SYSTEM_PROMPT` + optional `<core_mandate>` block (`subagent.mandate` when non-empty) + optional `<directives>` block (`subagent.directives` when non-empty) + `<tools>` block (`TOOL_INSTRUCTION`); tags are non-closing. In direct mode `MainAgent` composes `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION` itself — no mandate/directives. `SYSTEM_PROMPT` and `TOOL_INSTRUCTION` live in `agent/persona.py`.
-`TOOL_INSTRUCTION` — if the question requires file contents, implementation details, logic, or architecture depth, use tools to read actual files; do not guess or rely on training knowledge; when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; no `<workspace>` reference
-`MainAgent.stream(session, user_input, permission_callback=None, subagent=None)` selects mode by the `subagent` param: direct mode (`subagent=None`) passes `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages skipped, trailing user input excluded) + current input; spawn mode (`subagent=<Subagent>`) runs cold — `prior = []` + current input only, no recency context, no async/resume
-`--debug` active: `stream()` calls `append_debug(session, {"content": system})` before dispatch — the system string written to `.debug.jsonl`
+`agent/persona.py` splits identity from body so a subagent never stacks two "you are" claims:
+`_IDENTITY_MAIN` ("you are Gekai…") vs `_IDENTITY_SUB` ("you are part of Gekai… tool-neutral capability")
+vs `_SHARED_BODY` (meta-rule + behavior/file_handling/response_style/output_format, reused verbatim).
+`SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY` (byte-identical to the pre-split constant).
+The `<tools>` block is generated — never static — by `render_tool_instruction(assigned)`: a
+deterministic, non-LLM fragment table (`_TOOL_GUIDANCE`) keyed on tool-name groups from
+`agent/tools/catalog.py` (`READ_TOOLS`/`SHELL_TOOLS`/etc — `ALL_TOOLS` mirrors `make_tools()` output,
+guarded by a drift test). `render_tool_instruction(ALL_TOOLS)` reproduces the legacy static
+`TOOL_INSTRUCTION` string verbatim. Each fragment fires on "any" (intersection) or "all" (superset)
+of its trigger group, so the prompt only ever names tools the agent actually has.
+
+`Subagent.build_system_base()` assembles the spawn-mode prompt *base*: `_IDENTITY_SUB` + optional
+plain-prose role line (`subagent.mandate`, e.g. "you act as a code-change specialist…" — no
+`<core_mandate>` wrapper) + `_SHARED_BODY` + optional `<directives>` block (`subagent.directives`);
+tags are non-closing. The `<tools>` block is appended afterward by `Harness._build_agent`, not by
+the subagent — see below.
+
+`Harness._build_agent(model, …, system_base, subagent=None)` is the **single point** that computes
+the effective tool set and assembles the final system string, for both modes:
+1. `effective` permissions = `session.permissions` ANDed field-wise with `subagent.permissions` (spawn mode, when set)
+2. `selected` = `make_tools(working_dir)` filtered by `subagent.tools` allowlist (when set), then by whether
+   `effective` grants each tool's `required_permission` (when there's no `permission_callback` to escalate)
+3. `system = system_base + "\n<tools>\n" + render_tool_instruction([t.name for t in selected])`
+4. construct `Agent(system=system, …)`, register exactly `selected`, attach `PermissionGate(effective, …)`
+
+This guarantees the `<tools>` prompt always reflects the *effective, post-filter* set — not the
+subagent's bare declared allowlist — e.g. a read-only subagent's prompt omits all shell/edit guidance.
+
+`Harness.stream(session, user_input, permission_callback=None, subagent=None)` selects `system_base`
+by the `subagent` param — `SYSTEM_PROMPT` (direct) vs `subagent.build_system_base()` (spawn) — then
+calls `_build_agent`. Direct mode passes `_recency_turns(session.messages, _RECENCY_N=2)` (last 2
+user/assistant pairs, system messages skipped, trailing user input excluded) + current input; spawn
+mode runs cold — `prior = []` + current input only, no recency context, no async/resume.
+`--debug` active: `stream()` calls `append_debug(session, {"content": agent.system})` **after**
+`_build_agent` returns (`agent.system` is the true assembled prompt, a mutable field on
+`llmstitch.Agent`) — written to `.debug.jsonl`.
 
 ## Session Persistence
 Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped entry with a `kind` field:

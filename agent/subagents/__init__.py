@@ -4,7 +4,7 @@ import importlib
 import pkgutil
 from dataclasses import dataclass
 
-from ..persona import SYSTEM_PROMPT
+from ..persona import _IDENTITY_SUB, _SHARED_BODY
 from ..settings import Permissions
 
 # action namespaces; "generic" is innate — no subagents, selector skipped
@@ -23,11 +23,13 @@ class Subagent:
     is_fallback: bool = False  # marks the per-namespace residual fallback
 
     def build_system_base(self) -> str:
-        """SYSTEM_PROMPT + mandate + directives — the <tools> block is appended by the
-        harness once the effective (allowlist + permission filtered) tool set is known."""
-        system = SYSTEM_PROMPT
+        """Subagent identity (member, not the whole) + assigned role + the body
+        shared verbatim with the main agent + directives — the <tools> block is
+        appended by the harness once the effective tool set is known."""
+        system = _IDENTITY_SUB
         if self.mandate:
-            system += f"\n<core_mandate>\n{self.mandate}"
+            system += f"\n{self.mandate}"
+        system += f"\n{_SHARED_BODY}"
         if self.directives:
             system += f"\n<directives>\n{self.directives}"
         return system

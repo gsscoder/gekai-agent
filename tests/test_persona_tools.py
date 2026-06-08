@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from agent.persona import render_tool_instruction
+from agent.persona import SYSTEM_PROMPT, _IDENTITY_MAIN, _SHARED_BODY, render_tool_instruction
 from agent.tools.catalog import ALL_TOOLS, EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
+
+
+def test_system_prompt_is_identity_plus_shared_body():
+    # locks the main-agent prompt unchanged across the identity/body split —
+    # subagents reuse _SHARED_BODY but get _IDENTITY_SUB instead of _IDENTITY_MAIN
+    assert SYSTEM_PROMPT == _IDENTITY_MAIN + _SHARED_BODY
 
 # The pre-refactor TOOL_INSTRUCTION constant, kept here only as a behavior
 # baseline — render_tool_instruction(ALL_TOOLS) must reproduce it verbatim.

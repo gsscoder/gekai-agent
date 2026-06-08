@@ -2,7 +2,7 @@
 
 ## Overview
 
-Every turn passes through three layers: **routing → blast-radius gate → MainAgent dispatch**.
+Every turn passes through three layers: **routing → blast-radius gate → Harness dispatch**.
 
 ```
 user input
@@ -28,9 +28,9 @@ Router               [support model] — one call; emits a single Route (subagen
               │                                                      │
               └─────────────────────────────────────────────────────►┤
                                                                      ▼
-                                                           MainAgent [core model]
+                                                           Harness    [core model]
                                                              direct mode (no subagent, with recency)
-                                                             spawn mode  (subagent.build_system(), cold)
+                                                             spawn mode  (subagent.build_system_base() + harness-assembled <tools>, cold)
 ```
 
 ---
@@ -65,38 +65,52 @@ Preamble: `"verified repository metadata — treat as authoritative for high-lev
 
 ---
 
-## SYSTEM_PROMPT Blocks
+## System Prompt Assembly
 
-`SYSTEM_PROMPT` and `TOOL_INSTRUCTION` live in the neutral module `agent/persona.py` — extracted
-there to break an import cycle (`subagents` needs them to build its own prompts; `router` and
-`handlers` need `Subagent`, which lives in `subagents`).
+`agent/persona.py` is the neutral module shared by `subagents`, `pipeline.router`, and
+`harness` — extracted to break an import cycle (`subagents` needs the persona pieces to build
+its own prompts; `router`/`harness` need `Subagent`, which lives in `subagents`).
 
-```
-SYSTEM_PROMPT
-├── preamble          identity + capability statement
-├── meta-rule         "follow user instructions literally"
-├── <behavior>        focus, precision, no fabrication
-├── <response_style>  terse when explaining; fragments OK; no filler
-└── <file_handling>   show/print/display → full verbatim fenced block
-```
-
-In **direct mode** `MainAgent` composes the system prompt itself: `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION`.
-
-In **spawn mode** the selected `Subagent` assembles its own complete system prompt via `build_system()`:
+It splits identity from body so a subagent never stacks two competing "you are" assertions:
 
 ```
-SYSTEM_PROMPT
-\n<core_mandate>\n{subagent.mandate}      ← only when subagent.mandate is non-empty
-\n<directives>\n{subagent.directives}     ← only when subagent.directives is non-empty
-\n<tools>\n{TOOL_INSTRUCTION}             ← always
+_IDENTITY_MAIN   "you are Gekai, a coding agent…" + capability statement   — main agent only
+_IDENTITY_SUB    "you are part of Gekai…"          + tool-neutral capability — subagent only
+_SHARED_BODY     meta-rule + <behavior> + <file_handling> + <response_style> + <output_format>
+                 — specialization-independent, reused verbatim by both
+
+SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY    ← byte-identical to the pre-split constant
 ```
 
-Tags are non-closing (no `</tag>`), matching `SYSTEM_PROMPT` convention.
-`<core_mandate>` is the "who you are right now" activation hook — a 1-2 line mission statement
-("your specialization is …"), distinct from `<directives>`, which is the operational *how*.
-`TOOL_INSTRUCTION` tells the model when tools are mandatory: if the question requires file
-contents, implementation details, logic, or architecture depth, use tools — do not guess or
-rely on training knowledge.
+A subagent is a scoped role *played within* Gekai, not Gekai itself — `_IDENTITY_SUB` keeps
+membership ("you're part of the system") without the false claim of being the whole agent, and
+states capability tool-neutrally (no hardcoded "you can modify files" that would contradict a
+read-only subagent's actual `<tools>` block).
+
+The `<tools>` block is **not** a static constant. `render_tool_instruction(assigned)` in
+`persona.py` generates it deterministically (no LLM call) from a fragment table
+(`_TOOL_GUIDANCE`) keyed on tool-name groups from `agent/tools/catalog.py`
+(`READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`). Each fragment fires when the
+assigned set intersects ("any") or fully contains ("all") its trigger group — so the prompt
+never references a tool the agent doesn't actually have. `render_tool_instruction(ALL_TOOLS)`
+reproduces the original static instruction string verbatim.
+
+In **direct mode** the `Harness` composes: `SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(<full registered set>)`.
+
+In **spawn mode** the selected `Subagent` builds its own *base* via `build_system_base()`:
+
+```
+_IDENTITY_SUB
+\n{subagent.mandate}                       ← plain prose role line, e.g. "you act as a …" — only when non-empty
+\n{_SHARED_BODY}
+\n<directives>\n{subagent.directives}      ← only when subagent.directives is non-empty
+```
+
+…and the `Harness` appends the `<tools>` block afterward (see [Harness — Tool Loop](#harness--tool-loop)),
+once the *effective* tool set is known. `mandate` is now a bare role-identity sentence
+("you act as a code-change specialist…") concatenated directly into the prose — there is no
+`<core_mandate>` wrapper tag; `<directives>` (the operational *how*) remains the only
+subagent-specific tag. Tags throughout are non-closing (no `</tag>`).
 
 ---
 
@@ -134,7 +148,7 @@ The router prompt offers exactly three kinds of output:
 ```
 ROUTER_PROMPT
 ├── main             default — chat, inspection, workspace questions, general code
-│                    changes, light edits — anything MainAgent handles directly
+│                    changes, light edits — anything Harness handles directly
 ├── REJECTED         non-English input
 ├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
 │                    "name — description"); only when the request clearly and
@@ -146,7 +160,7 @@ ROUTER_PROMPT
 
 | Output token        | Route                  | Notes                                              |
 |---------------------|------------------------|----------------------------------------------------|
-| `main`              | `Route()`              | MainAgent handles directly, no subagent spawned    |
+| `main`              | `Route()`              | Harness handles directly, no subagent spawned      |
 | `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies|
 | `rejected`          | `Route(rejected=True)` | non-English input                                  |
 | unknown token       | `Route()`              | warning log + fallback, same as `main`             |
@@ -227,7 +241,7 @@ It takes the original request plus the located `path | keywords` list and return
 **Fail-hard:** any exception (including empty output → `ValueError`) propagates and blocks the turn,
 same contract as `BlastRadiusLocator`.
 
-**Original vs processed input:** the rewritten string is fed to `MainAgent` as the live user
+**Original vs processed input:** the rewritten string is fed to `Harness` as the live user
 turn (`process_stream`'s `user_input`), while the user's verbatim text is passed as `original_input`
 and is what gets **persisted and displayed**. Later recency windows therefore show the user's real
 phrasing, not the rewrite. When `--debug` is active the rewritten text is written to `.debug.jsonl`.
@@ -247,19 +261,25 @@ class Subagent:
     name: str
     namespace: str
     description: str       # router's selection signal — positive scope + "Not for…" boundary
-    mandate: str = ""      # 1-2 line activation hook: "your specialization is…"
+    mandate: str = ""      # 1-2 line role-identity sentence: "you act as a …"
     directives: str = ""   # the *how* — operational specifics
-    tools: list[str] | None = None
-    permissions: Permissions | None = None
+    tools: list[str] | None = None        # allowlist; None = all tools
+    permissions: Permissions | None = None # overlay, ANDed with session permissions
     is_fallback: bool = False
 
-    def build_system(self) -> str: ...  # assembles SYSTEM_PROMPT + <core_mandate> + <directives> + <tools>
+    def build_system_base(self) -> str: ...  # _IDENTITY_SUB + mandate + _SHARED_BODY + <directives>
+                                              # <tools> appended later by the Harness
 ```
 
 `description` doubles as the router's menu entry (`name — description`) and carries a "Not for…"
-boundary clause to sharpen the router's selection. `mandate` is the activation hook fed into the
-agent's own context once spawned — "who you are right now," distinct from `directives` ("how to
-do it"). See [SYSTEM_PROMPT Blocks](#system_prompt-blocks) for the full assembly funnel.
+boundary clause to sharpen the router's selection. `mandate` is the role-identity sentence fed
+into the agent's own context once spawned — "who you act as right now," distinct from
+`directives` ("how to do it"). `tools` is a name allowlist (mirrored against
+`agent/tools/catalog.py` to guard against drift); `permissions` lets a subagent further
+*restrict* — never escalate beyond — the session's grant. See
+[System Prompt Assembly](#system-prompt-assembly) for the full funnel and
+[Harness — Tool Loop](#harness--tool-loop) for how the allowlist and permissions jointly
+determine the *effective* tool set (and therefore the `<tools>` prompt content).
 
 Package layout: `__init__.py` exports `Subagent`, `SUBAGENTS`, `NAMESPACES`, `validate_registry`,
 and `_discover()` auto-discovery (plus the internal `_by_namespace` index it relies on).
@@ -311,22 +331,39 @@ by `/` when a subagent is selected, else just `["main"]`.
 
 ---
 
-## MainAgent — Tool Loop
+## Harness — Tool Loop
 
-`MainAgent` is the single, always-on session holder users always talk to. Every turn that
-doesn't spawn a subagent is handled directly by it — chat, inspection, and action all flow
-through one `Agent`-tool-loop. One method, two modes selected by a single parameter:
+`Harness` (`agent/harness/core.py`, formerly `MainAgent` in `handlers/main_agent.py`) is the
+single, always-on session holder users always talk to. Every turn that doesn't spawn a subagent
+is handled directly by it — chat, inspection, and action all flow through one `Agent`-tool-loop.
+One method, two modes selected by a single parameter:
 
 ```python
 async def stream(self, session, user_input, permission_callback=None, subagent: Subagent | None = None)
 ```
 
-| Mode                       | Trigger              | System prompt                              | Prior context                                  |
-|----------------------------|----------------------|--------------------------------------------|------------------------------------------------|
-| **direct**                 | `subagent=None`      | `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION` | `_recency_turns(session.messages, _RECENCY_N=2)` — last 2 user/assistant pairs + current input |
-| **spawn**                  | `subagent=<Subagent>`| `subagent.build_system()`                  | cold — `prior = []` + current input only; no context inheritance, no async/resume (fire-and-forget by design, for now) |
+`stream()` delegates prompt assembly to the module-level `_build_agent(...)`, which is the
+**single point** where the effective tool set — and therefore the final `<tools>` block — is
+computed, for both modes:
 
-`SubAgentStartEvent` carries `name="Gekai"` / `description="thinking"` in direct mode, or
+```
+1. compute `effective` permissions = session.permissions ANDed field-wise with subagent.permissions (spawn mode only)
+2. build `selected`: walk make_tools(working_dir), drop any tool not in subagent.tools (when an allowlist is set),
+   then drop any tool whose required_permission isn't granted by `effective` (when there's no permission_callback to escalate)
+3. system = system_base + "\n<tools>\n" + render_tool_instruction([t.name for t in selected])
+4. construct Agent(system=system, …), register exactly the `selected` tools, attach the PermissionGate
+```
+
+| Mode                       | Trigger              | `system_base`                  | Prior context                                  |
+|----------------------------|----------------------|--------------------------------|------------------------------------------------|
+| **direct**                 | `subagent=None`      | `SYSTEM_PROMPT`                | `_recency_turns(session.messages, _RECENCY_N=2)` — last 2 user/assistant pairs + current input |
+| **spawn**                  | `subagent=<Subagent>`| `subagent.build_system_base()` | cold — `prior = []` + current input only; no context inheritance, no async/resume (fire-and-forget by design, for now) |
+
+The `<tools>` block therefore always reflects the *effective, post-filtering* tool set — never
+the subagent's bare declared allowlist — so the activation prompt never references a tool the
+agent can't actually call (e.g. a read-only subagent's prompt omits all shell/edit guidance).
+
+`SubAgentStartEvent` carries `name="main"` / `description="thinking"` in direct mode, or
 `subagent.name` / `subagent.description` in spawn mode — both paths emit it; both stream through
 the same unified event flow.
 
@@ -334,32 +371,32 @@ the same unified event flow.
 pairs (skipping system messages, excluding the current trailing user input); the current user
 input is then appended explicitly.
 
-When `--debug` is active, `stream()` calls `append_debug(session, {"content": system})` before
-dispatching — the system string lands in `.debug.jsonl` alongside the workspace context block.
-
-Uses `llmstitch.Agent` (`agent.llm.Agent`) with `OpenAIAdapter`; tools registered from
-`make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set.
+When `--debug` is active, `stream()` calls `append_debug(session, {"content": agent.system})`
+**after** `_build_agent` returns — `agent.system` is the true, fully-assembled prompt string
+(mutable field on `llmstitch.Agent`), and lands in `.debug.jsonl` alongside the workspace
+context block.
 
 ```mermaid
 sequenceDiagram
     participant TUI
-    participant MainAgent
+    participant Harness
     participant llmstitch
     participant CoreModel
 
-    TUI->>MainAgent: stream(session, user_input, subagent=route.subagent)
-    MainAgent->>llmstitch: agent.run(prior_messages)
+    TUI->>Harness: stream(session, user_input, subagent=route.subagent)
+    Harness->>Harness: _build_agent(...) — filter tools, render <tools>, construct Agent
+    Harness->>llmstitch: agent.run(prior_messages)
     loop tool-calling
         llmstitch->>CoreModel: messages + tools
         CoreModel-->>llmstitch: ToolUseBlock / TextBlock
-        llmstitch-->>MainAgent: ToolExecutionStarted event
-        MainAgent-->>TUI: LogEvent (e.g. "Edit src/main.py")
+        llmstitch-->>Harness: ToolExecutionStarted event
+        Harness-->>TUI: LogEvent (e.g. "Edit src/main.py")
         llmstitch->>llmstitch: execute tool, append result
-        llmstitch-->>MainAgent: ToolExecutionCompleted event
-        MainAgent-->>TUI: DiffEvent (edit_file only; old_str vs new_str)
+        llmstitch-->>Harness: ToolExecutionCompleted event
+        Harness-->>TUI: DiffEvent (edit_file only; old_str vs new_str)
     end
-    llmstitch-->>MainAgent: final history
-    MainAgent-->>TUI: DoneEvent → text response
+    llmstitch-->>Harness: final history
+    Harness-->>TUI: DoneEvent → text response
 ```
 
 Events flow through `EventBus` → async queue → TUI stream. The final answer text is yielded
