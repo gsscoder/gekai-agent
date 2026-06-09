@@ -34,7 +34,7 @@ from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, In
 
 from .palette import CommandPalette
 from .history import PromptHistory
-from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget
+from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, WelcomeOverlay
 
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
 
@@ -366,6 +366,8 @@ class GekaiApp(App[None]):
     }
 
     Screen {
+        layers: base overlay;
+        align: center middle;
         background: ansi_default;
         color: ansi_default;
     }
@@ -375,6 +377,7 @@ class GekaiApp(App[None]):
         padding: 0 0 1 0;
         background: ansi_default;
         scrollbar-size: 0 0;
+        layer: base;
     }
 
     #footer {
@@ -382,6 +385,7 @@ class GekaiApp(App[None]):
         height: auto;
         padding-bottom: 1;
         background: ansi_default;
+        layer: base;
     }
 
     #status-line {
@@ -530,7 +534,7 @@ class GekaiApp(App[None]):
         ("escape", "cancel_stream", "Cancel"),
         ("ctrl+c", "quit", "Quit"),
         Binding("ctrl+up", "scroll_to_top", "Scroll to top", priority=True),
-        Binding("ctrl+down", "scroll_to_end", "Scroll to bottom", priority=True),
+        Binding("ctrl+b", "scroll_to_end", "Scroll to bottom", priority=True),
         Binding("pageup", "scroll_page_up", "Scroll page up", priority=True),
         Binding("pagedown", "scroll_page_down", "Scroll page down", priority=True),
         Binding("up", "navigate_up", show=False, priority=True),
@@ -586,6 +590,7 @@ class GekaiApp(App[None]):
         self._worker_cancelled: bool = False
         self._permission_denied_msg: str | None = None
         self._status_paused: bool = False
+        self._welcome_dismissed: bool = False
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -598,7 +603,7 @@ class GekaiApp(App[None]):
             yield CommandPalette(self._command_registry, id="command-palette")
             yield Static("", id="hint-area")
             with Container(id="scroll-hint-wrap"):
-                yield Static("Scroll to bottom  ctrl+↓", id="scroll-hint")
+                yield Static("Scroll to bottom (ctrl+B) ↓", id="scroll-hint")
             yield FilePanel(id="file-panel")
             yield HistoryPanel(id="history-panel")
             yield Static("", id="copy-notice")
@@ -712,6 +717,9 @@ class GekaiApp(App[None]):
             self._agent.permissions = perms
             self._session.permissions = perms
 
+        if self._restored_id is None:
+            await self.mount(WelcomeOverlay(id="welcome-overlay"))
+
     async def _clear_session(self, command_text: str | None = None) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
@@ -749,6 +757,10 @@ class GekaiApp(App[None]):
         prompt.move_cursor(prompt.document.end)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if not self._welcome_dismissed and event.text_area.text:
+            self._welcome_dismissed = True
+            self.query("#welcome-overlay").remove()
+
         history_panel = self.query_one("#history-panel", HistoryPanel)
         if history_panel.display:
             return
