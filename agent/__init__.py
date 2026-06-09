@@ -1,3 +1,3 @@
-__version__ = "0.2.5a1"
-__version_core__ = "0.2.5"
+__version__ = "0.3.0a1"
+__version_core__ = "0.3.0"
 __version_label__ = "alpha"
