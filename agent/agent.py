@@ -154,20 +154,26 @@ class GekaiAgent:
 
         all_chunks: list[str] = []
         max_iter_hit = False
+        completed = False
         stream_iter = self._main.stream(
             session, user_input,
             permission_callback=permission_callback,
             subagent=route.subagent,
         )
-        async for item in stream_iter:
-            if isinstance(item, str):
-                all_chunks.append(item)
-            elif isinstance(item, MaxIterationsEvent):
-                max_iter_hit = True
-            yield item
+        try:
+            async for item in stream_iter:
+                if isinstance(item, str):
+                    all_chunks.append(item)
+                elif isinstance(item, MaxIterationsEvent):
+                    max_iter_hit = True
+                yield item
 
-        if max_iter_hit and not all_chunks:
-            append_event(session, "agent hit iteration limit without producing a response", source="max_iterations")
-        else:
-            session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
-            append_message(session, session.messages[-1])
+            if max_iter_hit and not all_chunks:
+                append_event(session, "agent hit iteration limit without producing a response", source="max_iterations")
+            else:
+                session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
+                append_message(session, session.messages[-1])
+            completed = True
+        finally:
+            if not completed and session.messages and session.messages[-1].get("role") == "user":
+                session.messages.pop()
