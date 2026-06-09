@@ -16,7 +16,7 @@ _LEGACY_TOOL_INSTRUCTION = (
     "you MUST use tools to read actual files — do not guess or rely on training knowledge; "
     "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; "
     "use run_command for build, test, and git operations; "
-    "run_command is stateless — cd does not persist across calls, each call starts in repo root; "
+    "run_command is stateless — cd does not persist across calls, each call starts in workspace root; "
     "prefer read_file/grep/list_files over shell equivalents for reading files"
 )
 

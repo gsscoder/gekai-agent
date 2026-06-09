@@ -5,6 +5,8 @@ import re
 import httpx
 from openai import AsyncOpenAI
 
+from ._directives import PIPELINE_DIRECTIVES
+
 _SYSTEM_TEMPLATE = (
     "you rewrite a user request so a downstream agent knows exactly which files to touch, "
     "and you produce a short UI label summarizing the request\n"
@@ -81,7 +83,7 @@ class PromptRewriter:
         ui_label is fail-soft — a missing/malformed label degrades to "" rather
         than blocking the turn; it is cosmetic (UI badge text), not load-bearing.
         """
-        system = _SYSTEM_TEMPLATE.format(request=request)
+        system = PIPELINE_DIRECTIVES + _SYSTEM_TEMPLATE.format(request=request)
         user = f"located files:\n{_format_entries(entries)}\n\nrewrite the request"
         response = await self._client.chat.completions.create(
             model=self._model,

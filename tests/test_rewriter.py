@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from agent.pipeline.rewriter import PromptRewriter, _format_entries, _split_ui_label
+from agent.pipeline._directives import PIPELINE_DIRECTIVES
 
 
 def run(coro):
@@ -45,6 +46,15 @@ def test_format_entries_multiple_lines() -> None:
 # ---------------------------------------------------------------------------
 # rewrite
 # ---------------------------------------------------------------------------
+
+def test_rewriter_system_prompt_contains_pipeline_directives() -> None:
+    rw = _make_rewriter()
+    create = AsyncMock(return_value=_mock_response("ok"))
+    rw._client.chat.completions.create = create
+    run(rw.rewrite("do x", [("src/a.py", [])]))
+    system = create.call_args.kwargs["messages"][0]["content"]
+    assert system.startswith(PIPELINE_DIRECTIVES)
+
 
 def test_rewrite_returns_stripped_text_and_empty_label_when_absent() -> None:
     rw = _make_rewriter()

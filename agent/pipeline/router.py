@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 _log = logging.getLogger(__name__)
 
 from ..subagents import Subagent, SUBAGENTS
+from ._directives import PIPELINE_DIRECTIVES
 
 
 @dataclass
@@ -18,15 +19,14 @@ class Route:
 
 
 _ROUTER_PROMPT_BASE = (
-    "you guard a user message for a coding agent on a local repository\n"
+    "you route a user message for a coding agent on a local workspace\n"
     "output exactly one token — no prose, no punctuation\n"
     "choices:\n"
-    "  main             — the default: chat, inspection, workspace questions, general code changes, light edits — anything the main agent handles directly\n"
-    "  REJECTED         — user input not in English\n"
-    "  <subagent-name>  — one of the subagents below; ONLY when the request clearly and specifically matches that subagent's specialty\n"
-    "bias toward main unless a specialist clearly fits\n"
+    "  REJECTED         — the message is not in English\n"
+    "  <subagent-name>  — the request fits one subagent's specialty (see below), or explicitly asks to use or delegate the task to it by name\n"
+    "  main             — anything else; handled directly by the coding agent\n"
     "<subagents>\n"
-    "{menu}"
+    "{subagents-meta}"
 )
 
 
@@ -45,7 +45,7 @@ class Router:
         )
         self._subagents = list(SUBAGENTS)
         menu = "\n".join(f"  {p.name} — {p.description}" for p in self._subagents)
-        self._prompt = _ROUTER_PROMPT_BASE.replace("{menu}", menu)
+        self._prompt = PIPELINE_DIRECTIVES + _ROUTER_PROMPT_BASE.replace("{subagents-meta}", menu)
 
     async def route(
         self, user_input: str, history: list[dict] | None = None,

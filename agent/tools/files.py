@@ -297,7 +297,7 @@ async def _make_dir(path: str, *, working_dir: Path) -> str:
 def make_file_tools(working_dir: Path) -> list:
     @tool(is_read_only=True, required_permission="read")
     async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
-        """Read a file in the repository.
+        """Read a file in the workspace.
 
         For large files, read a targeted range rather than the full file.
         Use file_info to check line count first, or symbols/grep to locate
@@ -360,7 +360,7 @@ def make_file_tools(working_dir: Path) -> list:
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def move_file(src: str, dst: str) -> str:
-        """Move or rename a file within the repository.
+        """Move or rename a file within the workspace.
 
         Both src and dst must be paths relative to the workspace root.
         Refuses if dst already exists — no silent overwrite.
@@ -370,7 +370,7 @@ def make_file_tools(working_dir: Path) -> list:
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def copy_file(src: str, dst: str) -> str:
-        """Copy a file within the repository.
+        """Copy a file within the workspace.
 
         src must be a file (not a directory). Both paths must be within the workspace.
         Refuses if dst already exists — no silent overwrite.
@@ -380,7 +380,7 @@ def make_file_tools(working_dir: Path) -> list:
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def delete_file(path: str) -> str:
-        """Delete a single file from the repository.
+        """Delete a single file from the workspace.
 
         Refuses directories — use this only for files.
         Returns 'ok' on success or an error string on failure.
@@ -389,7 +389,7 @@ def make_file_tools(working_dir: Path) -> list:
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def make_dir(path: str) -> str:
-        """Create a directory (and any missing parents) in the repository.
+        """Create a directory (and any missing parents) in the workspace.
 
         Safe to call when the directory already exists.
         Returns 'ok' on success or an error string on failure.

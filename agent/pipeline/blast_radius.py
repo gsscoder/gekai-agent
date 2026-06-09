@@ -8,6 +8,7 @@ from ..llm import Agent
 from ..llm.providers.openai import OpenAIAdapter
 from ..llm.types import Message, TextBlock
 from ..tools import make_tools
+from ._directives import PIPELINE_DIRECTIVES
 
 # Extensions that count toward the blast-radius area metric.
 # Broader than _EXT_TO_LANG (symbol-parse support) — gate coverage ≠ AST coverage.
@@ -131,7 +132,7 @@ class BlastRadiusLocator:
             base_url=self._api_base,
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
-        system = _SYSTEM_TEMPLATE.format(request=request)
+        system = PIPELINE_DIRECTIVES + _SYSTEM_TEMPLATE.format(request=request)
         agent = Agent(
             provider=adapter,
             model=self._model,

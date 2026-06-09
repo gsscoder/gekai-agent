@@ -55,10 +55,10 @@ async def _run_command(
 def make_shell_tools(working_dir: Path) -> list:
     @tool(is_read_only=False, required_permission="exec", is_concurrency_safe=False)
     async def run_command(command: str, timeout: int = 30) -> str:
-        """Run a shell command in the repository root.
+        """Run a shell command in the workspace root.
 
         Native shell: PowerShell on Windows, $SHELL/bash/sh on Unix. Resolved once at startup.
-        Stateless: each call starts in repo root — cd does NOT persist across calls.
+        Stateless: each call starts in workspace root — cd does NOT persist across calls.
 
         IMPORTANT: do NOT use this tool to read files, search content, or list directories.
         Use the dedicated tools instead: read_file (not cat), grep (not grep/rg/findstr),

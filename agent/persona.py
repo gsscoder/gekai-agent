@@ -8,13 +8,13 @@ from .tools.catalog import READ_TOOLS, SHELL_TOOLS
 # played within Gekai — keeping these separate avoids stacking two
 # competing "you are" identity assertions on a subagent's prompt.
 _IDENTITY_MAIN = (
-    "you are Gekai, a coding agent operating on a local repository\n"
-    "you can read, search, and modify files in the repository through tool calls\n"
+    "you are Gekai, a coding agent operating on a local workspace\n"
+    "you can read, search, and modify files in the workspace through tool calls\n"
 )
 
 _IDENTITY_SUB = (
-    "you are part of Gekai, a coding agent operating on a local repository\n"
-    "you interact with the repository through the tool calls listed below\n"
+    "you are part of Gekai, a coding agent operating on a local workspace\n"
+    "you interact with the workspace through the tool calls listed below\n"
 )
 
 # Specialization-independent body shared verbatim by the main agent and
@@ -52,7 +52,7 @@ _TOOL_GUIDANCE: tuple[tuple[tuple[str, ...], str, str], ...] = (
      "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"),
     (SHELL_TOOLS, "any",
      "use run_command for build, test, and git operations; "
-     "run_command is stateless — cd does not persist across calls, each call starts in repo root"),
+     "run_command is stateless — cd does not persist across calls, each call starts in workspace root"),
     (("read_file",) + SHELL_TOOLS, "all",
      "prefer read_file/grep/list_files over shell equivalents for reading files"),
 )

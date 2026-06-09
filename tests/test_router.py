@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.pipeline.router import Route, Router
+from agent.pipeline._directives import PIPELINE_DIRECTIVES
 
 
 def run(coro):
@@ -21,6 +22,11 @@ def _make_router() -> Router:
 def _mock_response(text: str):
     choice = SimpleNamespace(message=SimpleNamespace(content=text))
     return SimpleNamespace(choices=[choice])
+
+
+def test_router_system_prompt_contains_pipeline_directives() -> None:
+    router = _make_router()
+    assert router._prompt.startswith(PIPELINE_DIRECTIVES)
 
 
 def test_route_main() -> None:

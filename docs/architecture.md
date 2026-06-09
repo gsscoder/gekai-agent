@@ -147,14 +147,16 @@ The router prompt offers exactly three kinds of output:
 
 ```
 ROUTER_PROMPT
-├── main             default — chat, inspection, workspace questions, general code
-│                    changes, light edits — anything Harness handles directly
 ├── REJECTED         non-English input
 ├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
-│                    "name — description"); only when the request clearly and
-│                    specifically matches that subagent's specialty
-└── bias             prefer main unless a specialist clearly fits
+│                    "name — description"); when the request fits its specialty,
+│                    or explicitly asks to use/delegate the task to it by name
+└── main             anything else — handled directly by Harness
 ```
+
+`main` is listed **last** with no explicit "fallback"/"bias" line: the choices are
+self-defining and position signals that `main` is the residual. Terminology is uniform
+(`subagent`, never "specialist") so the model reads one concept, not two.
 
 ### Routing table
 

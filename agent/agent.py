@@ -36,7 +36,7 @@ def _format_workspace_context(workspace: dict) -> str:
         subset["extensions"] = workspace.get("extensions", {})
     if workspace.get("domain_map"):
         subset["domain_map"] = workspace["domain_map"]
-    return f"<workspace>\nverified repository metadata — treat as authoritative for high-level questions:\n{toon_encode(subset)}\n</workspace>"
+    return f"<workspace>\nverified workspace metadata — treat as authoritative for high-level questions:\n{toon_encode(subset)}\n</workspace>"
 
 
 def _validate_config() -> None:

@@ -11,3 +11,7 @@ __all__ = [
     "evaluate_blast_radius_gate",
     "PromptRewriter",
 ]
+
+from ._directives import PIPELINE_DIRECTIVES
+
+__all__ += ["PIPELINE_DIRECTIVES"]
