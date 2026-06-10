@@ -8,8 +8,8 @@ neutral module shared by `subagents`, `pipeline.router`, `harness`), `settings.p
 `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `events.py` (`AgentEvent` taxonomy),
 `diff.py` (diff rendering), `shell.py` (TUI shell helper)
 Subpackages:
-- `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`)
-- `pipeline/` — `router.py` (`Route`, guard router), `blast_radius.py` (locator + gate), `rewriter.py` (prompt rewriter)
+- `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`), `file_locator.py` (`FileLocator`)
+- `pipeline/` — `router.py` (`Route`, guard router), `blast_radius.py` (gate only), `rewriter.py` (prompt rewriter)
 - `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`) + one file per subagent + `_coding.py` shared directives
 - `tools/` — `__init__.py` (`make_tools`), `catalog.py` (tool-name groups: `READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`
   — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`
@@ -33,35 +33,39 @@ stay with `Harness` directly, or does it match a specialist subagent (or get rej
 
 `Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-`Route` dataclass: `subagent: Subagent | None = None`, `rejected: bool = False`. No `namespace`
-property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
+`Route` dataclass: `subagent: Subagent | None = None`, `rejected: bool = False`, `trivial: bool = False`.
+No `namespace` property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
+`trivial` and `subagent` are mutually exclusive — `TRIVIAL` token is mapped before the subagent menu check.
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Router prompt offers exactly three kinds of output token:
+Router prompt offers exactly four kinds of output token:
 - `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `Harness` handles directly. Bias: prefer `main` unless a specialist clearly fits
+- `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions, acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `main` when unsure (false `main` costs one extra near-empty `FileLocator` call; false `TRIVIAL` denies real codebase context)
 - `REJECTED` — non-English input
 - `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty
 
 Router output token → Route mapping:
 - `"main"` → `Route()`
+- `"trivial"` → `Route(trivial=True)`
 - `"rejected"` → `Route(rejected=True)`
 - `<subagent-name>` (matched) → `Route(subagent=p)`
 - unknown token → warning log + fallback `Route()` (same as `main`)
 
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
 
-## Blast-Radius Gate
-Applies only when a subagent is selected (`route.subagent is not None`). `main` routes bypass the gate.
+## File Location & Blast-Radius Gate
+Locate runs on every **non-`TRIVIAL`** route (`main` and `<subagent>` alike). Gate applies only
+when a subagent is selected (`route.subagent is not None`); `main` and `TRIVIAL` bypass the gate.
 
 Pipeline (in TUI `_stream`):
 1. `Router.route()` → `Route`
-2. If `route.subagent is not None`: `BlastRadiusLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
-3. `evaluate_blast_radius_gate(entries, session.blast_radius_limit)` → `(rejected, reason)`
-4. If rejected and `session.scope_gate`: display rejection, return
-5. If `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → rewritten text becomes `processed_input`; `original_input = user_input` (see Prompt Rewriter)
+2. `route.trivial`: `entries = []`, skip locate + rewrite entirely
+3. else: `FileLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
+4. `route.subagent is not None`: `evaluate_blast_radius_gate(entries, session.blast_radius_limit)` → `(rejected, reason)`; if rejected and `session.scope_gate`: display rejection, return
+5. `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → `(processed_input, ui_label)`; `original_input = user_input` (see Prompt Rewriter)
 
-`BlastRadiusLocator` — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
+`FileLocator` (`agent/harness/file_locator.py`) — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
 
 Area metric — **ancestor-collapsed directory count, code files only:**
 1. Filter `entries` to `_CODE_EXTENSIONS` paths only
@@ -77,13 +81,15 @@ All-config change → 0 areas → always passes.
 `blast_radius_limit` loaded via `load_blast_radius_limit(working_dir)`: project `.gekai/settings.local.json` overrides user `~/.gekai/settings.json`; absent → `5`. Manual JSON edit only — no slash command. Gate on/off reuses `/config:gate on|off`.
 
 ## Prompt Rewriter
-`PromptRewriter` (`rewriter.py`) runs **only on routes with a selected subagent whose locator returned entries**, *after* the gate passes. `main` routes, and subagent routes with empty `entries`, skip it.
+`PromptRewriter` (`rewriter.py`) runs whenever `FileLocator` returned **non-empty `entries`** —
+for `main` and `<subagent>` routes alike, *after* the gate passes (subagent only). `TRIVIAL`
+routes, and any route with empty `entries`, skip it.
 
-`PromptRewriter.rewrite(request, entries) -> str` — single **CORE-model** call, temperature 0, **no thinking params** (constructed with no `extra_params`, so non-thinking even on a reasoning-capable core model). Not agentic, no tools — the locator already discovered/verified files, so this stage only *attributes* them.
+`PromptRewriter.rewrite(request, entries) -> tuple[str, str]` — returns `(rewritten_request, ui_label)`. Single **CORE-model** call, temperature 0, **no thinking params** (constructed with no `extra_params`, so non-thinking even on a reasoning-capable core model). Not agentic, no tools — the locator already discovered/verified files, so this stage only *attributes* them.
 
-Behavior: weave each located path inline where it maps to a phrase in the request; leftover located files go in a trailing `<reference_files>` block; paths quoted verbatim from the list. Output (rewritten request + optional block) becomes the live user turn.
+Behavior: weave each located path inline where it maps to a phrase in the request; leftover located files go in a trailing `<reference_files>` block; paths quoted verbatim from the list. `rewritten_request` becomes the live user turn.
 
-Fail-hard: any exception, including empty output (`ValueError`), propagates and blocks the turn — same contract as `BlastRadiusLocator`.
+Fail-hard (`rewritten_request` only): any exception, including empty output (`ValueError`), propagates and blocks the turn — same contract as `FileLocator`. `ui_label` is fail-soft — missing/malformed degrades to `""`, cosmetic only.
 
 Original vs processed input: rewritten string → `process_stream`'s `user_input` (what `Harness` sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
 
@@ -94,7 +100,7 @@ Env vars (CORE — used by `Harness`, `PromptRewriter`):
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
 
-Env vars (SUPP — used by `Router`, `BlastRadiusLocator`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
+Env vars (SUPP — used by `Router`, `FileLocator`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
 - `GEKAI_SUPPORT_MODEL_NAME`
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
@@ -127,14 +133,19 @@ the effective tool set and assembles the final system string, for both modes:
 This guarantees the `<tools>` prompt always reflects the *effective, post-filter* set — not the
 subagent's bare declared allowlist — e.g. a read-only subagent's prompt omits all shell/edit guidance.
 
-`Harness.stream(session, user_input, permission_callback=None, subagent=None)` selects `system_base`
-by the `subagent` param — `SYSTEM_PROMPT` (direct) vs `subagent.build_system_base()` (spawn) — then
-calls `_build_agent`. Direct mode passes `_recency_turns(session.messages, _RECENCY_N=2)` (last 2
-user/assistant pairs, system messages skipped, trailing user input excluded) + current input; spawn
-mode runs cold — `prior = []` + current input only, no recency context, no async/resume.
-`--debug` active: `stream()` calls `append_debug(session, {"content": agent.system})` **after**
-`_build_agent` returns (`agent.system` is the true assembled prompt, a mutable field on
-`llmstitch.Agent`) — written to `.debug.jsonl`.
+`Harness.stream(session, user_input, permission_callback=None, subagent=None, extra_params=None)`
+selects `system_base` by the `subagent` param — `SYSTEM_PROMPT` (direct) vs
+`subagent.build_system_base()` (spawn) — then calls `_build_agent`. `extra_params`: `None` (default)
+→ use `self._extra_params` (set at construction from `resolve_thinking_params`); explicit `{}` →
+no thinking params for this turn (the `TRIVIAL`-route case, set in `GekaiAgent.process_stream` via
+`extra_params={} if route.trivial else None`). Direct mode passes
+`_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages
+skipped, trailing user input excluded) + current input; spawn mode runs cold — `prior = []` +
+current input only, no recency context, no async/resume.
+`--debug` active: `stream()` calls
+`append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})`
+**after** `_build_agent` returns (`agent.system` is the true assembled prompt, a mutable field on
+`llmstitch.Agent`; `effective_extra_params` is the value actually used this turn) — written to `.debug.jsonl`.
 
 ## Session Persistence
 Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped entry with a `kind` field:
@@ -176,6 +187,6 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/config:gate on|off` — enable or disable the scope gate for the current project; persists to `.gekai/settings.local.json`; updates `session.scope_gate` immediately
 
 ## CLI Flags
-- `--debug` — prints `[router: main]` (no subagent) or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
+- `--debug` — prints `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt; trivial turns also get a `{"route": "trivial", "skipped": ["locate", "rewrite"]}` debug entry
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

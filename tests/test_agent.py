@@ -20,8 +20,11 @@ def run(coro):
 class _FakeMain:
     def __init__(self, chunks: list[str]) -> None:
         self._chunks = chunks
+        self.last_extra_params: dict | None | str = "unset"  # sentinel — distinguishes "not passed" from None
 
-    def stream(self, session, user_input, permission_callback=None, subagent=None):
+    def stream(self, session, user_input, permission_callback=None, subagent=None, extra_params=None):
+        self.last_extra_params = extra_params
+
         async def _gen():
             for c in self._chunks:
                 yield c
@@ -90,3 +93,25 @@ def test_process_stream_writes_user_turn_before_assistant(tmp_path: Path) -> Non
 
     roles = [t["role"] for t in _turns(session)]
     assert roles == ["user", "assistant"]
+
+
+# ---------------------------------------------------------------------------
+# trivial routes run main with empty extra_params (no thinking)
+# ---------------------------------------------------------------------------
+
+def test_process_stream_trivial_route_passes_empty_extra_params(tmp_path: Path) -> None:
+    session = _make_session(tmp_path)
+    agent = _stub_agent(["reply"])
+    run(_drain(agent.process_stream(session, "hi", Route(trivial=True))))
+
+    main = cast(_FakeMain, agent._main)
+    assert main.last_extra_params == {}
+
+
+def test_process_stream_non_trivial_route_passes_no_extra_params_override(tmp_path: Path) -> None:
+    session = _make_session(tmp_path)
+    agent = _stub_agent(["reply"])
+    run(_drain(agent.process_stream(session, "question", Route())))
+
+    main = cast(_FakeMain, agent._main)
+    assert main.last_extra_params is None

@@ -2,35 +2,46 @@
 
 ## Overview
 
-Every turn passes through three layers: **routing → blast-radius gate → Harness dispatch**.
+Every turn passes through three layers: **routing → file location (+ gate, subagent-only) → Harness dispatch**.
+`TRIVIAL` routes skip the middle layer entirely — no file location, no rewrite.
 
 ```
 user input
     │
     ▼
-Router               [support model] — one call; emits a single Route (subagent | rejected)
+Router                 [support model] — one call; emits a single Route
+    │                  (rejected | trivial | subagent | main)
     │
-    ├── rejected ──► reject (non-English)
+    ├── REJECTED ────────────────────────────────────────────────────► reject (non-English)
     │
-    ├── main (Route(), no subagent) ─────────────────────────────────┐
-    │                                                                │
-    └── <subagent>                                                   │
-              │                                                      │
-              ▼                                                      │
-    BlastRadiusLocator   [support model] — locate affected files;    │
-    + gate               count ancestor-collapsed directory areas;   │
-                         reject if count > blast_radius_limit        │
-              │                                                      │
-              ▼                                                      │
-    PromptRewriter       [core model, non-thinking] — weave located  │
-                         paths into the request; leftover candidates │
-                         go in a <reference_files> block             │
-              │                                                      │
-              └─────────────────────────────────────────────────────►┤
-                                                                     ▼
-                                                           Harness    [core model]
-                                                             direct mode (no subagent, with recency)
-                                                             spawn mode  (subagent.build_system_base() + harness-assembled <tools>, cold)
+    ├── TRIVIAL ────────────────────────────────────────────────────┐
+    │   greeting / identity / general knowledge —                   │
+    │   answerable with no codebase access                          │
+    │                                                               │
+    ├── main (Route(), no subagent) ────────┐                       │
+    │                                       │                       │
+    └── <subagent> ─────────────┐           │                       │
+                                │           │                       │
+                                ▼           ▼                       │
+                       FileLocator   [support model] — locate       │
+                       relevant/affected files (path | keywords)    │
+                                │                                   │
+                       <subagent> only: blast-radius gate —         │
+                       count ancestor-collapsed dirs (code files    │
+                       only); reject if count > limit               │
+                                │                                   │
+                       entries non-empty? ── no ────────────────────┤
+                                │ yes                               │
+                                ▼                                   │
+                       PromptRewriter  [core model, non-thinking] — │
+                       weave located paths into the request         │
+                                │                                   │
+                                └───────────────────┬───────────────┘
+                                                    ▼
+                                          Harness    [core model]
+                                            direct mode (no subagent, with recency)
+                                            spawn mode  (subagent.build_system_base() + harness-assembled <tools>, cold)
+                                            trivial route → extra_params={} (no thinking budget)
 ```
 
 ---
@@ -136,18 +147,23 @@ makes **one LLM call** on the **support model**, temperature 0, and returns a si
 class Route:
     subagent: Subagent | None = None
     rejected: bool = False
+    trivial: bool = False
 ```
 
 There is no `namespace` property — callers read `route.subagent.namespace` directly when
-`route.subagent is not None`.
+`route.subagent is not None`. `trivial` and `subagent` are mutually exclusive in practice —
+the router maps `TRIVIAL` to `Route(trivial=True)` before checking the subagent menu.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
-The router prompt offers exactly three kinds of output:
+The router prompt offers exactly four kinds of output:
 
 ```
 ROUTER_PROMPT
 ├── REJECTED         non-English input
+├── TRIVIAL          answerable with no codebase access — greetings, identity/capability
+│                    questions, acknowledgments, general knowledge unrelated to this
+│                    workspace; when unsure, NOT this
 ├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
 │                    "name — description"); when the request fits its specialty,
 │                    or explicitly asks to use/delegate the task to it by name
@@ -156,30 +172,41 @@ ROUTER_PROMPT
 
 `main` is listed **last** with no explicit "fallback"/"bias" line: the choices are
 self-defining and position signals that `main` is the residual. Terminology is uniform
-(`subagent`, never "specialist") so the model reads one concept, not two.
+(`subagent`, never "specialist") so the model reads one concept, not two. `TRIVIAL` is
+deliberately conservative — the prompt tells the model to prefer `main` when unsure, since a
+false `main` only costs one extra (often near-empty) `FileLocator` call, while a false
+`TRIVIAL` would deny a real codebase question its file context.
 
 ### Routing table
 
-| Output token        | Route                  | Notes                                              |
-|---------------------|------------------------|----------------------------------------------------|
-| `main`              | `Route()`              | Harness handles directly, no subagent spawned      |
-| `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies|
-| `rejected`          | `Route(rejected=True)` | non-English input                                  |
-| unknown token       | `Route()`              | warning log + fallback, same as `main`             |
+| Output token        | Route                  | Notes                                                |
+|---------------------|------------------------|------------------------------------------------------|
+| `main`              | `Route()`              | Harness handles directly, no subagent spawned        |
+| `TRIVIAL`           | `Route(trivial=True)`  | skips FileLocator + PromptRewriter; Harness still answers, with `extra_params={}` |
+| `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies  |
+| `rejected`          | `Route(rejected=True)` | non-English input                                    |
+| unknown token       | `Route()`              | warning log + fallback, same as `main`               |
+
+---
+
+## File Location
+
+Runs on every **non-`TRIVIAL`** route — `main` and `<subagent>` alike. `TRIVIAL` routes skip
+this step entirely (`entries = []`, no locate call).
+
+### Locate step
+
+`FileLocator.locate(working_dir, request)` — agentic support-model call (up to 5 iterations, read-only tools).
+Returns `list[tuple[path, keywords]]`.
+
+Any exception propagates — there is no fail-open; a broken locate blocks the turn.
 
 ---
 
 ## Blast-Radius Gate
 
 Applies **only when a subagent is selected** (`route.subagent is not None`). Routes that resolve
-to `main` (`Route()`) are not gated.
-
-### Locate step
-
-`BlastRadiusLocator.locate(working_dir, request)` — agentic support-model call (up to 5 iterations, read-only tools).
-Returns `list[tuple[path, keywords]]`.
-
-Any exception propagates — there is no fail-open; a broken locate blocks the turn.
+to `main` (`Route()`) or `TRIVIAL` (`Route(trivial=True)`) are not gated.
 
 ### Area metric
 
@@ -223,14 +250,16 @@ Gate enable/disable reuses the existing `/config:gate on|off` toggle (`session.s
 
 ## Prompt Rewriter
 
-Runs **only on routes with a selected subagent that produced located files**, *after* the gate
-passes. `main` routes, and subagent routes where the locator found nothing, all skip it.
+Runs whenever `FileLocator` returned **non-empty entries** — for `main` and `<subagent>` routes
+alike, *after* the gate passes (subagent routes only). `TRIVIAL` routes, and any route where the
+locator found nothing, skip it.
 
-`PromptRewriter.rewrite(request, entries) -> str` — a single **core-model** call, temperature 0,
+`PromptRewriter.rewrite(request, entries) -> tuple[str, str]` — a single **core-model** call, temperature 0,
 **no thinking params** (non-thinking even on a reasoning-capable core model). Not agentic, no tools:
 the locator already discovered and verified the files, so this stage only *attributes* them.
 
-It takes the original request plus the located `path | keywords` list and returns a rewritten request:
+It takes the original request plus the located `path | keywords` list and returns
+`(rewritten_request, ui_label)`:
 
 ```
 1. weave the full path inline wherever a file clearly maps to a phrase in the request
@@ -240,8 +269,10 @@ It takes the original request plus the located `path | keywords` list and return
 3. paths are quoted verbatim from the list — never invented or altered
 ```
 
-**Fail-hard:** any exception (including empty output → `ValueError`) propagates and blocks the turn,
-same contract as `BlastRadiusLocator`.
+**Fail-hard:** `rewritten_request` keeps the locator's contract — any exception (including empty
+output → `ValueError`) propagates and blocks the turn, same as `FileLocator`. `ui_label` is
+**fail-soft** — a missing/malformed label degrades to `""` rather than blocking the turn; it is
+cosmetic (UI badge text), not load-bearing.
 
 **Original vs processed input:** the rewritten string is fed to `Harness` as the live user
 turn (`process_stream`'s `user_input`), while the user's verbatim text is passed as `original_input`
@@ -325,11 +356,13 @@ effective = Permissions(
 |---------------------------|--------------------------|------------------------------------------------|
 | idle / between turns      | `default`                | `#3a3a3a`                                      |
 | `route.subagent is not None` | `<namespace>/<name>`  | `_NS_COLORS.get(namespace, _ACTION_COLOR)` — `#FFD700` for `coding`, `#4169E1` otherwise |
-| `route.subagent is None`  | `main`                   | `#3a3a3a` (`_DEFAULT_ROUTE_COLOR`)             |
+| `route.subagent is None`  | `main` (incl. `TRIVIAL`) | `#3a3a3a` (`_DEFAULT_ROUTE_COLOR`)             |
 | finally (any exit)        | `default`                | `#3a3a3a`                                      |
 
 Debug label (`--debug`, shown as `[router: ...]`): `[subagent.namespace, subagent.name]` joined
-by `/` when a subagent is selected, else just `["main"]`.
+by `/` when a subagent is selected; `["trivial"]` when `route.trivial`; else `["main"]`. The
+status-indicator border title itself does not distinguish `TRIVIAL` from `main` — both show
+`main` / `#3a3a3a`; only the debug label surfaces the distinction.
 
 ---
 
@@ -341,8 +374,13 @@ is handled directly by it — chat, inspection, and action all flow through one 
 One method, two modes selected by a single parameter:
 
 ```python
-async def stream(self, session, user_input, permission_callback=None, subagent: Subagent | None = None)
+async def stream(self, session, user_input, permission_callback=None, subagent: Subagent | None = None, extra_params: dict | None = None)
 ```
+
+`extra_params` overrides the Harness's own `self._extra_params` (set at construction from
+`resolve_thinking_params`) for this call only — `None` (the default) means "use the instance
+default"; an explicit `{}` means "no thinking params for this turn" (the `TRIVIAL`-route case —
+see [Router](#router)).
 
 `stream()` delegates prompt assembly to the module-level `_build_agent(...)`, which is the
 **single point** where the effective tool set — and therefore the final `<tools>` block — is
@@ -353,7 +391,8 @@ computed, for both modes:
 2. build `selected`: walk make_tools(working_dir), drop any tool not in subagent.tools (when an allowlist is set),
    then drop any tool whose required_permission isn't granted by `effective` (when there's no permission_callback to escalate)
 3. system = system_base + "\n<tools>\n" + render_tool_instruction([t.name for t in selected])
-4. construct Agent(system=system, …), register exactly the `selected` tools, attach the PermissionGate
+4. construct Agent(system=system, extra_params=effective_extra_params, …), register exactly the
+   `selected` tools, attach the PermissionGate
 ```
 
 | Mode                       | Trigger              | `system_base`                  | Prior context                                  |
@@ -373,10 +412,12 @@ the same unified event flow.
 pairs (skipping system messages, excluding the current trailing user input); the current user
 input is then appended explicitly.
 
-When `--debug` is active, `stream()` calls `append_debug(session, {"content": agent.system})`
+When `--debug` is active, `stream()` calls
+`append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})`
 **after** `_build_agent` returns — `agent.system` is the true, fully-assembled prompt string
 (mutable field on `llmstitch.Agent`), and lands in `.debug.jsonl` alongside the workspace
-context block.
+context block. `extra_params` here is the *effective* value actually passed to the model for
+this turn (`{}` for `TRIVIAL` routes), not the Harness's instance default.
 
 ```mermaid
 sequenceDiagram
@@ -385,7 +426,7 @@ sequenceDiagram
     participant llmstitch
     participant CoreModel
 
-    TUI->>Harness: stream(session, user_input, subagent=route.subagent)
+    TUI->>Harness: stream(session, user_input, subagent=route.subagent, extra_params={} if route.trivial else None)
     Harness->>Harness: _build_agent(...) — filter tools, render <tools>, construct Agent
     Harness->>llmstitch: agent.run(prior_messages)
     loop tool-calling

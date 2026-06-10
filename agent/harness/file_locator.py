@@ -7,7 +7,6 @@ import httpx
 from ..llm import Agent
 from ..llm.providers.openai import OpenAIAdapter
 from ..llm.types import Message, TextBlock
-from ..pipeline._directives import PIPELINE_DIRECTIVES
 from ..pipeline import PIPELINE_DIRECTIVES
 from ..tools import make_tools
 

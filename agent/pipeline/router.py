@@ -16,6 +16,7 @@ from ._directives import PIPELINE_DIRECTIVES
 class Route:
     subagent: Subagent | None = None
     rejected: bool = False
+    trivial: bool = False
 
 
 _ROUTER_PROMPT_BASE = (
@@ -23,6 +24,9 @@ _ROUTER_PROMPT_BASE = (
     "output exactly one token — no prose, no punctuation\n"
     "choices:\n"
     "  REJECTED         — the message is not in English\n"
+    "  TRIVIAL          — answerable with no codebase access: greetings, identity/capability "
+    "questions, acknowledgments, general knowledge unrelated to this workspace; "
+    "when unsure, do NOT choose this\n"
     "  <subagent-name>  — the request fits one subagent's specialty (see below), or explicitly asks to use or delegate the task to it by name\n"
     "  main             — anything else; handled directly by the coding agent\n"
     "<subagents>\n"
@@ -70,6 +74,8 @@ class Router:
             return Route(rejected=True)
         if first_lower == "main":
             return Route()
+        if first_lower == "trivial":
+            return Route(trivial=True)
         for p in self._subagents:
             if first_lower == p.name.lower():
                 return Route(subagent=p)

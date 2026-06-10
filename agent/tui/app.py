@@ -956,9 +956,14 @@ class GekaiApp(App[None]):
             original_input: str | None = None
             ui_label = ""
 
-            entries = await self._agent.locate(self._session.working_dir, user_input)
-            if self._agent.debug:
-                append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
+            if route.trivial:
+                entries = []
+                if self._agent.debug:
+                    append_debug(self._session, {"content": {"route": "trivial", "skipped": ["locate", "rewrite"]}})
+            else:
+                entries = await self._agent.locate(self._session.working_dir, user_input)
+                if self._agent.debug:
+                    append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
 
             if route.subagent is not None:
                 rejected, reason = self._agent.check_gate(entries, self._session.blast_radius_limit)
@@ -982,6 +987,8 @@ class GekaiApp(App[None]):
             if self._agent.debug:
                 if route.subagent is not None:
                     parts = [route.subagent.namespace, route.subagent.name]
+                elif route.trivial:
+                    parts = ["trivial"]
                 else:
                     parts = ["main"]
                 debug_text = f"\\[router: {'/'.join(parts)}]"

@@ -127,16 +127,18 @@ class Harness:
         user_input: str,
         permission_callback: PermissionCallback | None = None,
         subagent: Subagent | None = None,
+        extra_params: dict | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
+        effective_extra_params = self._extra_params if extra_params is None else extra_params
         agent = _build_agent(
-            self._model, self._api_key, self._api_base, self._extra_params,
+            self._model, self._api_key, self._api_base, effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
         )
         if self._debug:
-            append_debug(session, {"content": agent.system})
+            append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
 

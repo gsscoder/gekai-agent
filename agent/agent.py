@@ -159,6 +159,7 @@ class GekaiAgent:
             session, user_input,
             permission_callback=permission_callback,
             subagent=route.subagent,
+            extra_params={} if route.trivial else None,
         )
         try:
             async for item in stream_iter:
