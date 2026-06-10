@@ -8,6 +8,7 @@ from ..llm import Agent
 from ..llm.providers.openai import OpenAIAdapter
 from ..llm.types import Message, TextBlock
 from ..pipeline._directives import PIPELINE_DIRECTIVES
+from ..pipeline import PIPELINE_DIRECTIVES
 from ..tools import make_tools
 
 _SYSTEM_TEMPLATE = (
@@ -29,6 +30,9 @@ _SYSTEM_TEMPLATE = (
     "for changes, where work lands; for questions, where the answer lives — "
     "not the whole subsystem around them\n"
     "verify every file exists before listing it\n"
+    "if the request needs no codebase context (greetings, acknowledgments, "
+    "general knowledge unrelated to the codebase), output nothing immediately, "
+    "without using tools\n"
     "<output>\n"
     "output ONLY a plain list: one line per file\n"
     "format each line exactly as:\n"
