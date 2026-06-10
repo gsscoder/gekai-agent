@@ -10,19 +10,29 @@ _SKIP_DIRS: frozenset[str] = frozenset(
 
 
 def _walk(working_dir: Path):
-    """Yield all (dir, files) pairs, skipping _SKIP_DIRS."""
+    """Yield (dir, dirnames, files) tuples, skipping _SKIP_DIRS."""
     for dirpath, dirnames, filenames in os.walk(working_dir):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
-        yield Path(dirpath), filenames
+        yield Path(dirpath), dirnames, filenames
 
 
 def list_files(working_dir: Path) -> list[str]:
     """Return sorted flat list of all file paths relative to working_dir."""
     paths: list[str] = []
-    for dirpath, filenames in _walk(working_dir):
+    for dirpath, _, filenames in _walk(working_dir):
         for fname in filenames:
             rel = (dirpath / fname).relative_to(working_dir)
             paths.append(str(rel).replace("\\", "/"))
+    return sorted(paths)
+
+
+def list_dirs(working_dir: Path) -> list[str]:
+    """Return sorted flat list of all directory paths relative to working_dir, each suffixed with '/'."""
+    paths: list[str] = []
+    for dirpath, dirnames, _ in _walk(working_dir):
+        for dname in dirnames:
+            rel = (dirpath / dname).relative_to(working_dir)
+            paths.append(str(rel).replace("\\", "/") + "/")
     return sorted(paths)
 
 

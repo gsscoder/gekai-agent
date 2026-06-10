@@ -28,7 +28,7 @@ from agent.pipeline import Route
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
-from agent.workspace import list_files
+from agent.workspace import list_files, list_dirs
 from agent.tui.styles import random_accent_color, random_farewell, random_operative_verb
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
 
@@ -779,7 +779,7 @@ class GekaiApp(App[None]):
             if " " not in query and "\n" not in query:
                 self._file_at_pos = at_pos
                 if self._file_paths is None:
-                    self._file_paths = list_files(self._working_dir)
+                    self._file_paths = sorted(list_dirs(self._working_dir) + list_files(self._working_dir))
                 if not file_panel.display:
                     file_panel.show(self._file_paths, query)
                 else:
