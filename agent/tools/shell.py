@@ -33,6 +33,12 @@ async def _run_command(
                 proc.kill()
             except ProcessLookupError:
                 pass
+            # wait_for cancels communicate() mid-flight — drain pipes so Windows
+            # proactor transports close before the event loop shuts down
+            try:
+                await proc.communicate()
+            except ProcessLookupError:
+                pass
             return f"error: timeout after {timeout}s"
     except Exception as exc:
         return f"error: {exc or type(exc).__name__}"

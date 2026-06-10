@@ -952,27 +952,32 @@ class GekaiApp(App[None]):
                 _color = _DEFAULT_ROUTE_COLOR
             self._set_route_label(_label, color=_color)
 
-            entries: list[tuple[str, list[str]]] | None = None
             processed_input = user_input
             original_input: str | None = None
             ui_label = ""
+
+            entries = await self._agent.locate(self._session.working_dir, user_input)
+            if self._agent.debug:
+                append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
+
             if route.subagent is not None:
-                entries = await self._agent.locate(self._session.working_dir, user_input)
-                if self._agent.debug:
-                    append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
                 rejected, reason = self._agent.check_gate(entries, self._session.blast_radius_limit)
                 if rejected and self._session.scope_gate:
                     reason_text = reason or "request exceeds scope"
                     await conversation.mount(MessageWidget(MessageKind.REJECTED, reason_text))
                     append_event(self._session, reason_text, source="gate")
                     return
-                if entries:
-                    processed_input, ui_label = await self._agent.rewrite(user_input, entries)
-                    original_input = user_input
-                    if self._agent.debug:
-                        append_debug(self._session, {"content": {"rewritten": processed_input}})
-                if not ui_label:
-                    ui_label = _fallback_ui_label(original_input or user_input)
+
+            if entries:
+                processed_input, rewrite_label = await self._agent.rewrite(user_input, entries)
+                original_input = user_input
+                if rewrite_label:
+                    ui_label = rewrite_label
+                if self._agent.debug:
+                    append_debug(self._session, {"content": {"rewritten": processed_input}})
+
+            if route.subagent is not None and not ui_label:
+                ui_label = _fallback_ui_label(original_input or user_input)
 
             if self._agent.debug:
                 if route.subagent is not None:

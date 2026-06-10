@@ -9,10 +9,10 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from .llm.model_caps import resolve_thinking_params
-from .harness import Harness
+from .harness import Harness, FileLocator
 from .permissions import PermissionCallback
 from .subagents import Subagent
-from .pipeline import Route, Router, BlastRadiusLocator, evaluate_blast_radius_gate, PromptRewriter
+from .pipeline import Route, Router, evaluate_blast_radius_gate, PromptRewriter
 from .session import Session
 from .settings import Permissions
 from toon import encode as toon_encode
@@ -74,7 +74,7 @@ class GekaiAgent:
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
         )
-        self._locator = BlastRadiusLocator(
+        self._locator = FileLocator(
             model=self._supp_model,
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,

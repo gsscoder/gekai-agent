@@ -11,3 +11,4 @@ dist/
 .claude/agents/
 _agents/
 .vscode/
+mcps/
