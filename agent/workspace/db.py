@@ -69,10 +69,3 @@ def save_blast_radius(
                     (file_id, kw_norm),
                 )
     conn.commit()
-
-
-def files_for_keywords(
-    conn: sqlite3.Connection,
-    keywords: list[str],
-) -> list[str]:
-    raise NotImplementedError

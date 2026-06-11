@@ -64,11 +64,10 @@ index  role      content
 **System messages** (`[0]`, `[1]`) are excluded from persistence;
 they are re-injected fresh on every startup or resume.
 
-**Workspace context injection:** `_init_session()` reads `.gekai/workspace.json` from disk at
-startup if present, and passes the parsed dict to `agent.start_session()`, which builds the
-`<workspace>` block via `_format_workspace_context()` and appends it as `Session.messages[1]`.
-If the file is absent, an empty dict is used and the block is injected with default/unknown
-values (`workspace_type: "files"`, empty `primary_languages`/`projects`, etc.).
+**Workspace context injection:** `_init_session()` always passes an empty `workspace` dict to
+`agent.start_session()`, which builds the `<workspace>` block via `_format_workspace_context()`
+and appends it as `Session.messages[1]`. The block is therefore always injected with
+default/unknown values (`workspace_type: "files"`, empty `primary_languages`/`projects`, etc.).
 
 Injected fields — **always:** `workspace_name`, `workspace_type`, `branch`, `primary_languages`,
 `projects`; **conditional:** `extensions` (when `projects` is empty), `domain_map` (when present).

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 from pathlib import Path
@@ -651,15 +650,7 @@ class GekaiApp(App[None]):
 
         banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
-        cache_path = self._working_dir / ".gekai" / "workspace.json"
         workspace: dict = {}
-
-        if cache_path.exists():
-            try:
-                workspace = json.loads(cache_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                workspace = {}
-
         self._workspace = workspace
         self._session = self._agent.start_session(
             workspace,

@@ -3,10 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from agent import __version__
-from agent.workspace.db import SCHEMA_VERSION, ensure, save_blast_radius, files_for_keywords
+from agent.workspace.db import SCHEMA_VERSION, ensure, save_blast_radius
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:
@@ -151,10 +149,3 @@ def test_save_blast_radius_skips_empty_keywords(tmp_path: Path) -> None:
     conn.close()
     assert len(rows) == 1
     assert rows[0][0] == "valid"
-
-
-def test_files_for_keywords_not_implemented(tmp_path: Path) -> None:
-    conn = ensure(tmp_path)
-    with pytest.raises(NotImplementedError):
-        files_for_keywords(conn, ["test"])
-    conn.close()
