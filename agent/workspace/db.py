@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+import hashlib
+import re
 import sqlite3
+import time
 from pathlib import Path
 
 from agent import __version__
 
+_HASH_CHUNK_SIZE = 65536
+_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+
 SCHEMA_VERSION = __version__
 
-_DDL = """
+_META_DDL = """
 CREATE TABLE IF NOT EXISTS _meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+"""
 
+_DDL = """
 CREATE TABLE IF NOT EXISTS files (
-    id   INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE
+    id           INTEGER PRIMARY KEY,
+    path         TEXT NOT NULL UNIQUE,
+    size         INTEGER,
+    mtime_ns     INTEGER,
+    content_hash TEXT,
+    indexed_at   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS file_keywords (
@@ -25,8 +37,20 @@ CREATE TABLE IF NOT EXISTS file_keywords (
 );
 """
 
+_REBUILD_DDL = """
+DROP TABLE IF EXISTS file_keywords;
+DROP TABLE IF EXISTS files;
+"""
+
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_META_DDL)
+    row = conn.execute(
+        "SELECT value FROM _meta WHERE key = 'schema_version'"
+    ).fetchone()
+    if row is not None and row[0] != SCHEMA_VERSION:
+        # cache is disposable: drop and rebuild rather than migrate (alpha, no shims)
+        conn.executescript(_REBUILD_DDL)
     conn.executescript(_DDL)
     conn.execute(
         "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
@@ -49,12 +73,42 @@ def ensure(working_dir: Path) -> sqlite3.Connection:
     return conn
 
 
-def save_blast_radius(
+def handle_db_upgrade(working_dir: Path) -> None:
+    """Startup hook: bring an existing workspace.db up to the current schema.
+
+    For now this delegates to `ensure`, which drops and rebuilds `files`/
+    `file_keywords` when `schema_version` doesn't match (alpha, no
+    migrations — cache is disposable). Expand here as upgrade needs grow
+    post-release.
+    """
+    ensure(working_dir).close()
+
+
+def save_findings(
     conn: sqlite3.Connection,
+    working_dir: Path,
     entries: list[tuple[str, list[str]]],
 ) -> None:
+    now = int(time.time())
     for path, keywords in entries:
+        size: int | None = None
+        mtime_ns: int | None = None
+        content_hash: str | None = None
+        try:
+            full_path = working_dir / path
+            st = full_path.stat()
+            size = st.st_size
+            mtime_ns = st.st_mtime_ns
+            content_hash = _content_hash(full_path)
+        except OSError:
+            pass  # non-fatal: row stays usable as a hint, just stale until re-stamped
+
         conn.execute("INSERT OR IGNORE INTO files(path) VALUES (?)", (path,))
+        conn.execute(
+            "UPDATE files SET size = ?, mtime_ns = ?, content_hash = ?, indexed_at = ? "
+            "WHERE path = ?",
+            (size, mtime_ns, content_hash, now, path),
+        )
         row = conn.execute(
             "SELECT id FROM files WHERE path = ?", (path,)
         ).fetchone()
@@ -69,3 +123,103 @@ def save_blast_radius(
                     (file_id, kw_norm),
                 )
     conn.commit()
+
+
+def _content_hash(path: Path) -> str:
+    h = hashlib.blake2b()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def is_fresh(
+    working_dir: Path,
+    path: str,
+    size: int | None,
+    mtime_ns: int | None,
+    content_hash: str | None,
+) -> bool:
+    """Two-tier staleness check for a cached file row.
+
+    Fast path: stat size + mtime_ns match -> fresh, no read.
+    Fallback: blake2b content hash matches -> fresh (covers the
+    git-checkout case where mtime is rewritten but content is unchanged).
+    """
+    try:
+        st = (working_dir / path).stat()
+    except OSError:
+        return False
+    if size is not None and mtime_ns is not None \
+            and st.st_size == size and st.st_mtime_ns == mtime_ns:
+        return True
+    if content_hash is None:
+        return False
+    return _content_hash(working_dir / path) == content_hash
+
+
+def find_candidates(
+    conn: sqlite3.Connection,
+    working_dir: Path,
+    keywords: list[str],
+    limit: int = 10,
+) -> list[tuple[str, int]]:
+    """Look up cached candidate paths by keyword overlap.
+
+    Score = number of `keywords` that match a file's stored keywords.
+    Rows that fail `is_fresh` are evicted (cascades to file_keywords)
+    and excluded from the result.
+    """
+    normalized = [kw.strip().lower() for kw in keywords if kw.strip()]
+    if not normalized:
+        return []
+
+    placeholders = ", ".join("?" for _ in normalized)
+    rows = conn.execute(
+        "SELECT f.id, f.path, f.size, f.mtime_ns, f.content_hash, COUNT(*) AS score "
+        "FROM files f JOIN file_keywords fk ON fk.file_id = f.id "
+        f"WHERE fk.keyword IN ({placeholders}) "
+        "GROUP BY f.id ORDER BY score DESC",
+        normalized,
+    ).fetchall()
+
+    candidates: list[tuple[str, int]] = []
+    stale_ids: list[int] = []
+    for file_id, path, size, mtime_ns, content_hash, score in rows:
+        if is_fresh(working_dir, path, size, mtime_ns, content_hash):
+            candidates.append((path, score))
+        else:
+            stale_ids.append(file_id)
+
+    if stale_ids:
+        conn.executemany("DELETE FROM files WHERE id = ?", [(i,) for i in stale_ids])
+        conn.commit()
+
+    return candidates[:limit]
+
+
+def mine_keywords(request: str) -> list[str]:
+    """Extract lookup keywords from a user request for `find_candidates`.
+
+    Tokenizes on alphanumeric runs and lowercases (matching how
+    `file_keywords` are normalized), then adds adjacent-token joins so a
+    multi-word signal like "prompt builder" also matches keywords mined as
+    "promptbuilder" or "prompt_builder". Deduplicates, preserving order.
+    """
+    tokens = [t.lower() for t in _TOKEN_RE.findall(request)]
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+
+    def _add(kw: str) -> None:
+        if kw not in seen:
+            seen.add(kw)
+            keywords.append(kw)
+
+    for tok in tokens:
+        _add(tok)
+    for a, b in zip(tokens, tokens[1:]):
+        _add(a + b)
+        _add(f"{a}_{b}")
+
+    return keywords

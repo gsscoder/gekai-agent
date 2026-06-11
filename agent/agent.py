@@ -59,6 +59,7 @@ def _validate_config() -> None:
 class GekaiAgent:
     def __init__(self, *, working_dir: Path, permissions: Permissions, debug: bool = False) -> None:
         self.working_dir = working_dir
+        workspace_db.handle_db_upgrade(self.working_dir)
         self.permissions = permissions
         self.debug = debug
         _validate_config()
@@ -132,8 +133,18 @@ class GekaiAgent:
 
     async def locate(
         self, working_dir: Path, text: str,
-    ) -> list[tuple[str, list[str]]]:
-        return await self._locator.locate(working_dir, text)
+    ) -> tuple[list[tuple[str, list[str]]], list[str]]:
+        hint_paths: list[str] = []
+        try:
+            conn = workspace_db.ensure(working_dir)
+            keywords = workspace_db.mine_keywords(text)
+            candidates = workspace_db.find_candidates(conn, working_dir, keywords)
+            conn.close()
+            hint_paths = [path for path, _ in candidates]
+        except Exception:
+            pass
+        entries = await self._locator.locate(working_dir, text, hint_paths=hint_paths or None)
+        return entries, hint_paths
 
     def check_gate(
         self, entries: list[tuple[str, list[str]]], limit: int,
@@ -161,7 +172,7 @@ class GekaiAgent:
         if entries:
             try:
                 conn = workspace_db.ensure(session.working_dir)
-                workspace_db.save_blast_radius(conn, entries)
+                workspace_db.save_findings(conn, session.working_dir, entries)
                 conn.close()
             except Exception:
                 pass

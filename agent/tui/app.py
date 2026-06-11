@@ -995,10 +995,16 @@ class GekaiApp(App[None]):
                 stage = "locate"
                 self._set_route_label("locate", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
-                entries = await self._agent.locate(self._session.working_dir, user_input)
-                events.emit("locate", session=session_id, turn=turn_id, files=len(entries), duration_ms=_ms(time.monotonic() - t0))
+                entries, hint_paths = await self._agent.locate(self._session.working_dir, user_input)
+                located_paths = {path for path, _ in entries}
+                overlap = len(set(hint_paths) & located_paths) / len(located_paths) if located_paths else 0.0
+                events.emit(
+                    "locate", session=session_id, turn=turn_id,
+                    files=len(entries), hints=len(hint_paths), overlap=round(overlap, 3),
+                    duration_ms=_ms(time.monotonic() - t0),
+                )
                 if self._agent.debug:
-                    append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
+                    append_debug(self._session, {"content": {"locate": [path for path, _ in entries], "hints": hint_paths}})
 
             if route.subagent is not None:
                 stage = "gate"

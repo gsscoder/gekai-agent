@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import cast
 
 from agent.agent import GekaiAgent
-from agent.harness import Harness
+from agent.harness import FileLocator, Harness
 from agent.persistence import session_file
 from agent.pipeline import Route
 from agent.session import Session
+from agent.workspace import db as workspace_db
 
 
 def run(coro):
@@ -115,3 +116,55 @@ def test_process_stream_non_trivial_route_passes_no_extra_params_override(tmp_pa
 
     main = cast(_FakeMain, agent._main)
     assert main.last_extra_params is None
+
+
+# ---------------------------------------------------------------------------
+# locate() consults the workspace.db cache and feeds it to FileLocator as hints
+# ---------------------------------------------------------------------------
+
+class _FakeLocator:
+    def __init__(self, entries: list[tuple[str, list[str]]]) -> None:
+        self._entries = entries
+        self.last_hint_paths: list[str] | None = "unset"  # type: ignore[assignment]
+
+    async def locate(self, working_dir, request, hint_paths=None):
+        self.last_hint_paths = hint_paths
+        return self._entries
+
+
+def _stub_agent_with_locator(locator: _FakeLocator) -> GekaiAgent:
+    stub = object.__new__(GekaiAgent)
+    stub._locator = cast(FileLocator, locator)
+    return stub
+
+
+def test_locate_returns_entries_and_no_hints_when_cache_empty(tmp_path: Path) -> None:
+    locator = _FakeLocator([("src/a.py", ["alpha"])])
+    agent = _stub_agent_with_locator(locator)
+
+    entries, hint_paths = run(agent.locate(tmp_path, "find alpha"))
+
+    assert entries == [("src/a.py", ["alpha"])]
+    assert hint_paths == []
+    assert locator.last_hint_paths is None
+
+
+def test_locate_passes_cached_candidates_as_hints(tmp_path: Path) -> None:
+    f = tmp_path / "src" / "prompt_builder.py"
+    f.parent.mkdir(parents=True)
+    f.write_text("class PromptBuilder: ...")
+
+    conn = workspace_db.ensure(tmp_path)
+    workspace_db.save_findings(
+        conn, tmp_path, [("src/prompt_builder.py", ["promptbuilder", "prompt_builder"])]
+    )
+    conn.close()
+
+    locator = _FakeLocator([])
+    agent = _stub_agent_with_locator(locator)
+
+    entries, hint_paths = run(agent.locate(tmp_path, "update the prompt builder"))
+
+    assert hint_paths == ["src/prompt_builder.py"]
+    assert locator.last_hint_paths == hint_paths
+    assert entries == []

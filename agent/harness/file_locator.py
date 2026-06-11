@@ -15,6 +15,7 @@ _SYSTEM_TEMPLATE = (
     "you DISCOVER — you do not plan, explain, edit, or perform the request\n"
     "<user_request>\n"
     "{request}\n"
+    "{hint_section}"
     "<strategy>\n"
     "the request itself is your richest clue — drain every drop from it:\n"
     "1. mine it for concrete signals: identifiers, class/function/symbol names, "
@@ -41,6 +42,17 @@ _SYSTEM_TEMPLATE = (
     "no prose, no explanation, no markdown, no extra lines\n"
     "do not edit or create any files"
 )
+
+
+def _format_hint_section(hint_paths: list[str] | None) -> str:
+    if not hint_paths:
+        return ""
+    paths = ", ".join(f"`{p}`" for p in hint_paths)
+    return (
+        "<hints>\n"
+        f"previously-relevant for these signals: {paths}\n"
+        "verify each still exists and is relevant before listing it; do not assume\n"
+    )
 
 
 def _parse_locator_output(text: str) -> list[tuple[str, list[str]]]:
@@ -76,13 +88,16 @@ class FileLocator:
         self,
         working_dir: Path,
         request: str,
+        hint_paths: list[str] | None = None,
     ) -> list[tuple[str, list[str]]]:
         adapter = OpenAIAdapter(
             api_key=self._api_key,
             base_url=self._api_base,
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
-        system = PIPELINE_DIRECTIVES + _SYSTEM_TEMPLATE.format(request=request)
+        system = PIPELINE_DIRECTIVES + _SYSTEM_TEMPLATE.format(
+            request=request, hint_section=_format_hint_section(hint_paths)
+        )
         agent = Agent(
             provider=adapter,
             model=self._model,

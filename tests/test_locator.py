@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agent.harness.file_locator import FileLocator, _parse_locator_output
+from agent.harness.file_locator import FileLocator, _format_hint_section, _parse_locator_output
 from agent.pipeline._directives import PIPELINE_DIRECTIVES
 from agent.llm.types import Message
 
@@ -26,6 +26,54 @@ def test_locator_system_prompt_contains_pipeline_directives() -> None:
 
         _, kwargs = MockAgent.call_args
         assert kwargs["system"].startswith(PIPELINE_DIRECTIVES)
+
+
+def test_locate_without_hints_omits_hint_section() -> None:
+    locator = _make_locator()
+    with patch("agent.harness.file_locator.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.tools = MagicMock()
+        instance.run = AsyncMock(return_value=[Message(role="assistant", content="")])
+        MockAgent.return_value = instance
+
+        import asyncio
+        asyncio.run(locator.locate(Path("."), "add a new feature"))
+
+        _, kwargs = MockAgent.call_args
+        assert "<hints>" not in kwargs["system"]
+
+
+def test_locate_with_hints_injects_hint_section() -> None:
+    locator = _make_locator()
+    with patch("agent.harness.file_locator.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.tools = MagicMock()
+        instance.run = AsyncMock(return_value=[Message(role="assistant", content="")])
+        MockAgent.return_value = instance
+
+        import asyncio
+        asyncio.run(locator.locate(Path("."), "add a new feature", hint_paths=["src/main.py", "src/util.py"]))
+
+        _, kwargs = MockAgent.call_args
+        system = kwargs["system"]
+        assert "<hints>" in system
+        assert "src/main.py" in system
+        assert "src/util.py" in system
+
+
+def test_format_hint_section_empty_for_none() -> None:
+    assert _format_hint_section(None) == ""
+
+
+def test_format_hint_section_empty_for_empty_list() -> None:
+    assert _format_hint_section([]) == ""
+
+
+def test_format_hint_section_includes_paths() -> None:
+    section = _format_hint_section(["a.py", "b.py"])
+    assert section.startswith("<hints>")
+    assert "a.py" in section
+    assert "b.py" in section
 
 
 def test_parse_well_formed_line() -> None:
