@@ -38,6 +38,7 @@ from .history import PromptHistory
 from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, WelcomeOverlay
 
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
+_PIPELINE_COLOR = "#ffffff"  # pure-white bg marks active pre-harness pipeline step
 
 
 class ConversationContainer(ScrollableContainer):
@@ -974,6 +975,7 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(verb[0], color)
+            self._set_route_label("route", color=_PIPELINE_COLOR)
             t0 = time.monotonic()
             route = await self._agent.route(user_input, history=self._session.messages)
             events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
@@ -989,7 +991,6 @@ class GekaiApp(App[None]):
             else:
                 _label = "main"
                 _color = _DEFAULT_ROUTE_COLOR
-            self._set_route_label(_label, color=_color)
 
             processed_input = user_input
             original_input: str | None = None
@@ -1001,6 +1002,7 @@ class GekaiApp(App[None]):
                     append_debug(self._session, {"content": {"route": "trivial", "skipped": ["locate", "rewrite"]}})
             else:
                 stage = "locate"
+                self._set_route_label("locate", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
                 entries = await self._agent.locate(self._session.working_dir, user_input)
                 events.emit("locate", session=session_id, turn=turn_id, files=len(entries), duration_ms=_ms(time.monotonic() - t0))
@@ -1024,6 +1026,7 @@ class GekaiApp(App[None]):
 
             if entries:
                 stage = "rewrite"
+                self._set_route_label("rewrite", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
                 processed_input, rewrite_label = await self._agent.rewrite(user_input, entries)
                 events.emit("rewrite", session=session_id, turn=turn_id, ok=True, duration_ms=_ms(time.monotonic() - t0))
@@ -1046,6 +1049,7 @@ class GekaiApp(App[None]):
                 debug_text = f"\\[router: {'/'.join(parts)}]"
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
 
+            self._set_route_label(_label, color=_color)
             stage = "harness"
             harness_start = time.monotonic()
             async for item in self._agent.process_stream(
