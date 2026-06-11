@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from . import __version__
 from .llm.model_caps import resolve_thinking_params
 from .harness import Harness, FileLocator
 from .permissions import PermissionCallback
@@ -15,6 +17,7 @@ from .subagents import Subagent
 from .pipeline import Route, Router, evaluate_blast_radius_gate, PromptRewriter
 from .session import Session
 from .settings import Permissions
+from .logging import EventLogger
 from toon import encode as toon_encode
 
 from .events import MaxIterationsEvent, AgentEvent
@@ -92,6 +95,16 @@ class GekaiAgent:
             extra_params=self._extra_params,
             debug=self.debug,
         )
+        self.events = EventLogger()
+        self.events.emit(
+            "run.start",
+            version=__version__,
+            platform=platform.system(),
+            core_model=self.model,
+            supp_model=self._supp_model,
+            permissions={"read": permissions.read, "write": permissions.write, "exec": permissions.exec},
+            debug=self.debug,
+        )
 
     @property
     def client(self) -> AsyncOpenAI:
@@ -140,9 +153,10 @@ class GekaiAgent:
         entries: list[tuple[str, list[str]]] | None = None,
         original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
+        turn_id: str | None = None,
     ) -> AsyncIterator[str | AgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
-        append_message(session, session.messages[-1])
+        append_message(session, session.messages[-1], turn=turn_id)
 
         if entries:
             try:
@@ -173,7 +187,7 @@ class GekaiAgent:
                 append_event(session, "agent hit iteration limit without producing a response", source="max_iterations")
             else:
                 session.messages.append({"role": "assistant", "content": "".join(all_chunks)})
-                append_message(session, session.messages[-1])
+                append_message(session, session.messages[-1], turn=turn_id)
             completed = True
         finally:
             if not completed and session.messages and session.messages[-1].get("role") == "user":

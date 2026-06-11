@@ -25,6 +25,7 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.persistence import append_command, append_debug, append_event, _normalize_path
 from agent.pipeline import Route
+from agent.pipeline.blast_radius import count_blast_areas
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
@@ -234,6 +235,20 @@ def _last_sentence(text: str, max_chars: int = 60) -> str:
 
 def _resolve_at_refs(text: str) -> str:
     return re.sub(r"@(\S+)", lambda m: f"`{m.group(1)}`", text)
+
+
+def _ms(seconds: float) -> int:
+    return round(seconds * 1000)
+
+
+def _route_decision(route: Route) -> str:
+    if route.rejected:
+        return "rejected"
+    if route.subagent is not None:
+        return f"{route.subagent.namespace}/{route.subagent.name}"
+    if route.trivial:
+        return "trivial"
+    return "main"
 
 
 def _fmt_duration(elapsed: float) -> str:
@@ -591,6 +606,7 @@ class GekaiApp(App[None]):
         self._permission_denied_msg: str | None = None
         self._status_paused: bool = False
         self._welcome_dismissed: bool = False
+        self._exit_reason: str = "quit"
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -649,6 +665,7 @@ class GekaiApp(App[None]):
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
         )
+        self._agent.events.emit("session.start", session=self._session.id, resumed=self._restored_id is not None)
         self._session.scope_gate = load_scope_gate(self._working_dir)
         self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
 
@@ -724,6 +741,7 @@ class GekaiApp(App[None]):
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
         self._session = self._agent.start_session(self._workspace)
+        self._agent.events.emit("session.start", session=self._session.id, resumed=False)
         self._session.scope_gate = load_scope_gate(self._working_dir)
         self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
         self.query_one("#context-bar", Static).update(
@@ -741,6 +759,10 @@ class GekaiApp(App[None]):
     @property
     def session_id(self) -> str | None:
         return self._session.id if self._session else None
+
+    @property
+    def exit_reason(self) -> str:
+        return self._exit_reason
 
     @property
     def session_has_interactions(self) -> bool:
@@ -889,6 +911,8 @@ class GekaiApp(App[None]):
             had_prior = self.session_has_interactions
             if self._session is not None:
                 append_command(self._session, stripped)
+            cmd_name = stripped.lstrip("/").split(maxsplit=1)[0] if stripped.lstrip("/").split() else ""
+            self._agent.events.emit("command", session=self.session_id, name=cmd_name)
             result = await self._command_registry.dispatch(stripped)
             if result.scope_gate is not None and self._session is not None:
                 self._session.scope_gate = result.scope_gate
@@ -901,6 +925,7 @@ class GekaiApp(App[None]):
             if self._session is not None:
                 append_event(self._session, output, source="command")
             if result.exit_app:
+                self._exit_reason = "command"
                 farewell = random_farewell()
                 await conversation.mount(MessageWidget(MessageKind.ASSISTANT, farewell))
                 conversation.scroll_end(animate=False)
@@ -928,6 +953,12 @@ class GekaiApp(App[None]):
 
     async def _stream(self, user_input: str) -> None:
         start = time.monotonic()
+        events = self._agent.events
+        turn_id = events.new_turn()
+        session_id = self.session_id
+        events.emit("turn.start", session=session_id, turn=turn_id, input_len=len(user_input))
+        outcome = "ok"
+        stage = "route"
         verb = random_operative_verb()
         color = random_accent_color()
         conversation = self.query_one("#conversation", ScrollableContainer)
@@ -935,11 +966,19 @@ class GekaiApp(App[None]):
         max_iter_hit: bool = False
         ws_renderer: SubAgentRenderer | None = None
         query_tool_count: int = 0
+        tool_counts: dict[str, int] = {}
+        llm_calls = 0
+        prompt_tokens_total = 0
+        completion_tokens_total = 0
+        thinking_chars_total = 0
 
         try:
             await self._start_status_animation(verb[0], color)
+            t0 = time.monotonic()
             route = await self._agent.route(user_input, history=self._session.messages)
+            events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
             if route.rejected:
+                outcome = "rejected"
                 msg = "User input must be in English"
                 await conversation.mount(MessageWidget(MessageKind.REJECTED, msg))
                 append_event(self._session, msg, source="router")
@@ -961,20 +1000,33 @@ class GekaiApp(App[None]):
                 if self._agent.debug:
                     append_debug(self._session, {"content": {"route": "trivial", "skipped": ["locate", "rewrite"]}})
             else:
+                stage = "locate"
+                t0 = time.monotonic()
                 entries = await self._agent.locate(self._session.working_dir, user_input)
+                events.emit("locate", session=session_id, turn=turn_id, files=len(entries), duration_ms=_ms(time.monotonic() - t0))
                 if self._agent.debug:
                     append_debug(self._session, {"content": {"locate": [path for path, _ in entries]}})
 
             if route.subagent is not None:
+                stage = "gate"
                 rejected, reason = self._agent.check_gate(entries, self._session.blast_radius_limit)
+                events.emit(
+                    "gate", session=session_id, turn=turn_id,
+                    areas=count_blast_areas([path for path, _ in entries]),
+                    limit=self._session.blast_radius_limit, passed=not rejected,
+                )
                 if rejected and self._session.scope_gate:
+                    outcome = "gate_blocked"
                     reason_text = reason or "request exceeds scope"
                     await conversation.mount(MessageWidget(MessageKind.REJECTED, reason_text))
                     append_event(self._session, reason_text, source="gate")
                     return
 
             if entries:
+                stage = "rewrite"
+                t0 = time.monotonic()
                 processed_input, rewrite_label = await self._agent.rewrite(user_input, entries)
+                events.emit("rewrite", session=session_id, turn=turn_id, ok=True, duration_ms=_ms(time.monotonic() - t0))
                 original_input = user_input
                 if rewrite_label:
                     ui_label = rewrite_label
@@ -994,11 +1046,14 @@ class GekaiApp(App[None]):
                 debug_text = f"\\[router: {'/'.join(parts)}]"
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
 
+            stage = "harness"
+            harness_start = time.monotonic()
             async for item in self._agent.process_stream(
                 self._session, processed_input, route,
                 entries=entries,
                 original_input=original_input,
                 permission_callback=self._permission_callback,
+                turn_id=turn_id,
             ):
                 if isinstance(item, str):
                     answer_chunks.append(item)
@@ -1022,19 +1077,34 @@ class GekaiApp(App[None]):
                             await ws_renderer.log(item.message, tool_name=item.tool_name)
                             if item.tool_name:
                                 query_tool_count += 1
+                                tool_counts[item.tool_name] = tool_counts.get(item.tool_name, 0) + 1
                         elif isinstance(item, DiffEvent):
                             await conversation.mount(DiffWidget(item.path, item.diff_lines))
                             conversation.scroll_end(animate=False)
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)
+                            llm_calls += 1
+                            prompt_tokens_total += item.prompt_tokens or 0
+                            completion_tokens_total += item.completion_tokens or 0
                         elif isinstance(item, ThinkingTokenEvent):
                             ws_renderer.thinking_chunk(item.text)
                         elif isinstance(item, StatusUpdateEvent):
                             await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):
                             await ws_renderer.done(item.thinking_chars)
+                            thinking_chars_total = item.thinking_chars
                         elif isinstance(item, MaxIterationsEvent):
                             max_iter_hit = True
+
+            harness_outcome = "max_iterations" if (max_iter_hit and not answer_chunks) else "ok"
+            if harness_outcome == "max_iterations":
+                outcome = "max_iterations"
+            events.emit(
+                "harness", session=session_id, turn=turn_id, outcome=harness_outcome,
+                llm_calls=llm_calls, prompt_tokens=prompt_tokens_total,
+                completion_tokens=completion_tokens_total, thinking_chars=thinking_chars_total,
+                tools=tool_counts, duration_ms=_ms(time.monotonic() - harness_start),
+            )
 
             if self._session is not None:
                 self.query_one("#context-bar", Static).update(
@@ -1059,6 +1129,8 @@ class GekaiApp(App[None]):
             error_msg = str(error) or type(error).__name__
             await conversation.mount(MessageWidget(MessageKind.ERROR, error_msg))
             append_event(self._session, error_msg, source="error")
+            events.emit("error", level="warning", session=session_id, turn=turn_id, stage=stage, error_type=type(error).__name__, message=error_msg)
+            outcome = "error"
             conversation.scroll_end(animate=False)
         finally:
             self._set_route_label("waiting", color=_DEFAULT_ROUTE_COLOR)
@@ -1067,11 +1139,13 @@ class GekaiApp(App[None]):
                 ws_renderer.stop_spinner()
             if self._worker_cancelled:
                 self._worker_cancelled = False
+                outcome = "interrupted"
                 msg = self._permission_denied_msg or ""
                 self._permission_denied_msg = None
                 await conversation.mount(MessageWidget(MessageKind.INTERRUPTED, msg))
                 append_event(self._session, msg, source="interrupted")
                 conversation.scroll_end(animate=False)
+            events.emit("turn.end", session=session_id, turn=turn_id, outcome=outcome, duration_ms=_ms(time.monotonic() - start))
             self._worker = None
             self._focus_prompt()
 

@@ -92,6 +92,14 @@ def main() -> None:
     )
     app.run()
 
+    agent.events.emit(
+        "run.exit",
+        duration_s=agent.events.runtime_s(),
+        turn_count=agent.events.turn_count,
+        reason=app.exit_reason,
+    )
+    agent.events.close()
+
     session_id = app.session_id
     if session_id and app.session_has_interactions:
         from rich.console import Console

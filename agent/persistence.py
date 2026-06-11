@@ -38,8 +38,11 @@ def _append(session: Session, entry: dict) -> None:
         fh.write(json.dumps({"timestamp": now_utc_str(), **entry}, separators=(",", ":")) + "\n")
 
 
-def append_message(session: Session, message: dict) -> None:
-    _append(session, {"kind": "turn", **message})
+def append_message(session: Session, message: dict, *, turn: str | None = None) -> None:
+    entry: dict = {"kind": "turn", **message}
+    if turn:
+        entry["turn"] = turn
+    _append(session, entry)
 
 
 def append_command(session: Session, text: str) -> None:
