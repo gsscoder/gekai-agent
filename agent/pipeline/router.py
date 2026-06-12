@@ -17,6 +17,7 @@ class Route:
     subagent: Subagent | None = None
     rejected: bool = False
     trivial: bool = False
+    explore: bool = False
 
 
 _ROUTER_PROMPT_BASE = (
@@ -27,6 +28,10 @@ _ROUTER_PROMPT_BASE = (
     "  TRIVIAL          — answerable with no codebase access: greetings, identity/capability "
     "questions, acknowledgments, general knowledge unrelated to this workspace; "
     "when unsure, do NOT choose this\n"
+    "  EXPLORE          — a read-only investigation that ends in an answer about files or "
+    "structure: \"list files\", \"where is X defined/located\", \"what files exist under Y\", "
+    "\"show project structure\"; NEVER choose this if the request also asks for an edit, fix, "
+    "or any change — prefer main in that case; when unsure, prefer main\n"
     "  <subagent-name>  — the request fits one subagent's specialty (see below), or explicitly asks to use or delegate the task to it by name\n"
     "  main             — anything else; handled directly by the coding agent\n"
     "<subagents>\n"
@@ -76,6 +81,8 @@ class Router:
             return Route()
         if first_lower == "trivial":
             return Route(trivial=True)
+        if first_lower == "explore":
+            return Route(explore=True)
         for p in self._subagents:
             if first_lower == p.name.lower():
                 return Route(subagent=p)

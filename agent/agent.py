@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 
 from . import __version__
 from .llm.model_caps import resolve_thinking_params
-from .harness import Harness, FileLocator
+from .harness import Harness, FileExplorer, FileLocator
 from .permissions import PermissionCallback
 from .subagents import Subagent
 from .pipeline import Route, Router, evaluate_blast_radius_gate, PromptRewriter
@@ -82,6 +82,12 @@ class GekaiAgent:
             model=self._supp_model,
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
+        )
+        self._explorer = FileExplorer(
+            model=self._supp_model,
+            api_key=self._supp_api_key,
+            api_base=self._supp_api_base,
+            debug=self.debug,
         )
         # rewriter runs on CORE with no thinking params (non-thinking call)
         self._rewriter = PromptRewriter(
@@ -180,12 +186,15 @@ class GekaiAgent:
         all_chunks: list[str] = []
         max_iter_hit = False
         completed = False
-        stream_iter = self._main.stream(
-            session, user_input,
-            permission_callback=permission_callback,
-            subagent=route.subagent,
-            extra_params={} if route.trivial else None,
-        )
+        if route.explore:
+            stream_iter = self._explorer.stream(session, user_input)
+        else:
+            stream_iter = self._main.stream(
+                session, user_input,
+                permission_callback=permission_callback,
+                subagent=route.subagent,
+                extra_params={} if route.trivial else None,
+            )
         try:
             async for item in stream_iter:
                 if isinstance(item, str):

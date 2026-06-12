@@ -248,6 +248,8 @@ def _route_decision(route: Route) -> str:
         return f"{route.subagent.namespace}/{route.subagent.name}"
     if route.trivial:
         return "trivial"
+    if route.explore:
+        return "explore"
     return "main"
 
 
@@ -979,6 +981,9 @@ class GekaiApp(App[None]):
             if route.subagent is not None:
                 _label = route.subagent.namespace
                 _color = NAMESPACE_COLORS[route.subagent.namespace]
+            elif route.explore:
+                _label = "explore"
+                _color = _DEFAULT_ROUTE_COLOR
             else:
                 _label = "main"
                 _color = _DEFAULT_ROUTE_COLOR
@@ -987,10 +992,10 @@ class GekaiApp(App[None]):
             original_input: str | None = None
             ui_label = ""
 
-            if route.trivial:
+            if route.trivial or route.explore:
                 entries = []
                 if self._agent.debug:
-                    append_debug(self._session, {"content": {"route": "trivial", "skipped": ["locate", "rewrite"]}})
+                    append_debug(self._session, {"content": {"route": "explore" if route.explore else "trivial", "skipped": ["locate", "rewrite"]}})
             else:
                 stage = "locate"
                 self._set_route_label("locate", color=_PIPELINE_COLOR)
@@ -1041,6 +1046,8 @@ class GekaiApp(App[None]):
                     parts = [route.subagent.namespace, route.subagent.name]
                 elif route.trivial:
                     parts = ["trivial"]
+                elif route.explore:
+                    parts = ["explore"]
                 else:
                     parts = ["main"]
                 debug_text = f"\\[router: {'/'.join(parts)}]"

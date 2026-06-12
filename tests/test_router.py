@@ -50,6 +50,19 @@ def test_route_default_trivial_is_false() -> None:
     assert Route().trivial is False
 
 
+def test_route_explore() -> None:
+    router = _make_router()
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response("EXPLORE"))
+    route = run(router.route("where is the Router class defined"))
+    assert route.explore
+    assert route.subagent is None
+    assert not route.rejected
+
+
+def test_route_default_explore_is_false() -> None:
+    assert Route().explore is False
+
+
 def test_route_rejected() -> None:
     router = _make_router()
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("REJECTED"))
