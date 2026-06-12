@@ -93,17 +93,6 @@ def load_scope_gate(working_dir: Path) -> bool:
     return True
 
 
-def save_scope_gate(working_dir: Path, enabled: bool) -> None:
-    path = _settings_path(working_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        data = {}
-    data["scope_gate"] = enabled
-    path.write_text(json.dumps(data, indent=2) + "\n")
-
-
 def validate_gate_config(working_dir: Path) -> list[str]:
     errors: list[str] = []
     paths = [_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"]

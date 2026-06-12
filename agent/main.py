@@ -8,7 +8,6 @@ import sys
 from . import __version__
 from .agent import GekaiAgent
 from .commands.clear import ClearCommand
-from .commands.config import ConfigGateCommand
 from .commands.exit import ExitCommand
 from .commands.registry import CommandRegistry
 from .persistence import load_session, load_timeline
@@ -76,7 +75,6 @@ def main() -> None:
 
     registry = CommandRegistry()
     registry.register(ClearCommand())
-    registry.register(ConfigGateCommand(working_dir))
     registry.register(ExitCommand())
 
     app = GekaiApp(

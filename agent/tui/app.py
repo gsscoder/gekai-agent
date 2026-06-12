@@ -560,11 +560,6 @@ class GekaiApp(App[None]):
         Binding("enter", "confirm_or_submit", "Confirm", priority=True, show=False),
     ]
 
-    # Slash commands that require parameters are inserted into the input with a
-    # trailing space when selected from the CommandPalette, allowing the user to
-    # enter arguments before the command is submitted.
-    _COMMANDS_WITH_ARGS: set[str] = {"config:gate"}
-
     def __init__(
         self,
         *,
@@ -881,12 +876,6 @@ class GekaiApp(App[None]):
             cmd = palette.selected_command
             palette.hide()
             if cmd:
-                if cmd in self._COMMANDS_WITH_ARGS:
-                    val = f"/{cmd} "
-                    prompt.text = val
-                    self._prompt_move_to_end(prompt)
-                    self._focus_prompt()
-                    return
                 stripped = f"/{cmd}"
         if not stripped:
             self._focus_prompt()
@@ -908,8 +897,6 @@ class GekaiApp(App[None]):
             cmd_name = stripped.lstrip("/").split(maxsplit=1)[0] if stripped.lstrip("/").split() else ""
             self._agent.events.emit("command", session=self.session_id, name=cmd_name)
             result = await self._command_registry.dispatch(stripped)
-            if result.scope_gate is not None and self._session is not None:
-                self._session.scope_gate = result.scope_gate
             if result.clear_session:
                 await self._clear_session(command_text=stripped)
                 return
@@ -1438,14 +1425,8 @@ class GekaiApp(App[None]):
         palette = self.query_one(CommandPalette)
         palette.hide()
         prompt = self.query_one("#prompt", TextArea)
-        if name in self._COMMANDS_WITH_ARGS:
-            val = f"/{name} "
-            prompt.text = val
-            self._prompt_move_to_end(prompt)
-            self._focus_prompt()
-        else:
-            prompt.text = f"/{name}"
-            await self._submit_prompt()
+        prompt.text = f"/{name}"
+        await self._submit_prompt()
 
     @on(events.Click, "#scroll-hint")
     def _scroll_hint_clicked(self, event: events.Click) -> None:
