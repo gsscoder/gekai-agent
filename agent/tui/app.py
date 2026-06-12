@@ -1116,7 +1116,7 @@ class GekaiApp(App[None]):
 
             if self._session is not None:
                 self.query_one("#context-bar", Static).update(
-                    _fmt_context_pct(_estimate_session_tokens(self._session), self._context_limit)
+                    _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
                 )
             if max_iter_hit and not answer_chunks:
                 await conversation.mount(MessageWidget(MessageKind.ERROR, "agent hit iteration limit without producing a response"))
