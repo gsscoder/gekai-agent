@@ -351,8 +351,8 @@ class PromptTextArea(TextArea):
     """TextArea that renders without explicit default background, preserving terminal transparency."""
 
     def on_mount(self) -> None:
-        # Non-blinking, always-visible block cursor (the old Input look).
-        self.cursor_blink = False
+        # Blinking block cursor (the old Input look, but blinking).
+        self.cursor_blink = True
 
     def get_component_rich_style(self, *names: str, partial: bool = False, default: Style | None = None) -> Style:
         # The cursor is painted via theme.cursor_style, which apply_css derives
@@ -650,7 +650,7 @@ class GekaiApp(App[None]):
     async def _init_session(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
 
-        banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
+        banner_text = pyfiglet.figlet_format("gekAI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
         workspace: dict = {}
         self._workspace = workspace
@@ -742,7 +742,7 @@ class GekaiApp(App[None]):
             _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
         self._assistant_widget = None
-        banner_text = pyfiglet.figlet_format("gek-AI", font="small_slant").rstrip()
+        banner_text = pyfiglet.figlet_format("gekAI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
         if command_text is not None:
             append_command(self._session, command_text)

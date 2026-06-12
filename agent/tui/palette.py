@@ -70,7 +70,7 @@ class CommandPalette(Static):
         for i, (name, desc) in enumerate(self._items):
             padded = f"/{name}".ljust(self._max_name_len + 3)
             if i == self._selected:
-                lines.append(f"[bold cyan]❯ {padded}{desc}[/bold cyan]")
+                lines.append(f"[bold white]❯ {padded}{desc}[/bold white]")
             else:
                 lines.append(f"[dim]  {padded}{desc}[/dim]")
         self.update("\n".join(lines))

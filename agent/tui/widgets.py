@@ -78,7 +78,7 @@ class ChoiceBar(Static):
         lines: list[str] = [markup_escape(self._question)]
         for i, (_, label) in enumerate(self._options):
             if i == self._selected:
-                lines.append(f"[bold cyan]❯ {markup_escape(label)}[/bold cyan]")
+                lines.append(f"[bold white]❯ {markup_escape(label)}[/bold white]")
             else:
                 lines.append(f"  {markup_escape(label)}")
         self.update("\n".join(lines))
@@ -117,8 +117,7 @@ class MessageWidget(Widget):
 
     def compose(self) -> ComposeResult:
         if self._kind == MessageKind.ASSISTANT:
-            dot_color = self._color or "cyan"
-            yield Static(f"[{dot_color}]●[/{dot_color}]")
+            yield Static("[white]●[/white]")
             if self._color:
                 yield Static(markup_escape(self._text), classes="assistant-body")
             else:
@@ -144,7 +143,7 @@ class MessageWidget(Widget):
         elif self._kind == MessageKind.COMMAND_RESULT:
             yield Static(self._as_markup())
         elif self._kind == MessageKind.HEADER:
-            yield Static("[cyan]●[/cyan]", classes="header-dot")
+            yield Static("[#666666]●[/#666666]", classes="header-dot")
             yield Static(self._text, classes="header-text")
         elif self._kind == MessageKind.USER:
             yield Static(self._as_user_text())
@@ -170,7 +169,7 @@ class MessageWidget(Widget):
             case MessageKind.SYSTEM:
                 return f"[dim]{self._text}[/dim]"
             case MessageKind.BANNER:
-                return f"[cyan]{self._text}[/cyan]"
+                return f"[grey70]{self._text}[/grey70]"
             case MessageKind.COMMAND_RESULT:
                 if self._text:
                     return f"[#666666]⎿[/#666666] [#ffd700]{markup_escape(self._text)}[/#ffd700]"
@@ -299,7 +298,7 @@ class HistoryPanel(Widget):
             escaped = markup_escape(truncated)
             ago_markup = f"[dim]{ago:>6}[/dim]"
             if abs_i == self._selected:
-                lines.append(f"[bold cyan]❯ {ago_markup}  {escaped}[/bold cyan]")
+                lines.append(f"[bold white]❯ {ago_markup}  {escaped}[/bold white]")
             else:
                 lines.append(f"[dim]  {ago_markup}  {escaped}[/dim]")
         self.query_one("#history-entries", Static).update("\n".join(lines))
@@ -413,7 +412,7 @@ class FilePanel(Widget):
             truncated = path if len(path) <= self._MAX_PATH_LEN else "…" + path[-(self._MAX_PATH_LEN - 1):]
             escaped = markup_escape(truncated)
             if abs_i == self._selected:
-                lines.append(f"[bold cyan]+ {escaped}[/bold cyan]")
+                lines.append(f"[bold white]+ {escaped}[/bold white]")
             else:
                 lines.append(f"[dim]  {escaped}[/dim]")
         self.query_one("#file-entries", Static).update("\n".join(lines))
