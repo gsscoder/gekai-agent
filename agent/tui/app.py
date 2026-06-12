@@ -942,7 +942,7 @@ class GekaiApp(App[None]):
         # transparent dash tail must be styled per-cell, which a single
         # border_title_background style can't express.
         self.query_one("#input-area", Container).border_title = (
-            f"[#000000 on {self._route_color}] {label.lower()} [/][#3a3a3a]─[/]"
+            f"[bold #000000 on {self._route_color}] {label.lower()} [/][#3a3a3a]─[/]"
         )
 
     async def _stream(self, user_input: str) -> None:
