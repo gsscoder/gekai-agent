@@ -1121,7 +1121,7 @@ class GekaiApp(App[None]):
             if max_iter_hit and not answer_chunks:
                 await conversation.mount(MessageWidget(MessageKind.ERROR, "agent hit iteration limit without producing a response"))
             else:
-                answer = "".join(answer_chunks).rstrip("\n")
+                answer = "".join(answer_chunks).rstrip()
                 self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
                 await conversation.mount(self._assistant_widget)
                 elapsed = time.monotonic() - start
