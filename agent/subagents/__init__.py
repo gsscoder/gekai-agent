@@ -9,10 +9,12 @@ from ..settings import Permissions
 
 # action namespaces and their TUI badge colors — co-located so a namespace
 # cannot be declared without a color (no fallback color at render time);
-# "generic" is innate — no subagents, selector skipped
+# namespaces with no user_invocable members (e.g. "generic", "worker") are
+# innate — no routable subagents, selector skipped
 NAMESPACE_COLORS: dict[str, str] = {
     "coding": "#FFD700",
     "generic": "#7FDBCA",
+    "worker": "#9E9E9E",
 }
 NAMESPACES = tuple(NAMESPACE_COLORS)
 
@@ -27,6 +29,7 @@ class Subagent:
     tools: list[str] | None = None  # tool-name allowlist; None = all tools
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     is_fallback: bool = False  # marks the per-namespace residual fallback
+    user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
 
     def build_system_base(self) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body
@@ -47,14 +50,16 @@ def _discover() -> list[Subagent]:
     ns_directives: dict[str, str] = {}
     raw_subagents: list[Subagent] = []
     package = __name__
-    for info in pkgutil.iter_modules(__path__):  # type: ignore[name-defined]
-        mod = importlib.import_module(f"{package}.{info.name}")
-        if info.name.startswith("_"):
-            ns = getattr(mod, "namespace", None)
-            nd = getattr(mod, "namespace_directives", None)
-            if isinstance(ns, str) and isinstance(nd, str):
-                ns_directives[ns] = nd
-        else:
+    for ns_info in pkgutil.iter_modules(__path__):  # type: ignore[name-defined]
+        if not ns_info.ispkg:
+            continue
+        ns_pkg = importlib.import_module(f"{package}.{ns_info.name}")
+        ns = getattr(ns_pkg, "namespace", None)
+        nd = getattr(ns_pkg, "namespace_directives", None)
+        if isinstance(ns, str) and isinstance(nd, str):
+            ns_directives[ns] = nd
+        for info in pkgutil.iter_modules(ns_pkg.__path__):
+            mod = importlib.import_module(f"{package}.{ns_info.name}.{info.name}")
             p = getattr(mod, "subagent", None)
             if isinstance(p, Subagent):
                 raw_subagents.append(p)
@@ -90,11 +95,9 @@ def validate_registry() -> None:
             raise ValueError(f"duplicate subagent name: {p.name!r}")
         seen.add(p.name)
     for ns in NAMESPACES:
-        if ns == "generic":
-            continue
-        members = _by_namespace.get(ns, [])
+        members = [p for p in _by_namespace.get(ns, []) if p.user_invocable]
         if not members:
-            raise ValueError(f"namespace {ns!r} has no subagents")
+            continue
         fallbacks = [p for p in members if p.is_fallback]
         if len(fallbacks) != 1:
             raise ValueError(

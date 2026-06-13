@@ -52,7 +52,7 @@ class Router:
             base_url=api_base,
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
-        self._subagents = list(SUBAGENTS)
+        self._subagents = [p for p in SUBAGENTS if p.user_invocable]
         menu = "\n".join(f"  {p.name} — {p.description}" for p in self._subagents)
         self._prompt = PIPELINE_DIRECTIVES + _ROUTER_PROMPT_BASE.replace("{subagents-meta}", menu)
 

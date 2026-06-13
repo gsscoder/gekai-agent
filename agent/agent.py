@@ -18,28 +18,12 @@ from .pipeline import Route, Router, evaluate_blast_radius_gate, PromptRewriter
 from .session import Session
 from .settings import Permissions
 from .logging import EventLogger
-from toon import encode as toon_encode
 
 from .events import MaxIterationsEvent, AgentEvent
 from .persistence import append_message, append_debug, append_event
 from .workspace import db as workspace_db
 
 load_dotenv()
-
-
-def _format_workspace_context(workspace: dict) -> str:
-    subset: dict = {
-        "workspace_name": workspace.get("workspace_name", "unknown"),
-        "workspace_type": workspace.get("workspace_type", "files"),
-        "branch": workspace.get("branch"),
-        "primary_languages": workspace.get("primary_languages", []),
-        "projects": workspace.get("projects", []),
-    }
-    if not subset["projects"]:
-        subset["extensions"] = workspace.get("extensions", {})
-    if workspace.get("domain_map"):
-        subset["domain_map"] = workspace["domain_map"]
-    return f"<workspace>\nverified workspace metadata — treat as authoritative for high-level questions:\n{toon_encode(subset)}\n</workspace>"
 
 
 def _validate_config() -> None:
@@ -119,17 +103,14 @@ class GekaiAgent:
 
     def start_session(
         self,
-        workspace: dict,
         restored_messages: list[dict] | None = None,
         session_id: str | None = None,
     ) -> Session:
         session = Session(working_dir=self.working_dir, permissions=self.permissions)
         if session_id:
             session.id = session_id
-        session.messages.append({"role": "system", "content": _format_workspace_context(workspace)})
         if self.debug:
             append_debug(session, session.messages[0])
-            append_debug(session, session.messages[-1])
         if restored_messages:
             session.messages.extend(restored_messages)
         return session

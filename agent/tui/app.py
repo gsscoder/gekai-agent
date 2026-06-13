@@ -27,8 +27,9 @@ from agent.pipeline import Route
 from agent.pipeline.blast_radius import count_blast_areas
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS
+from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
-from agent.workspace import list_files, list_dirs
+from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import random_accent_color, random_farewell, random_operative_verb
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
 
@@ -585,7 +586,6 @@ class GekaiApp(App[None]):
         self._restored_timeline = restored_timeline
         self._needs_permissions = needs_permissions
         self._worker: Worker | None = None
-        self._workspace: dict | None = None
         self._assistant_widget: MessageWidget | None = None
         self._status_task: asyncio.Task[None] | None = None
         self._status_stop: asyncio.Event | None = None
@@ -647,14 +647,12 @@ class GekaiApp(App[None]):
 
         banner_text = pyfiglet.figlet_format("gekAI", font="small_slant").rstrip()
         await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
-        workspace: dict = {}
-        self._workspace = workspace
         self._session = self._agent.start_session(
-            workspace,
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
         )
         self._agent.events.emit("session.start", session=self._session.id, resumed=self._restored_id is not None)
+
         self._session.scope_gate = load_scope_gate(self._working_dir)
         self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
 
@@ -723,13 +721,32 @@ class GekaiApp(App[None]):
             self._agent.permissions = perms
             self._session.permissions = perms
 
+        conn = workspace_db.ensure(self._working_dir)
+        await self._start_status_animation("indexing workspace", random_accent_color())
+        try:
+            index_stats = await ws_manager.run("onboard", self._working_dir, conn)
+        finally:
+            await self._stop_status_animation()
+            self._clear_status()
+        conn.close()
+        self._agent.events.emit(
+            "workspace.index",
+            session=self._session.id,
+            file_count=index_stats.file_count,
+            indexed_count=index_stats.indexed_count,
+            skipped_fresh=index_stats.skipped_fresh,
+            symbols_extracted=index_stats.symbols_extracted,
+            symbol_files=index_stats.symbol_files,
+            duration_ms=index_stats.duration_ms,
+        )
+
         if self._restored_id is None:
             await self.mount(WelcomeOverlay(id="welcome-overlay"))
 
     async def _clear_session(self, command_text: str | None = None) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
-        self._session = self._agent.start_session(self._workspace)
+        self._session = self._agent.start_session()
         self._agent.events.emit("session.start", session=self._session.id, resumed=False)
         self._session.scope_gate = load_scope_gate(self._working_dir)
         self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)

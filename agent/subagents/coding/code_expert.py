@@ -1,4 +1,4 @@
-from . import Subagent
+from .. import Subagent
 
 subagent = Subagent(
     name="code-expert",
