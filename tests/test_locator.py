@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.harness.file_locator import FileLocator, _format_hint_section, _parse_locator_output
+from agent.llm import MaxIterationsExceeded
 from agent.pipeline._directives import PIPELINE_DIRECTIVES
 from agent.llm.types import Message
 
@@ -21,7 +23,6 @@ def test_locator_system_prompt_contains_pipeline_directives() -> None:
         instance.run = AsyncMock(return_value=[Message(role="assistant", content="")])
         MockAgent.return_value = instance
 
-        import asyncio
         asyncio.run(locator.locate(Path("."), "add a new feature"))
 
         _, kwargs = MockAgent.call_args
@@ -36,7 +37,6 @@ def test_locate_without_hints_omits_hint_section() -> None:
         instance.run = AsyncMock(return_value=[Message(role="assistant", content="")])
         MockAgent.return_value = instance
 
-        import asyncio
         asyncio.run(locator.locate(Path("."), "add a new feature"))
 
         _, kwargs = MockAgent.call_args
@@ -51,7 +51,6 @@ def test_locate_with_hints_injects_hint_section() -> None:
         instance.run = AsyncMock(return_value=[Message(role="assistant", content="")])
         MockAgent.return_value = instance
 
-        import asyncio
         asyncio.run(locator.locate(Path("."), "add a new feature", hint_paths=["src/main.py", "src/util.py"]))
 
         _, kwargs = MockAgent.call_args
@@ -166,3 +165,60 @@ def test_parse_preserves_keyword_order_with_dedup() -> None:
     text = "src/a.py | zebra, alpha, beta, alpha, zebra"
     _, keywords = _parse_locator_output(text)[0]
     assert keywords == ["zebra", "alpha", "beta"]
+
+
+def test_locator_passes_max_iterations_and_wall_clock_timeout_to_agent() -> None:
+    locator = _make_locator()
+    with patch("agent.harness.file_locator.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.tools = MagicMock()
+        instance.run = AsyncMock(return_value=[Message(role="assistant", content="")])
+        MockAgent.return_value = instance
+
+        asyncio.run(locator.locate(Path("."), "add a new feature"))
+
+        _, kwargs = MockAgent.call_args
+        assert kwargs["max_iterations"] == 4
+        assert kwargs["wall_clock_timeout"] == 25.0
+
+
+def test_locate_returns_empty_and_timed_out_on_max_iterations_exceeded() -> None:
+    locator = _make_locator()
+    with patch("agent.harness.file_locator.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.tools = MagicMock()
+        instance.run = AsyncMock(side_effect=MaxIterationsExceeded("boom"))
+        MockAgent.return_value = instance
+
+        entries, timed_out = asyncio.run(locator.locate(Path("."), "add a new feature"))
+
+        assert entries == []
+        assert timed_out is True
+
+
+def test_locate_returns_empty_and_timed_out_on_wall_clock_timeout() -> None:
+    locator = _make_locator()
+    with patch("agent.harness.file_locator.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.tools = MagicMock()
+        instance.run = AsyncMock(side_effect=asyncio.TimeoutError())
+        MockAgent.return_value = instance
+
+        entries, timed_out = asyncio.run(locator.locate(Path("."), "add a new feature"))
+
+        assert entries == []
+        assert timed_out is True
+
+
+def test_locate_returns_parsed_entries_and_timed_out_false_on_success() -> None:
+    locator = _make_locator()
+    with patch("agent.harness.file_locator.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.tools = MagicMock()
+        instance.run = AsyncMock(return_value=[Message(role="assistant", content="src/a.py | alpha")])
+        MockAgent.return_value = instance
+
+        entries, timed_out = asyncio.run(locator.locate(Path("."), "add a new feature"))
+
+        assert entries == [("src/a.py", ["alpha"])]
+        assert timed_out is False

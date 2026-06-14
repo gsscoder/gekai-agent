@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS file_keywords (
     keyword TEXT NOT NULL,
     UNIQUE(file_id, keyword)
 );
+
+CREATE INDEX IF NOT EXISTS idx_file_keywords_keyword ON file_keywords(keyword);
 """
 
 _REBUILD_DDL = """
@@ -167,20 +169,26 @@ def find_candidates(
     """Look up cached candidate paths by keyword overlap.
 
     Score = number of `keywords` that match a file's stored keywords.
-    Rows that fail `is_fresh` are evicted (cascades to file_keywords)
-    and excluded from the result.
+    The SQL query itself is bounded (ORDER BY score DESC LIMIT) so a
+    generic keyword can't pull thousands of rows into Python. Rows that
+    fail `is_fresh` are evicted (cascades to file_keywords) and excluded
+    from the result; stale rows ranked below the SQL limit are not
+    evicted by this call.
     """
     normalized = [kw.strip().lower() for kw in keywords if kw.strip()]
     if not normalized:
         return []
 
+    # Bound the SQL result so a generic keyword can't return thousands of rows;
+    # the extra headroom over `limit` absorbs rows that fail is_fresh below.
+    sql_limit = limit * 3
     placeholders = ", ".join("?" for _ in normalized)
     rows = conn.execute(
         "SELECT f.id, f.path, f.size, f.mtime_ns, f.content_hash, COUNT(*) AS score "
         "FROM files f JOIN file_keywords fk ON fk.file_id = f.id "
         f"WHERE fk.keyword IN ({placeholders}) "
-        "GROUP BY f.id ORDER BY score DESC",
-        normalized,
+        "GROUP BY f.id ORDER BY score DESC LIMIT ?",
+        [*normalized, sql_limit],
     ).fetchall()
 
     candidates: list[tuple[str, int]] = []

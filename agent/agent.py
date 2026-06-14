@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import platform
@@ -120,18 +121,20 @@ class GekaiAgent:
 
     async def locate(
         self, working_dir: Path, text: str,
-    ) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    ) -> tuple[list[tuple[str, list[str]]], list[str], bool]:
         hint_paths: list[str] = []
         try:
             conn = workspace_db.ensure(working_dir)
             keywords = workspace_db.mine_keywords(text)
-            candidates = workspace_db.find_candidates(conn, working_dir, keywords)
+            candidates = await asyncio.to_thread(
+                workspace_db.find_candidates, conn, working_dir, keywords
+            )
             conn.close()
             hint_paths = [path for path, _ in candidates]
         except Exception:
             pass
-        entries = await self._locator.locate(working_dir, text, hint_paths=hint_paths or None)
-        return entries, hint_paths
+        entries, timed_out = await self._locator.locate(working_dir, text, hint_paths=hint_paths or None)
+        return entries, hint_paths, timed_out
 
     def check_gate(
         self, entries: list[tuple[str, list[str]]], limit: int,

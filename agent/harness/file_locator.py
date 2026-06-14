@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
 
-from ..llm import Agent
+from ..llm import Agent, MaxIterationsExceeded
 from ..llm.providers.openai import OpenAIAdapter
 from ..llm.types import Message, TextBlock
 from ..pipeline import PIPELINE_DIRECTIVES
@@ -79,17 +80,21 @@ class FileLocator:
         model: str,
         api_key: str | None = None,
         api_base: str | None = None,
+        max_iterations: int = 4,
+        wall_clock_timeout: float = 25.0,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._api_base = api_base
+        self._max_iterations = max_iterations
+        self._wall_clock_timeout = wall_clock_timeout
 
     async def locate(
         self,
         working_dir: Path,
         request: str,
         hint_paths: list[str] | None = None,
-    ) -> list[tuple[str, list[str]]]:
+    ) -> tuple[list[tuple[str, list[str]]], bool]:
         adapter = OpenAIAdapter(
             api_key=self._api_key,
             base_url=self._api_base,
@@ -102,14 +107,19 @@ class FileLocator:
             provider=adapter,
             model=self._model,
             system=system,
+            max_iterations=self._max_iterations,
+            wall_clock_timeout=self._wall_clock_timeout,
         )
         for t in make_tools(working_dir):
             if t.is_read_only:
                 agent.tools.register(t)
 
-        history = await agent.run([
-            Message(role="user", content="locate the files"),
-        ])
+        try:
+            history = await agent.run([
+                Message(role="user", content="locate the files"),
+            ])
+        except (MaxIterationsExceeded, asyncio.TimeoutError):
+            return [], True
 
         last = history[-1]
         if isinstance(last.content, list):
@@ -117,4 +127,4 @@ class FileLocator:
         else:
             text = last.content or ""
 
-        return _parse_locator_output(text)
+        return _parse_locator_output(text), False

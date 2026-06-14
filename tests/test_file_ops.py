@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 from agent.tools import _move_file, _copy_file, _delete_file, _make_dir
+from agent.tools.files import _grep
 
 
 def run(coro):
@@ -139,3 +140,31 @@ class TestMakeDir:
     def test_jail(self, tmp_path):
         result = run(_make_dir("../outside", working_dir=tmp_path))
         assert result == "error: path outside working directory"
+
+
+class TestGrep:
+    def test_finds_match_in_source(self, tmp_path):
+        (tmp_path / "app.py").write_text("def api_home():\n    pass\n")
+        result = run(_grep("api_home", working_dir=tmp_path))
+        assert "app.py:1: def api_home():" in result
+
+    def test_skips_ignored_dirs(self, tmp_path):
+        # a match buried in .git / .venv / __pycache__ / .gekai must NOT be read —
+        # walking those is what stalled grep for minutes (reads VCS internals,
+        # virtualenvs, build output).
+        (tmp_path / "real.py").write_text("needle here\n")
+        for junk in (".git", ".venv", "__pycache__", ".gekai", "node_modules"):
+            d = tmp_path / junk
+            d.mkdir()
+            (d / "buried.py").write_text("needle here\n")
+
+        result = run(_grep("needle", working_dir=tmp_path))
+
+        assert "real.py:1:" in result
+        for junk in (".git", ".venv", "__pycache__", ".gekai", "node_modules"):
+            assert junk not in result
+
+    def test_no_matches(self, tmp_path):
+        (tmp_path / "a.py").write_text("nothing relevant\n")
+        result = run(_grep("zzz_absent", working_dir=tmp_path))
+        assert result == "(no matches)"

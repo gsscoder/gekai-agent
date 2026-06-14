@@ -123,13 +123,14 @@ def test_process_stream_non_trivial_route_passes_no_extra_params_override(tmp_pa
 # ---------------------------------------------------------------------------
 
 class _FakeLocator:
-    def __init__(self, entries: list[tuple[str, list[str]]]) -> None:
+    def __init__(self, entries: list[tuple[str, list[str]]], timed_out: bool = False) -> None:
         self._entries = entries
+        self._timed_out = timed_out
         self.last_hint_paths: list[str] | None = "unset"  # type: ignore[assignment]
 
     async def locate(self, working_dir, request, hint_paths=None):
         self.last_hint_paths = hint_paths
-        return self._entries
+        return self._entries, self._timed_out
 
 
 def _stub_agent_with_locator(locator: _FakeLocator) -> GekaiAgent:
@@ -142,11 +143,12 @@ def test_locate_returns_entries_and_no_hints_when_cache_empty(tmp_path: Path) ->
     locator = _FakeLocator([("src/a.py", ["alpha"])])
     agent = _stub_agent_with_locator(locator)
 
-    entries, hint_paths = run(agent.locate(tmp_path, "find alpha"))
+    entries, hint_paths, timed_out = run(agent.locate(tmp_path, "find alpha"))
 
     assert entries == [("src/a.py", ["alpha"])]
     assert hint_paths == []
     assert locator.last_hint_paths is None
+    assert timed_out is False
 
 
 def test_locate_passes_cached_candidates_as_hints(tmp_path: Path) -> None:
@@ -163,8 +165,19 @@ def test_locate_passes_cached_candidates_as_hints(tmp_path: Path) -> None:
     locator = _FakeLocator([])
     agent = _stub_agent_with_locator(locator)
 
-    entries, hint_paths = run(agent.locate(tmp_path, "update the prompt builder"))
+    entries, hint_paths, timed_out = run(agent.locate(tmp_path, "update the prompt builder"))
 
     assert hint_paths == ["src/prompt_builder.py"]
     assert locator.last_hint_paths == hint_paths
     assert entries == []
+    assert timed_out is False
+
+
+def test_locate_propagates_timed_out_flag(tmp_path: Path) -> None:
+    locator = _FakeLocator([], timed_out=True)
+    agent = _stub_agent_with_locator(locator)
+
+    entries, hint_paths, timed_out = run(agent.locate(tmp_path, "find alpha"))
+
+    assert entries == []
+    assert timed_out is True

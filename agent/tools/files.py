@@ -5,14 +5,32 @@ import shutil
 from pathlib import Path
 
 from agent.llm import tool
+from agent.workspace import scanner
 from agent.workspace.symbols import _EXT_TO_LANG, _LANG_TO_MODULE, _LANG_QUERIES
 
 _MAX_RESULTS = 200
+_MAX_GREP_FILES = 5000
 
 
 def _resolve_in_ws(path: str, working_dir: Path) -> Path | None:
     target = (working_dir / path).resolve()
     return target if target.is_relative_to(working_dir.resolve()) else None
+
+
+def _walk_files(base: Path) -> list[Path]:
+    """Files under `base`, skipping ignored dirs (.git, .venv, .gekai, etc.).
+
+    Reuses scanner._walk so grep never reads VCS internals, virtualenvs, or
+    build output — walking those reads thousands of files and can stall a
+    single grep call for minutes. Bounded by _MAX_GREP_FILES.
+    """
+    files: list[Path] = []
+    for dirpath, _, filenames in scanner._walk(base):
+        for fname in filenames:
+            files.append(dirpath / fname)
+            if len(files) >= _MAX_GREP_FILES:
+                return files
+    return files
 
 
 async def _read_file(
@@ -79,9 +97,9 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
         target = _resolve_in_ws(path, working_dir)
         if target is None:
             return "error: path outside working directory"
-        candidates = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
+        candidates = [target] if target.is_file() else _walk_files(target)
     else:
-        candidates = [p for p in root.rglob("*") if p.is_file()]
+        candidates = _walk_files(root)
 
     results: list[str] = []
     for file in candidates:

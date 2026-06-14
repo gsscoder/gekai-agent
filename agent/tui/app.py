@@ -1004,12 +1004,13 @@ class GekaiApp(App[None]):
                 stage = "locate"
                 self._set_route_label("locate", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
-                entries, hint_paths = await self._agent.locate(self._session.working_dir, user_input)
+                entries, hint_paths, locate_timed_out = await self._agent.locate(self._session.working_dir, user_input)
                 located_paths = {path for path, _ in entries}
                 overlap = len(set(hint_paths) & located_paths) / len(located_paths) if located_paths else 0.0
                 events.emit(
                     "locate", session=session_id, turn=turn_id,
                     files=len(entries), hints=len(hint_paths), overlap=round(overlap, 3),
+                    timed_out=locate_timed_out,
                     duration_ms=_ms(time.monotonic() - t0),
                 )
                 if self._agent.debug:
