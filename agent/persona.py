@@ -25,6 +25,7 @@ _SHARED_BODY = (
     "stay focused on the codebase and its domain\n"
     "when asked general questions, answer briefly and steer back to the task\n"
     "when modifying code, be precise and minimal — change only what is requested\n"
+    "remove dead code and stale comments your change makes obsolete\n"
     "if the request includes a <reference_files> block, those paths are context only — do not modify them unless the request itself asks for changes there\n"
     "never fabricate file contents or paths — use tools to read them; when contents are already in context, present them directly\n"
     "<file_handling>\n"
@@ -40,7 +41,15 @@ _SHARED_BODY = (
     "never output horizontal separators of any kind: not ---, not ───, not ===, not ***, not any sequence of repeated characters forming a line"
 )
 
-SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY
+# Main-agent-only directives — appended after _SHARED_BODY, mirroring the
+# <directives> block a Subagent gets from build_system_base(). Never reaches
+# subagents: they assemble their own system prompt from _SHARED_BODY +
+# their own directives, independent of SYSTEM_PROMPT.
+_MAIN_DIRECTIVES = (
+    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing"
+)
+
+SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY + "\n<directives>\n" + _MAIN_DIRECTIVES
 
 # Each fragment fires when the assigned tool set intersects ("any") or
 # fully contains ("all") its trigger group — keeps the activation prompt
