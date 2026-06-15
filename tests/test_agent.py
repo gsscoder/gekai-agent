@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.agent import GekaiAgent
-from agent.harness import FileLocator, Harness
+from agent.harness import FileExplorer, FileLocator, Harness
 from agent.persistence import session_file
 from agent.pipeline import Route
 from agent.session import Session
@@ -23,8 +23,22 @@ class _FakeMain:
         self._chunks = chunks
         self.last_extra_params: dict | None | str = "unset"  # sentinel — distinguishes "not passed" from None
 
-    def stream(self, session, user_input, permission_callback=None, subagent=None, extra_params=None):
+    def stream(self, session, user_input, permission_callback=None, subagent=None, extra_params=None, hidden_grant_callback=None):
         self.last_extra_params = extra_params
+
+        async def _gen():
+            for c in self._chunks:
+                yield c
+        return _gen()
+
+
+class _FakeExplorer:
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = chunks
+        self.last_hidden_grant_callback = None
+
+    def stream(self, session, user_input, hidden_grant_callback=None):
+        self.last_hidden_grant_callback = hidden_grant_callback
 
         async def _gen():
             for c in self._chunks:
@@ -39,6 +53,12 @@ def _make_session(tmp_path: Path) -> Session:
 def _stub_agent(chunks: list[str]) -> GekaiAgent:
     stub = object.__new__(GekaiAgent)
     stub._main = cast(Harness, _FakeMain(chunks))
+    return stub
+
+
+def _stub_agent_with_explorer(chunks: list[str]) -> GekaiAgent:
+    stub = object.__new__(GekaiAgent)
+    stub._explorer = cast(FileExplorer, _FakeExplorer(chunks))
     return stub
 
 
@@ -116,6 +136,23 @@ def test_process_stream_non_trivial_route_passes_no_extra_params_override(tmp_pa
 
     main = cast(_FakeMain, agent._main)
     assert main.last_extra_params is None
+
+
+# ---------------------------------------------------------------------------
+# explore route threads hidden_grant_callback through to FileExplorer
+# ---------------------------------------------------------------------------
+
+def test_process_stream_explore_route_passes_hidden_grant_callback(tmp_path: Path) -> None:
+    session = _make_session(tmp_path)
+    agent = _stub_agent_with_explorer(["reply"])
+
+    async def _cb(rel: str, mode: str) -> bool:
+        return True
+
+    run(_drain(agent.process_stream(session, "list files", Route(explore=True), hidden_grant_callback=_cb)))
+
+    explorer = cast(_FakeExplorer, agent._explorer)
+    assert explorer.last_hidden_grant_callback is _cb
 
 
 # ---------------------------------------------------------------------------

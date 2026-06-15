@@ -19,7 +19,7 @@ from ..settings import Permissions
 from ..diff import build_diff
 from ..events import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..subagents import Subagent
-from ..tools import make_tools
+from ..tools import HiddenGrantCallback, make_tools
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
@@ -68,6 +68,7 @@ def _build_agent(
     system_base: str,
     bus: EventBus | None = None,
     subagent: Subagent | None = None,
+    hidden_grant_callback: HiddenGrantCallback | None = None,
 ) -> Agent:
     if subagent and subagent.permissions is not None:
         effective = Permissions(
@@ -79,7 +80,7 @@ def _build_agent(
         effective = permissions
 
     selected = []
-    for t in make_tools(working_dir):
+    for t in make_tools(working_dir, grant_cb=hidden_grant_callback):
         if subagent and subagent.tools is not None and t.name not in subagent.tools:
             continue
         perm = t.required_permission
@@ -128,6 +129,7 @@ class Harness:
         permission_callback: PermissionCallback | None = None,
         subagent: Subagent | None = None,
         extra_params: dict | None = None,
+        hidden_grant_callback: HiddenGrantCallback | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
@@ -136,6 +138,7 @@ class Harness:
             self._model, self._api_key, self._api_base, effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
+            hidden_grant_callback=hidden_grant_callback,
         )
         if self._debug:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})

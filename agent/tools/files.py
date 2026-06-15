@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from agent.llm import tool
+from agent.settings import load_allow_hidden, save_allow_hidden
 from agent.workspace import scanner
+from agent.workspace.ignore import load as _load_ignore_rules
 from agent.workspace.symbols import _EXT_TO_LANG, _LANG_TO_MODULE, _LANG_QUERIES
+
+HiddenGrantCallback = Callable[[str, str], Awaitable[bool]]
 
 _MAX_RESULTS = 200
 _MAX_GREP_FILES = 5000
@@ -14,10 +19,63 @@ _MAX_GREP_FILES = 5000
 
 def _resolve_in_ws(path: str, working_dir: Path) -> Path | None:
     target = (working_dir / path).resolve()
-    return target if target.is_relative_to(working_dir.resolve()) else None
+    base = working_dir.resolve()
+    if not target.is_relative_to(base):
+        return None
+    rel = str(target.relative_to(base)).replace("\\", "/")
+    rules = _load_ignore_rules(base)
+    if rules.is_forbidden(rel) or rules.is_forbidden(rel + "/"):
+        return None
+    return target
 
 
-def _walk_files(base: Path) -> list[Path]:
+async def _authorize(
+    path: str,
+    working_dir: Path,
+    allow_hidden: set[str] | None,
+    grant_cb: HiddenGrantCallback | None,
+    pending: set[str] | None = None,
+    *,
+    mode: str,
+) -> Path | str:
+    """Resolve `path` and gate hidden-but-not-forbidden access behind a grant.
+
+    Returns the resolved Path on success, or an "error: ..." string on
+    failure. Forbidden (.aiignore) paths fail via _resolve_in_ws before any
+    grant logic runs - the red zone is never prompted.
+
+    `pending` tracks hidden paths with an in-flight grant request. If a
+    concurrent same-batch call targets the same path while a grant is
+    already pending, it is denied immediately rather than double-prompting
+    (mirrors PermissionGate._pending).
+    """
+    target = _resolve_in_ws(path, working_dir)
+    if target is None:
+        return "error: path outside working directory"
+
+    rel = str(target.relative_to(working_dir.resolve())).replace("\\", "/")
+    rules = _load_ignore_rules(working_dir)
+    if rules.is_hidden(rel) or rules.is_hidden(rel + "/"):
+        granted = allow_hidden if allow_hidden is not None else set()
+        if rel not in granted:
+            in_flight = pending if pending is not None else set()
+            if rel in in_flight:
+                return f"error: access to hidden path denied: {rel}"
+            if grant_cb is None:
+                return f"error: access to hidden path denied: {rel}"
+            in_flight.add(rel)
+            try:
+                if not await grant_cb(rel, mode):
+                    return f"error: access to hidden path denied: {rel}"
+            finally:
+                in_flight.discard(rel)
+            granted.add(rel)
+            save_allow_hidden(working_dir, rel)
+
+    return target
+
+
+def _walk_files(base: Path, root: Path) -> list[Path]:
     """Files under `base`, skipping ignored dirs (.git, .venv, .gekai, etc.).
 
     Reuses scanner._walk so grep never reads VCS internals, virtualenvs, or
@@ -25,7 +83,7 @@ def _walk_files(base: Path) -> list[Path]:
     single grep call for minutes. Bounded by _MAX_GREP_FILES.
     """
     files: list[Path] = []
-    for dirpath, _, filenames in scanner._walk(base):
+    for dirpath, _, filenames in scanner._walk(base, root=root):
         for fname in filenames:
             files.append(dirpath / fname)
             if len(files) >= _MAX_GREP_FILES:
@@ -39,10 +97,14 @@ async def _read_file(
     working_dir: Path,
     start_line: int | None = None,
     end_line: int | None = None,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
 ) -> str:
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    if isinstance(result, str):
+        return result
+    target = result
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
         if start_line is None and end_line is None:
@@ -59,22 +121,33 @@ async def _read_file(
 
 
 async def _list_files(pattern: str, *, working_dir: Path) -> str:
-    def _entry(p: Path) -> str:
-        rel = str(p.relative_to(working_dir))
-        return rel + "/" if p.is_dir() else rel
-
-    matches = sorted(
-        _entry(p)
-        for p in working_dir.glob(pattern)
-        if p.is_file() or p.is_dir()
-    )[:_MAX_RESULTS]
+    rules = _load_ignore_rules(working_dir)
+    matches: list[str] = []
+    for p in working_dir.glob(pattern):
+        if not (p.is_file() or p.is_dir()):
+            continue
+        rel = str(p.relative_to(working_dir)).replace("\\", "/")
+        if p.is_dir():
+            rel += "/"
+        if rules.is_hidden(rel):
+            continue
+        matches.append(rel)
+    matches = sorted(matches)[:_MAX_RESULTS]
     return "\n".join(matches) if matches else "(no matches)"
 
 
-async def _file_info(path: str, *, working_dir: Path) -> str:
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+async def _file_info(
+    path: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    if isinstance(result, str):
+        return result
+    target = result
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
         line_count = len(text.splitlines())
@@ -86,7 +159,15 @@ async def _file_info(path: str, *, working_dir: Path) -> str:
         return f"error: {exc or type(exc).__name__}"
 
 
-async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> str:
+async def _grep(
+    pattern: str,
+    path: str | None = None,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
     try:
         regex = re.compile(pattern)
     except re.error as exc:
@@ -94,12 +175,13 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
 
     root = working_dir.resolve()
     if path:
-        target = _resolve_in_ws(path, working_dir)
-        if target is None:
-            return "error: path outside working directory"
-        candidates = [target] if target.is_file() else _walk_files(target)
+        result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+        if isinstance(result, str):
+            return result
+        target = result
+        candidates = [target] if target.is_file() else _walk_files(target, root)
     else:
-        candidates = _walk_files(root)
+        candidates = _walk_files(root, root)
 
     results: list[str] = []
     for file in candidates:
@@ -119,10 +201,20 @@ async def _grep(pattern: str, path: str | None = None, *, working_dir: Path) -> 
     return "\n".join(results) if results else "(no matches)"
 
 
-async def _edit_file(path: str, old_str: str, new_str: str, *, working_dir: Path) -> str:
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+async def _edit_file(
+    path: str,
+    old_str: str,
+    new_str: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(result, str):
+        return result
+    target = result
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -135,10 +227,19 @@ async def _edit_file(path: str, old_str: str, new_str: str, *, working_dir: Path
     return "ok"
 
 
-async def _write_file(path: str, content: str, *, working_dir: Path) -> str:
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+async def _write_file(
+    path: str,
+    content: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(result, str):
+        return result
+    target = result
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -152,6 +253,9 @@ async def _symbols(
     *,
     working_dir: Path,
     kind: str | None = None,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
 ) -> str:
     try:
         import importlib
@@ -159,9 +263,10 @@ async def _symbols(
     except ImportError:
         return "error: tree-sitter not installed (pip install tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript tree-sitter-go)"
 
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    if isinstance(result, str):
+        return result
+    target = result
 
     ext = target.suffix.lower()
     lang_name = _EXT_TO_LANG.get(ext)
@@ -207,13 +312,23 @@ async def _symbols(
     return "\n".join(f"{name}:{line}:{kind_}" for line, name, kind_ in results)
 
 
-async def _move_file(src: str, dst: str, *, working_dir: Path) -> str:
-    src_path = _resolve_in_ws(src, working_dir)
-    if src_path is None:
-        return "error: path outside working directory"
-    dst_path = _resolve_in_ws(dst, working_dir)
-    if dst_path is None:
-        return "error: path outside working directory"
+async def _move_file(
+    src: str,
+    dst: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    src_result = await _authorize(src, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(src_result, str):
+        return src_result
+    src_path = src_result
+    dst_result = await _authorize(dst, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(dst_result, str):
+        return dst_result
+    dst_path = dst_result
     if not src_path.exists():
         return f"error: source not found: {src}"
     if dst_path.exists():
@@ -226,13 +341,23 @@ async def _move_file(src: str, dst: str, *, working_dir: Path) -> str:
         return f"error: {exc or type(exc).__name__}"
 
 
-async def _copy_file(src: str, dst: str, *, working_dir: Path) -> str:
-    src_path = _resolve_in_ws(src, working_dir)
-    if src_path is None:
-        return "error: path outside working directory"
-    dst_path = _resolve_in_ws(dst, working_dir)
-    if dst_path is None:
-        return "error: path outside working directory"
+async def _copy_file(
+    src: str,
+    dst: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    src_result = await _authorize(src, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(src_result, str):
+        return src_result
+    src_path = src_result
+    dst_result = await _authorize(dst, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(dst_result, str):
+        return dst_result
+    dst_path = dst_result
     if not src_path.is_file():
         return f"error: source not a file: {src}"
     if dst_path.exists():
@@ -245,10 +370,18 @@ async def _copy_file(src: str, dst: str, *, working_dir: Path) -> str:
         return f"error: {exc or type(exc).__name__}"
 
 
-async def _delete_file(path: str, *, working_dir: Path) -> str:
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+async def _delete_file(
+    path: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(result, str):
+        return result
+    target = result
     if target.is_dir():
         return f"error: target is a directory, not a file: {path}"
     if not target.exists():
@@ -260,10 +393,18 @@ async def _delete_file(path: str, *, working_dir: Path) -> str:
         return f"error: {exc or type(exc).__name__}"
 
 
-async def _make_dir(path: str, *, working_dir: Path) -> str:
-    target = _resolve_in_ws(path, working_dir)
-    if target is None:
-        return "error: path outside working directory"
+async def _make_dir(
+    path: str,
+    *,
+    working_dir: Path,
+    allow_hidden: set[str] | None = None,
+    grant_cb: HiddenGrantCallback | None = None,
+    pending: set[str] | None = None,
+) -> str:
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    if isinstance(result, str):
+        return result
+    target = result
     try:
         target.mkdir(parents=True, exist_ok=True)
         return "ok"
@@ -271,7 +412,10 @@ async def _make_dir(path: str, *, working_dir: Path) -> str:
         return f"error: {exc or type(exc).__name__}"
 
 
-def make_file_tools(working_dir: Path) -> list:
+def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = None) -> list:
+    allow_hidden: set[str] = load_allow_hidden(working_dir)
+    pending: set[str] = set()
+
     @tool(is_read_only=True, required_permission="read")
     async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
         """Read a file in the workspace.
@@ -284,7 +428,15 @@ def make_file_tools(working_dir: Path) -> list:
         from the lowest to the highest line (add ~5 line buffer) — never one
         call per symbol.
         """
-        return await _read_file(path, working_dir=working_dir, start_line=start_line, end_line=end_line)
+        return await _read_file(
+            path,
+            working_dir=working_dir,
+            start_line=start_line,
+            end_line=end_line,
+            allow_hidden=allow_hidden,
+            grant_cb=grant_cb,
+            pending=pending,
+        )
 
     @tool(is_read_only=True, required_permission="read")
     async def list_files(pattern: str) -> str:
@@ -295,13 +447,13 @@ def make_file_tools(working_dir: Path) -> list:
     @tool(is_read_only=True, required_permission="read")
     async def grep(pattern: str, path: str | None = None) -> str:
         """Search file contents for a regex pattern. Returns matching lines as file:line: content."""
-        return await _grep(pattern, path=path, working_dir=working_dir)
+        return await _grep(pattern, path=path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=True, required_permission="read")
     async def file_info(path: str) -> str:
         """Return line count and byte size for a file. Use before read_file to decide
         whether to read the full file or a targeted range."""
-        return await _file_info(path, working_dir=working_dir)
+        return await _file_info(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=True, required_permission="read")
     async def symbols(path: str, kind: str | None = None) -> str:
@@ -314,7 +466,7 @@ def make_file_tools(working_dir: Path) -> list:
         For simple functions the name:line output is often sufficient to answer
         signature questions — only read_file if the full signature is required.
         """
-        return await _symbols(path, working_dir=working_dir, kind=kind)
+        return await _symbols(path, working_dir=working_dir, kind=kind, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=False, required_permission="write")
     async def edit_file(path: str, old_str: str, new_str: str) -> str:
@@ -324,7 +476,15 @@ def make_file_tools(working_dir: Path) -> list:
         Returns 'ok' on success or an error string on failure.
         To replace a larger block, include enough surrounding context to make old_str unique.
         """
-        return await _edit_file(path, old_str=old_str, new_str=new_str, working_dir=working_dir)
+        return await _edit_file(
+            path,
+            old_str=old_str,
+            new_str=new_str,
+            working_dir=working_dir,
+            allow_hidden=allow_hidden,
+            grant_cb=grant_cb,
+            pending=pending,
+        )
 
     @tool(is_read_only=False, required_permission="write")
     async def write_file(path: str, content: str) -> str:
@@ -333,7 +493,7 @@ def make_file_tools(working_dir: Path) -> list:
         Use for new files or complete rewrites. Prefer edit_file for targeted changes.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _write_file(path, content=content, working_dir=working_dir)
+        return await _write_file(path, content=content, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def move_file(src: str, dst: str) -> str:
@@ -343,7 +503,7 @@ def make_file_tools(working_dir: Path) -> list:
         Refuses if dst already exists — no silent overwrite.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _move_file(src, dst, working_dir=working_dir)
+        return await _move_file(src, dst, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def copy_file(src: str, dst: str) -> str:
@@ -353,7 +513,7 @@ def make_file_tools(working_dir: Path) -> list:
         Refuses if dst already exists — no silent overwrite.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _copy_file(src, dst, working_dir=working_dir)
+        return await _copy_file(src, dst, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def delete_file(path: str) -> str:
@@ -362,7 +522,7 @@ def make_file_tools(working_dir: Path) -> list:
         Refuses directories — use this only for files.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _delete_file(path, working_dir=working_dir)
+        return await _delete_file(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def make_dir(path: str) -> str:
@@ -371,7 +531,7 @@ def make_file_tools(working_dir: Path) -> list:
         Safe to call when the directory already exists.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _make_dir(path, working_dir=working_dir)
+        return await _make_dir(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     return [read_file, list_files, grep, file_info, symbols, edit_file, write_file,
             move_file, copy_file, delete_file, make_dir]

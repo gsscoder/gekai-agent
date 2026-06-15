@@ -4,16 +4,27 @@ import os
 import subprocess
 from pathlib import Path
 
-_SKIP_DIRS: frozenset[str] = frozenset(
-    {".git", "node_modules", ".venv", "__pycache__", "bin", "obj"}
-)
+from .ignore import load as _load_ignore_rules
 
 
-def _walk(working_dir: Path):
-    """Yield (dir, dirnames, files) tuples, skipping _SKIP_DIRS."""
-    for dirpath, dirnames, filenames in os.walk(working_dir):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
-        yield Path(dirpath), dirnames, filenames
+def _walk(start: Path, *, root: Path | None = None):
+    """Yield (dir, dirnames, files) tuples, skipping paths IgnoreRules.is_hidden.
+
+    `root` is the workspace root used to load .gitignore/.aiignore and as the
+    base for computing relative paths checked against those rules; it defaults
+    to `start`. Pass an explicit `root` when walking a subdirectory of a larger
+    workspace (so the root-level ignore files still apply).
+    """
+    root = (root or start).resolve()
+    rules = _load_ignore_rules(root)
+    start = start.resolve()
+    for dirpath, dirnames, filenames in os.walk(start):
+        dp = Path(dirpath)
+        rel_dir = dp.relative_to(root)
+        prefix = "" if str(rel_dir) == "." else str(rel_dir).replace("\\", "/") + "/"
+        dirnames[:] = [d for d in dirnames if not rules.is_hidden(prefix + d + "/")]
+        filenames[:] = [f for f in filenames if not rules.is_hidden(prefix + f)]
+        yield dp, dirnames, filenames
 
 
 def list_files(working_dir: Path) -> list[str]:

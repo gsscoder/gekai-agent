@@ -54,6 +54,31 @@ def save_permissions(working_dir: Path, permissions: Permissions) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def load_allow_hidden(working_dir: Path) -> set[str]:
+    path = _settings_path(working_dir)
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return set()
+    return set(data.get("permissions", {}).get("allow_hidden", []))
+
+
+def save_allow_hidden(working_dir: Path, rel: str) -> None:
+    path = _settings_path(working_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    perms = data.setdefault("permissions", {})
+    allow_hidden = perms.setdefault("allow_hidden", [])
+    if rel not in allow_hidden:
+        allow_hidden.append(rel)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def bootstrap_global_settings() -> None:
     path = Path.home() / ".gekai" / "settings.json"
     if path.exists():

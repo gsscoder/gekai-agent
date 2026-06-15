@@ -867,6 +867,17 @@ class GekaiApp(App[None]):
             self._worker.cancel()
         return False
 
+    async def _hidden_grant_callback(self, rel: str, mode: str) -> bool:
+        if self._worker_cancelled:
+            return False
+        question = f"Grant {mode} access to hidden path '{rel}' (excluded by .gitignore)?"
+        self._status_paused = True
+        pause_start = time.monotonic()
+        choice = await self._ask_choice(question, [("y", "Yes"), ("n", "No")])
+        self._status_paused = False
+        self._status_start += time.monotonic() - pause_start
+        return choice == "y"
+
     async def _ask_choice(
         self,
         question: str,
@@ -1066,6 +1077,7 @@ class GekaiApp(App[None]):
                 entries=entries,
                 original_input=original_input,
                 permission_callback=self._permission_callback,
+                hidden_grant_callback=self._hidden_grant_callback,
                 turn_id=turn_id,
             ):
                 if isinstance(item, str):

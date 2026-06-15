@@ -1,12 +1,50 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from pathlib import Path
 
 from agent.llm import tool
 from agent.shell import resolve_shell
+from agent.workspace.ignore import IgnoreRules, load as _load_ignore_rules
 
 _MAX_OUTPUT_CHARS = 20_000
+
+
+def _forbidden_token(command: str, working_dir: Path, rules: IgnoreRules) -> str | None:
+    """Best-effort scan: does any bare-path-looking token in `command` resolve
+    to a .aiignore-forbidden path under working_dir?
+
+    Not airtight (can't catch every obfuscation - encoded paths, env var
+    expansion, etc.) but stops the common case of an agent catting/grepping a
+    red-zone file via run_command instead of the file tools.
+    """
+    root = working_dir.resolve()
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+
+    candidates: list[str] = []
+    for tok in raw_tokens:
+        tok = tok.strip("'\"")
+        candidates.append(tok)
+        if "=" in tok:
+            candidates.append(tok.split("=", 1)[1])
+
+    for tok in candidates:
+        if not tok or tok.startswith("-"):
+            continue
+        try:
+            p = (root / tok).resolve()
+        except OSError:
+            continue
+        if not p.is_relative_to(root):
+            continue
+        rel = str(p.relative_to(root)).replace("\\", "/")
+        if rules.is_forbidden(rel) or rules.is_forbidden(rel + "/"):
+            return rel
+    return None
 
 
 async def _run_command(
@@ -15,6 +53,11 @@ async def _run_command(
     working_dir: Path,
     timeout: int = 30,
 ) -> str:
+    rules = _load_ignore_rules(working_dir)
+    hit = _forbidden_token(command, working_dir, rules)
+    if hit is not None:
+        return f"error: command references a restricted path: {hit}"
+
     spec = resolve_shell()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -71,6 +114,9 @@ def make_shell_tools(working_dir: Path) -> list:
         list_files (not ls/find/dir), symbols (not ctags).
         Reserve run_command for: build systems, test runners, git, package managers,
         and anything with no dedicated tool.
+
+        Paths listed in .aiignore are off-limits even via shell commands (best-effort
+        check, not airtight against obfuscation).
         """
         return await _run_command(command, working_dir=working_dir, timeout=timeout)
 

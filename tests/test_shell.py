@@ -10,6 +10,8 @@ import pytest
 
 from agent.shell import ShellSpec, resolve_shell
 from agent.tools import _run_command
+from agent.tools.shell import _forbidden_token
+from agent.workspace.ignore import load as _load_ignore_rules
 
 
 def run(coro):
@@ -172,3 +174,31 @@ class TestRunCommand:
     def test_working_dir_is_cwd(self, tmp_path: Path) -> None:
         result = run(_run_command(_pwd_cmd(), working_dir=tmp_path))
         assert str(tmp_path).lower() in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# _forbidden_token / .aiignore red zone
+# ---------------------------------------------------------------------------
+
+class TestForbiddenToken:
+    def test_detects_forbidden_path(self, tmp_path: Path) -> None:
+        (tmp_path / ".aiignore").write_text("secret.txt\n")
+        rules = _load_ignore_rules(tmp_path)
+        assert _forbidden_token("echo secret.txt", tmp_path, rules) == "secret.txt"
+
+    def test_allows_normal_command(self, tmp_path: Path) -> None:
+        (tmp_path / ".aiignore").write_text("secret.txt\n")
+        rules = _load_ignore_rules(tmp_path)
+        assert _forbidden_token("echo hello world", tmp_path, rules) is None
+
+
+class TestRunCommandRedZone:
+    def test_run_command_denies_forbidden_path(self, tmp_path: Path) -> None:
+        (tmp_path / ".aiignore").write_text("secret.txt\n")
+        result = run(_run_command("echo secret.txt", working_dir=tmp_path))
+        assert result.startswith("error: command references a restricted path:")
+        assert "secret.txt" in result
+
+    def test_run_command_normal_still_works(self, tmp_path: Path) -> None:
+        result = run(_run_command("echo hello", working_dir=tmp_path))
+        assert "hello" in result

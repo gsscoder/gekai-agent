@@ -15,6 +15,7 @@ dependencies = [
     "tree-sitter-javascript",
     "tree-sitter-typescript",
     "tree-sitter-go",
+    "pathspec>=0.12",
 ]
 
 [project.scripts]

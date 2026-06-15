@@ -128,11 +128,117 @@ subagent-specific tag. Tags throughout are non-closing (no `</tag>`).
 
 Tool execution is **not** OS-sandboxed. The current boundary is:
 
-- **Path jail** — `_resolve_in_ws` rejects any path that resolves outside the workspace root (symlinks included via `.resolve()`).
-- **No shell** — file ops use `shutil` / `pathlib` directly; no subprocess or shell interpolation surface.
+- **Path jail** — `_resolve_in_ws` rejects any path that resolves outside the workspace root (symlinks included via `.resolve()`), and hard-denies `.aiignore`-forbidden paths (see [Workspace Ignore Rules & Hidden-Path Grants](#workspace-ignore-rules--hidden-path-grants)) before any grant logic runs.
+- **No shell for file ops** — `read_file`/`write_file`/etc. use `shutil` / `pathlib` directly; no subprocess or shell interpolation surface. `run_command` (the one exec tool) does use a real subprocess, gated by `required_permission="exec"` and a best-effort forbidden-path scan (`_forbidden_token`).
 - **Permission gate** — `PermissionGate` enforces `read` / `write` / `exec` per tool call; `exec` permission is not granted by default.
 
 This is proportionate for a single-user local prototype. Full isolation is **deferred** under one explicit assumption: **no exec or network tool exists yet**. The moment either lands, OS-level sandboxing becomes blocking — the path jail is meaningless once arbitrary code runs with user privileges.
+
+---
+
+## Workspace Ignore Rules & Hidden-Path Grants
+
+`agent/workspace/ignore.py` defines a two-tier ignore model, used everywhere the agent walks, lists, searches, or touches files.
+
+```python
+class IgnoreRules:
+    def __init__(self, working_dir: Path) -> None: ...
+    def is_hidden(self, rel_path: str) -> bool: ...
+    def is_forbidden(self, rel_path: str) -> bool: ...
+
+def load(working_dir: Path) -> IgnoreRules: ...
+```
+
+`IgnoreRules.load(working_dir)` builds two `pathspec.PathSpec` matchers (gitwildmatch syntax) from the workspace's `.gitignore` and `.aiignore`:
+
+| Tier        | Patterns                                                                 | Meaning                                                                 |
+|-------------|---------------------------------------------------------------------------|--------------------------------------------------------------------------|
+| `hidden`    | builtin floor (`.*`, `node_modules/`, `__pycache__/`, `bin/`, `obj/`) + `.gitignore` + `.aiignore` | Discovery skips these — scanner walk, `list_files`, `grep` without an explicit path, the workspace indexer. |
+| `forbidden` | `.aiignore` only                                                           | The "red zone" — every file tool hard-denies these, even via an explicit path. No override possible. |
+
+`load()` is cheap (two small file reads) and is called fresh per operation rather than cached — no invalidation logic exists yet (alpha).
+
+Callers pass POSIX-style relative paths (`/` separators, no leading `/`); directories get a trailing `/` so gitwildmatch directory-only patterns (e.g. `build/`) match correctly.
+
+### Enforcement points
+
+- **Scanner** (`agent/workspace/scanner.py`, `_walk`) — filters `dirnames`/`filenames` in-place via `rules.is_hidden(...)`, replacing the old hardcoded skip-dir set. `list_files`/`list_dirs` and `agent/tools/files.py`'s `_walk_files` (used by `grep`) all go through this.
+- **`_list_files`** (`agent/tools/files.py`) — globs the working dir directly and drops any match where `rules.is_hidden(rel)`.
+- **File tools** (`agent/tools/files.py`) — every tool resolves its path(s) via `_authorize` (below); `_resolve_in_ws` hard-denies `forbidden` paths regardless of grants.
+- **Shell tool** (`agent/tools/shell.py`, `_run_command`) — `_forbidden_token(command, working_dir, rules)` tokenizes the command (`shlex.split`, falling back to `.split()`), strips quotes, also checks the RHS of `key=value` tokens, and resolves each candidate token as a path under `working_dir`. If any resolved token is `forbidden`, `_run_command` returns `"error: command references a restricted path: {rel}"` without running anything. This is best-effort — it does not catch encoded paths, env-var expansion, or other obfuscation — but stops the common case of catting/grepping a red-zone file via `run_command` instead of the file tools.
+
+### `_authorize` — hidden-path grant flow
+
+```python
+async def _authorize(
+    path: str,
+    working_dir: Path,
+    allow_hidden: set[str] | None,
+    grant_cb: HiddenGrantCallback | None,
+    pending: set[str] | None = None,
+    *,
+    mode: str,
+) -> Path | str
+```
+
+Every file-tool helper (`_read_file`, `_file_info`, `_grep`, `_edit_file`, `_write_file`, `_symbols`, `_move_file`, `_copy_file`, `_delete_file`, `_make_dir`) routes its path argument(s) through `_authorize`, with `mode="read"` or `mode="write"` depending on the operation. Returns the resolved `Path` on success, or an `"error: ..."` string on failure — callers check `isinstance(result, str)`.
+
+Flow:
+
+1. `_resolve_in_ws(path, working_dir)` — path-jail + `forbidden`-tier hard-deny. Returns `None` (→ `"error: path outside working directory"`) if the path escapes the workspace or matches `.aiignore`. **Forbidden paths are never prompted, with or without a grant.**
+2. If the resolved path is `hidden` (and not forbidden):
+   - If `rel` is already in `allow_hidden`, proceed — no prompt.
+   - Else if `rel` is already in `pending` (a concurrent grant is in flight for the same path), deny immediately: `"error: access to hidden path denied: {rel}"`.
+   - Else if `grant_cb is None`, deny: `"error: access to hidden path denied: {rel}"`.
+   - Else add `rel` to `pending`, `await grant_cb(rel, mode)`:
+     - `False` → deny (same error string); only this tool call fails, no session/worker cancellation.
+     - `True` → add `rel` to `allow_hidden` (in-memory) and persist via `save_allow_hidden(working_dir, rel)`.
+   - `rel` is removed from `pending` in a `finally` block regardless of outcome.
+3. Return the resolved `Path`.
+
+Granted hidden paths remain invisible to discovery tools (`list_files`, `grep` without an explicit `path`) — a grant covers only the explicitly-named path, not directory listings.
+
+### Concurrency: `pending`
+
+`make_file_tools` seeds one shared `pending: set[str] = set()` (mirroring `PermissionGate._pending`) and threads it into every tool closure alongside `allow_hidden` and `grant_cb`. If two concurrent tool calls (e.g. via `asyncio.gather`) target the same un-granted hidden path, the first adds `rel` to `pending` and awaits `grant_cb`; the second observes `rel` already in `pending` and is denied immediately — no double-prompt, no hang.
+
+### Persistence
+
+```python
+def load_allow_hidden(working_dir: Path) -> set[str]: ...
+def save_allow_hidden(working_dir: Path, rel: str) -> None: ...
+```
+
+(`agent/settings.py`) read/write `permissions.allow_hidden` — a JSON array of relative paths — in `.gekai/settings.local.json`, merging with any other existing top-level keys (`permissions.workspace`, `permissions.external`, etc.) in that file. `make_file_tools(working_dir, grant_cb=None)` calls `load_allow_hidden(working_dir)` once at construction to seed the in-memory `allow_hidden` set; subsequent grants within the session update both the set and the file.
+
+### `hidden_grant_callback` wiring
+
+```python
+HiddenGrantCallback = Callable[[str, str], Awaitable[bool]]   # (rel_path, mode) -> grant?
+```
+
+Defined in `agent/tools/files.py`, re-exported via `agent/tools/__init__.py` and `agent/harness/__init__.py`. Threaded end to end:
+
+```
+make_tools(working_dir, grant_cb)              agent/tools/__init__.py
+  └─ make_file_tools(working_dir, grant_cb)    agent/tools/files.py
+
+Harness.stream(..., hidden_grant_callback)     agent/harness/core.py   (direct + spawn modes)
+  └─ _build_agent(..., hidden_grant_callback)
+       └─ make_tools(working_dir, grant_cb=hidden_grant_callback)
+
+FileExplorer.stream(session, user_input, hidden_grant_callback)  agent/harness/file_explorer.py
+  └─ make_tools(session.working_dir, grant_cb=hidden_grant_callback)  (read-only subset)
+
+GekaiAgent.process_stream(..., hidden_grant_callback)  agent/agent.py
+  ├─ route.explore  → self._explorer.stream(..., hidden_grant_callback=hidden_grant_callback)
+  └─ main           → self._main.stream(..., hidden_grant_callback=hidden_grant_callback)
+
+TUI._hidden_grant_callback(self, rel, mode) -> bool   agent/tui/app.py
+  └─ passed as hidden_grant_callback into process_stream(...)
+```
+
+The TUI implementation pauses the status timer, asks `"Grant {mode} access to hidden path '{rel}' (excluded by .gitignore)?"` via `_ask_choice` (yes/no), and returns `choice == "y"`. If the worker was already cancelled (`self._worker_cancelled`), it short-circuits to `False` without prompting.
 
 ---
 

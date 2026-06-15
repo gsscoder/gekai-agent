@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 
 from . import __version__
 from .llm.model_caps import resolve_thinking_params
-from .harness import Harness, FileExplorer, FileLocator
+from .harness import Harness, FileExplorer, FileLocator, HiddenGrantCallback
 from .permissions import PermissionCallback
 from .subagents import Subagent
 from .pipeline import Route, Router, evaluate_blast_radius_gate, PromptRewriter
@@ -155,6 +155,7 @@ class GekaiAgent:
         original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
         turn_id: str | None = None,
+        hidden_grant_callback: HiddenGrantCallback | None = None,
     ) -> AsyncIterator[str | AgentEvent]:
         session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
         append_message(session, session.messages[-1], turn=turn_id)
@@ -171,13 +172,14 @@ class GekaiAgent:
         max_iter_hit = False
         completed = False
         if route.explore:
-            stream_iter = self._explorer.stream(session, user_input)
+            stream_iter = self._explorer.stream(session, user_input, hidden_grant_callback=hidden_grant_callback)
         else:
             stream_iter = self._main.stream(
                 session, user_input,
                 permission_callback=permission_callback,
                 subagent=route.subagent,
                 extra_params={} if route.trivial else None,
+                hidden_grant_callback=hidden_grant_callback,
             )
         try:
             async for item in stream_iter:

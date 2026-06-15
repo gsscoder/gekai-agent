@@ -14,7 +14,7 @@ from ..persistence import append_debug
 from ..persona import _IDENTITY_SUB, _SHARED_BODY, render_tool_instruction
 from ..session import Session
 from ..events import DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
-from ..tools import make_tools
+from ..tools import HiddenGrantCallback, make_tools
 from .core import _fmt_tool_call, _recency_turns
 
 _EXPLORE_COLOR = "#20B2AA"
@@ -43,9 +43,10 @@ class FileExplorer:
         self,
         session: Session,
         user_input: str,
+        hidden_grant_callback: HiddenGrantCallback | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
-        selected = [t for t in make_tools(session.working_dir) if t.is_read_only]
+        selected = [t for t in make_tools(session.working_dir, grant_cb=hidden_grant_callback) if t.is_read_only]
         system = (
             _IDENTITY_SUB + _ROLE + _SHARED_BODY
             + "\n<tools>\n" + render_tool_instruction([t.name for t in selected])
