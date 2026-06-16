@@ -74,3 +74,18 @@ def test_gitignore_with_invalid_utf8_bytes_does_not_crash(tmp_path: Path) -> Non
 
     assert rules.is_hidden("build/") is True
     assert rules.is_hidden("app.log") is True
+
+
+def test_workspace_root_is_never_hidden_or_forbidden(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("*\n")
+    (tmp_path / ".aiignore").write_text("*\n")
+
+    rules = IgnoreRules(tmp_path)
+
+    # ".*" in _BUILTIN_HIDDEN_PATTERNS (and "*" above) would otherwise match
+    # "." under gitwildmatch semantics (".*" -> "." + "" == "."). The
+    # workspace root must never be treated as hidden or forbidden.
+    assert rules.is_hidden(".") is False
+    assert rules.is_forbidden(".") is False
+    assert rules.is_hidden("") is False
+    assert rules.is_forbidden("") is False

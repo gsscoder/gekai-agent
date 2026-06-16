@@ -3,7 +3,7 @@ from pathlib import Path
 
 from agent.settings import load_allow_hidden
 from agent.tools import _move_file, _copy_file, _delete_file, _make_dir
-from agent.tools.files import _grep, _read_file, _edit_file, _write_file, _list_files
+from agent.tools.files import _grep, _read_file, _edit_file, _write_file, _list_files, _file_info
 
 
 def run(coro):
@@ -340,6 +340,22 @@ class TestHiddenGrant:
         assert result == "ok"
         assert modes == ["write"]
 
+    def test_workspace_root_path_never_prompts(self, tmp_path):
+        _write(tmp_path / "visible.txt", "hello")
+
+        count = 0
+
+        async def cb(rel, mode):
+            nonlocal count
+            count += 1
+            return True
+
+        result = run(_grep("hello", path=".", working_dir=tmp_path, allow_hidden=set(), grant_cb=cb))
+
+        assert count == 0
+        assert "visible.txt" in result
+        assert load_allow_hidden(tmp_path) == set()
+
 
 class TestHiddenGrantConcurrency:
     def test_concurrent_double_call_not_double_prompted(self, tmp_path):
@@ -430,3 +446,64 @@ class TestHiddenGrantConcurrency:
 
         assert result == "top secret"
         assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Directory-as-path guard (file-only tools must reject directory targets)
+# ---------------------------------------------------------------------------
+
+class TestDirectoryPathGuard:
+    """Passing '.' or any directory path to file-only tools must return a clear
+    'is a directory' error rather than an OS error or a grant prompt."""
+
+    def _no_grant(self):
+        async def cb(rel, mode):
+            raise AssertionError("grant_cb must not be called for directory paths")
+        return cb
+
+    def test_read_file_dot_returns_directory_error(self, tmp_path):
+        _write(tmp_path / "visible.txt", "hello")
+        result = run(_read_file(".", working_dir=tmp_path))
+        assert "is a directory" in result
+        assert result.startswith("error:")
+
+    def test_read_file_subdir_returns_directory_error(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        result = run(_read_file("sub", working_dir=tmp_path))
+        assert "is a directory" in result
+        assert result.startswith("error:")
+
+    def test_file_info_dot_returns_directory_error(self, tmp_path):
+        _write(tmp_path / "visible.txt", "hello")
+        result = run(_file_info(".", working_dir=tmp_path))
+        assert "is a directory" in result
+        assert result.startswith("error:")
+
+    def test_edit_file_dot_returns_directory_error(self, tmp_path):
+        result = run(_edit_file(".", "old", "new", working_dir=tmp_path))
+        assert "is a directory" in result
+        assert result.startswith("error:")
+
+    def test_write_file_dot_returns_directory_error(self, tmp_path):
+        result = run(_write_file(".", "content", working_dir=tmp_path))
+        assert "is a directory" in result
+        assert result.startswith("error:")
+
+    def test_move_file_src_dir_returns_directory_error(self, tmp_path):
+        (tmp_path / "srcdir").mkdir()
+        result = run(_move_file("srcdir", "dst.txt", working_dir=tmp_path))
+        assert "is a directory" in result
+        assert result.startswith("error:")
+
+    def test_read_file_dot_does_not_prompt_grant(self, tmp_path):
+        _write(tmp_path / "visible.txt", "hello")
+        count = 0
+
+        async def cb(rel, mode):
+            nonlocal count
+            count += 1
+            return True
+
+        result = run(_read_file(".", working_dir=tmp_path, allow_hidden=set(), grant_cb=cb))
+        assert "is a directory" in result
+        assert count == 0

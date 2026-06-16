@@ -49,9 +49,13 @@ class IgnoreRules:
         self._forbidden = pathspec.PathSpec.from_lines("gitignore", aiignore)
 
     def is_hidden(self, rel_path: str) -> bool:
+        if rel_path in ("", "."):
+            return False
         return self._hidden.match_file(rel_path)
 
     def is_forbidden(self, rel_path: str) -> bool:
+        if rel_path in ("", "."):
+            return False
         return self._forbidden.match_file(rel_path)
 
 
