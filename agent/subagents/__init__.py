@@ -13,6 +13,7 @@ from ..settings import Permissions
 # innate — no routable subagents, selector skipped
 NAMESPACE_COLORS: dict[str, str] = {
     "coding": "#FFD700",
+    "testing": "red",
     "generic": "#7FDBCA",
     "worker": "#9E9E9E",
 }
