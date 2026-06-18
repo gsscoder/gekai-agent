@@ -58,10 +58,13 @@ class GekaiAgent:
         self._supp_api_key: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_KEY")
         self._supp_api_base: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_URL")
         self._supp_client = AsyncOpenAI(api_key=self._supp_api_key, base_url=self._supp_api_base)
+        # router runs on CORE with no thinking params (non-thinking call, like the rewriter) —
+        # near-neighbor subagent discrimination needs the stronger model; it is low-volume
+        # (one short completion per turn), so the cost over SUPP is negligible
         self._router = Router(
-            model=self._supp_model,
-            api_key=self._supp_api_key,
-            api_base=self._supp_api_base,
+            model=self.model,
+            api_key=self._api_key,
+            api_base=self._api_base,
         )
         self._locator = FileLocator(
             model=self._supp_model,

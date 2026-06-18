@@ -4,10 +4,9 @@ subagent = Subagent(
     name="code-expert",
     namespace="coding",
     description=(
-        "general code changes when no specialized subagent fits: features, fixes, and "
-        "behavior-changing rewrites where the approach is decided — implementation/algorithm swaps "
-        "that keep the interface but change output. Not for: pure refactors or complexity-reduction "
-        "passes with no behavior change"
+        "general code changes: features, fixes, and behavior-changing rewrites where the approach is "
+        "decided — implementation/algorithm swaps that keep the interface but change output. "
+        "Not for: pure refactors or complexity-reduction passes with no behavior change"
     ),
     mandate=(
         "you act as a general code-change specialist — features, fixes, and decided implementation "

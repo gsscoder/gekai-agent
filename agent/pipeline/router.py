@@ -53,7 +53,14 @@ class Router:
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
         self._subagents = [p for p in SUBAGENTS if p.user_invocable]
-        menu = "\n".join(f"  {p.name} — {p.description}" for p in self._subagents)
+        menu = "\n".join(
+            f"  {p.name} — {p.description}" + (
+                f" — also pick this for any other {p.namespace}-type request that doesn't match a "
+                "more specific subagent above"
+                if p.is_fallback else ""
+            )
+            for p in self._subagents
+        )
         self._prompt = PIPELINE_DIRECTIVES + _ROUTER_PROMPT_BASE.replace("{subagents-meta}", menu)
 
     async def route(
