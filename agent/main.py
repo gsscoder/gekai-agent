@@ -36,7 +36,23 @@ def main() -> None:
         metavar="SESSION_ID",
         help="resume a previous session by ID",
     )
+
+    subparsers = parser.add_subparsers(dest="command")
+    dump_parser = subparsers.add_parser("dump", help="print session data and exit")
+    dump_subparsers = dump_parser.add_subparsers(dest="scope")
+    prompts_parser = dump_subparsers.add_parser("prompts", help="dump a session's user prompts")
+    prompts_parser.add_argument("session_id", metavar="SESSION_ID")
+
     args = parser.parse_args()
+
+    if args.command == "dump":
+        if args.resume or args.working_dir is not None or args.debug:
+            print("error: dump cannot be combined with other flags")
+            raise SystemExit(1)
+        if args.scope is None:
+            parser.error("dump requires a scope (prompts)")
+        from .dump import dump
+        raise SystemExit(dump(args.scope, args.session_id))
 
     restored_id: str | None = None
     restored_messages: list[dict] | None = None
