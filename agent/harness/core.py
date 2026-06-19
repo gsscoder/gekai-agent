@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 
 from agent.llm import Agent
@@ -55,6 +56,30 @@ def _fmt_tool_call(call: ToolUseBlock) -> str:
     if call.name == "run_command":
         return f"Run {inp.get('command', '')[:60]}"
     return call.name.capitalize()
+
+
+_DEBUG_TRUNCATE_LIMIT = 1000
+
+
+def _truncate_debug_text(text: str) -> str:
+    if len(text) <= _DEBUG_TRUNCATE_LIMIT:
+        return text
+    return text[:_DEBUG_TRUNCATE_LIMIT] + f"…+{len(text) - _DEBUG_TRUNCATE_LIMIT} more chars"
+
+
+def _fmt_debug_tool_input(call: ToolUseBlock) -> dict:
+    """Debug-log representation of a tool call's input.
+
+    write_file/edit_file inputs carry full file contents or old/new diff strings —
+    these are logged as path-only (the path is never truncated; it's always short and
+    is the only part of those inputs that's useful for debugging without bloating the
+    debug log with entire file bodies). All other tools get their full input dict,
+    JSON-serialized and truncated like any other debug text.
+    """
+    inp = call.input or {}
+    if call.name in ("write_file", "edit_file"):
+        return {"name": call.name, "path": inp.get("path", "")}
+    return {"name": call.name, "input": _truncate_debug_text(json.dumps(inp, default=str))}
 
 
 def _build_agent(
@@ -149,6 +174,8 @@ class Harness:
             async for event in bus.stream():
                 if isinstance(event, ToolExecutionStarted):
                     await queue.put(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
+                    if self._debug:
+                        append_debug(session, {"content": {"tool_call": _fmt_debug_tool_input(event.call)}})
                 elif isinstance(event, ToolExecutionCompleted):
                     if event.call.name == "edit_file":
                         inp = event.call.input or {}
@@ -157,6 +184,17 @@ class Harness:
                         if old_str != new_str:
                             diff_lines = build_diff(old_str, new_str)
                             await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
+                    if self._debug:
+                        append_debug(session, {
+                            "content": {
+                                "tool_result": {
+                                    "name": event.call.name,
+                                    "duration_s": round(event.duration_s, 3),
+                                    "is_error": event.result.is_error,
+                                    "result": _truncate_debug_text(event.result.content),
+                                }
+                            }
+                        })
                 elif isinstance(event, UsageUpdated) and event.delta:
                     await queue.put(InferEndEvent(
                         prompt_tokens=event.delta.get("input_tokens"),
