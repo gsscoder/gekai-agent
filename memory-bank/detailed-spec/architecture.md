@@ -50,7 +50,7 @@ Router output token → Route mapping:
 - `"trivial"` → `Route(trivial=True)`
 - `"rejected"` → `Route(rejected=True)`
 - `<subagent-name>` (matched) → `Route(subagent=p)`
-- unknown token → warning log + fallback `Route()` (same as `main`)
+- unknown token → warning log + host-retained `Route()` (same as `main`)
 
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
 

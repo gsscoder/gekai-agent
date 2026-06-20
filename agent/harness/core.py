@@ -169,6 +169,10 @@ class Harness:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
 
         queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
+        files_touched: list[str] = []
+
+        _SINGLE_PATH_TOOLS = ("write_file", "edit_file", "make_dir", "delete_file")
+        _DUAL_PATH_TOOLS = ("move_file", "copy_file")
 
         async def _consume_bus() -> None:
             async for event in bus.stream():
@@ -184,6 +188,16 @@ class Harness:
                         if old_str != new_str:
                             diff_lines = build_diff(old_str, new_str)
                             await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
+                    if not event.result.is_error:
+                        inp = event.call.input or {}
+                        if event.call.name in _SINGLE_PATH_TOOLS:
+                            path = inp.get("path", "")
+                            if path and path not in files_touched:
+                                files_touched.append(path)
+                        elif event.call.name in _DUAL_PATH_TOOLS:
+                            for path in (inp.get("src", ""), inp.get("dst", "")):
+                                if path and path not in files_touched:
+                                    files_touched.append(path)
                     if self._debug:
                         append_debug(session, {
                             "content": {
@@ -226,7 +240,7 @@ class Harness:
                 history = await agent_task
             except MaxIterationsExceeded:
                 yield MaxIterationsEvent()
-                yield DoneEvent(thinking_chars=0)
+                yield DoneEvent(thinking_chars=0, files_touched=files_touched)
                 return
 
             thinking_chars = sum(
@@ -236,7 +250,7 @@ class Harness:
                 for b in msg.content
                 if isinstance(b, ThinkingBlock)
             )
-            yield DoneEvent(thinking_chars=thinking_chars)
+            yield DoneEvent(thinking_chars=thinking_chars, files_touched=files_touched)
 
             last = history[-1]
             if isinstance(last.content, list):

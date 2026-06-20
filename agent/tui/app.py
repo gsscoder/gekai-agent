@@ -31,7 +31,7 @@ from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import random_accent_color, random_farewell, random_operative_verb
-from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent
+from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult
 
 from .palette import CommandPalette
 from .history import PromptHistory
@@ -39,6 +39,7 @@ from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind
 
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
 _PIPELINE_COLOR = "#ffffff"  # pure-white bg marks active pre-harness pipeline step
+_DELEGATION_FILES_CAP = 20
 
 
 class ConversationContainer(ScrollableContainer):
@@ -980,6 +981,7 @@ class GekaiApp(App[None]):
         prompt_tokens_total = 0
         completion_tokens_total = 0
         thinking_chars_total = 0
+        files_touched_total: list[str] = []
 
         try:
             await self._start_status_animation(verb[0], color)
@@ -1118,6 +1120,7 @@ class GekaiApp(App[None]):
                         elif isinstance(item, DoneEvent):
                             await ws_renderer.done(item.thinking_chars)
                             thinking_chars_total = item.thinking_chars
+                            files_touched_total = item.files_touched
                         elif isinstance(item, MaxIterationsEvent):
                             max_iter_hit = True
 
@@ -1130,6 +1133,19 @@ class GekaiApp(App[None]):
                 completion_tokens=completion_tokens_total, thinking_chars=thinking_chars_total,
                 tools=tool_counts, duration_ms=_ms(time.monotonic() - harness_start),
             )
+            subagent_result = SubagentResult(
+                summary="".join(answer_chunks).rstrip(),
+                files_touched=files_touched_total,
+                status="max_iterations" if harness_outcome == "max_iterations" else "ok",
+            )
+            if route.subagent is not None:
+                events.emit(
+                    "delegation", session=session_id, turn=turn_id,
+                    host="main", delegate=route.subagent.name, namespace=route.subagent.namespace,
+                    status=subagent_result.status, files=len(subagent_result.files_touched),
+                    files_touched=subagent_result.files_touched[:_DELEGATION_FILES_CAP],
+                    summary_len=len(subagent_result.summary),
+                )
 
             if self._session is not None:
                 self.query_one("#context-bar", Static).update(

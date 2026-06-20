@@ -275,8 +275,8 @@ ROUTER_PROMPT
 └── main             anything else — handled directly by Harness
 ```
 
-`main` is listed **last** with no explicit "fallback"/"bias" line: the choices are
-self-defining and position signals that `main` is the residual. Terminology is uniform
+`main` is listed **last** with no explicit "host-retained"/"bias" line: the choices are
+self-defining and position signals that `main` is host-retained by default. Terminology is uniform
 (`subagent`, never "specialist") so the model reads one concept, not two. `TRIVIAL` is
 deliberately conservative — the prompt tells the model to prefer `main` when unsure, since a
 false `main` only costs one extra (often near-empty) `FileLocator` call, while a false
@@ -290,7 +290,7 @@ false `main` only costs one extra (often near-empty) `FileLocator` call, while a
 | `TRIVIAL`           | `Route(trivial=True)`  | skips FileLocator + PromptRewriter; Harness still answers, with `extra_params={}` |
 | `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies  |
 | `rejected`          | `Route(rejected=True)` | non-English input                                    |
-| unknown token       | `Route()`              | warning log + fallback, same as `main`               |
+| unknown token       | `Route()`              | warning log + host-retained, same as `main`          |
 
 ---
 

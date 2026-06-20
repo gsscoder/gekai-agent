@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass
@@ -54,6 +55,15 @@ class ThinkingTokenEvent(AgentEvent):
 class DoneEvent(AgentEvent):
     """Always the last event."""
     thinking_chars: int = 0
+    files_touched: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubagentResult:
+    """Result of one hosted delegation: a subagent's summary, the files it touched, and whether it completed normally."""
+    summary: str = ""
+    files_touched: list[str] = field(default_factory=list)
+    status: Literal["ok", "max_iterations"] = "ok"
 
 
 @dataclass
