@@ -5,10 +5,12 @@ subagent = Subagent(
     name="code-refactorer",
     namespace="coding",
     description=(
-        "behavior-preserving restructuring: extract functions/methods/classes, rename symbols with full "
-        "reference updates, eliminate duplication, collapse single-implementation layers, reorganize "
-        "across files. Not for: adding features, fixing bugs, behavior-changing rewrites, or "
-        "simplifying unjustified abstractions"
+        "behavior-preserving restructuring of code: extract functions/methods/classes, rename code "
+        "symbols (functions, classes, variables) with full reference updates, eliminate duplication, "
+        "collapse single-implementation layers, reorganize across files. Do not rename or move "
+        "files/paths themselves — that's a filesystem operation, delegated to main, not a symbol "
+        "rename. Not for: adding features, fixing bugs, behavior-changing rewrites, or simplifying "
+        "unjustified abstractions"
     ),
     mandate=(
         "you act as a refactoring specialist — behavior-preserving structural change only "
