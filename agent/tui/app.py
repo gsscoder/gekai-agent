@@ -30,7 +30,7 @@ from agent.subagents import NAMESPACE_COLORS
 from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
-from agent.tui.styles import random_accent_color, random_farewell, random_operative_verb
+from agent.tui.styles import random_accent_color, random_operative_verb
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult
 
 from .palette import CommandPalette
@@ -79,11 +79,12 @@ class SubAgentRenderer:
         self._spinner_task: asyncio.Task | None = None
         self._thinking_buf: str = ""
         self._badge_namespace: str | None = None
+        self._badge_color: str = ""
         self._tool_calls: int = 0
 
     async def _animate_dot(self) -> None:
         frame = 0
-        dot_color = "white" if self._badge_namespace is not None else "#666666"
+        dot_color = self._badge_color if self._badge_namespace is not None else "#666666"
         try:
             while True:
                 if self._header_widget is not None:
@@ -97,11 +98,12 @@ class SubAgentRenderer:
     async def start(self, name: str, *, namespace: str | None = None, ui_label: str = "", bg_color: str = "") -> None:
         self.name = name
         self._badge_namespace = namespace
+        self._badge_color = bg_color
         await self._conversation.mount(Static("", classes="assistant-spacer"))
         if namespace is not None:
             header_markup = f"[black on {bg_color} bold] {name} [/]"
             if ui_label:
-                header_markup += f" [white]({ui_label})[/white]"
+                header_markup += f"[white]\\[{ui_label}][/white]"
         else:
             header_markup = "[bold #666666]Thinking...[/bold #666666]"
         widget = MessageWidget(MessageKind.HEADER, header_markup)
@@ -190,7 +192,7 @@ class SubAgentRenderer:
             parts.append(_fmt_duration_verbose(elapsed))
             summary = " · ".join(parts)
             if self._header_widget is not None:
-                self._header_widget.query_one(".header-dot", Static).update("[white]●[/white]")
+                self._header_widget.query_one(".header-dot", Static).update(f"[{self._badge_color}]●[/{self._badge_color}]")
                 self._header_widget = None
             # badge header persists untouched — mount the Done summary as a
             # permanent connector line beneath it (it is now the sole survivor
@@ -318,7 +320,7 @@ def _fmt_status_bar(model: str, working_dir: str, branch: str | None, prompt_tok
     location = f"📁 {working_dir}"
     if branch:
         location += f" [⎇ {branch}]"
-    return f"[dim]\\[{model}][/dim] | {location} | [dim]{pct}[/dim]"
+    return f"\\[{model}] | {location} | {pct}"
 
 
 def _estimate_session_tokens(session: Session) -> int:
@@ -939,15 +941,7 @@ class GekaiApp(App[None]):
             if self._session is not None:
                 append_event(self._session, output, source="command")
             if result.exit_app:
-                self._exit_reason = "command"
-                farewell = random_farewell()
-                await conversation.mount(MessageWidget(MessageKind.ASSISTANT, farewell))
-                conversation.scroll_end(animate=False)
-                if self._session is not None and not had_prior:
-                    from agent.persistence import session_file
-                    session_file(self._session).unlink(missing_ok=True)
-                await asyncio.sleep(0.8 + len(farewell.split(" ")) * 0.20)
-                self.exit()
+                self._quit(had_prior=had_prior)
                 return
             self._focus_prompt()
             return
@@ -1048,7 +1042,7 @@ class GekaiApp(App[None]):
                     append_event(self._session, reason_text, source="gate")
                     return
 
-            if entries:
+            if entries or route.subagent is not None:
                 stage = "rewrite"
                 self._set_route_label("rewrite", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
@@ -1264,6 +1258,20 @@ class GekaiApp(App[None]):
     def on_conversation_container_scrolled(self, event: ConversationContainer.Scrolled) -> None:
         is_streaming = self._worker is not None and not self._worker.is_finished
         self.query_one("#scroll-hint-wrap", Container).display = not event.at_end and not is_streaming
+
+    def _quit(self, *, had_prior: bool | None = None) -> None:
+        """Single end-of-app exit path — used by both `/exit` and the
+        ctrl+c / ctrl+q quit bindings, so farewell + resume-hint printing
+        in main.py (gated on exit_reason == "command") behaves identically."""
+        self._exit_reason = "command"
+        prior = self.session_has_interactions if had_prior is None else had_prior
+        if self._session is not None and not prior:
+            from agent.persistence import session_file
+            session_file(self._session).unlink(missing_ok=True)
+        self.exit()
+
+    def action_quit(self) -> None:
+        self._quit()
 
     def action_cancel_stream(self) -> None:
         file_panel = self.query_one("#file-panel", FilePanel)

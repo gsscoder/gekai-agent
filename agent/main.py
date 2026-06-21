@@ -117,8 +117,13 @@ def main() -> None:
     session_id = app.session_id
     if session_id and app.session_has_interactions:
         from rich.console import Console
+        from .tui.styles import random_farewell
+
         console = Console()
         console.print()
+        if app.exit_reason == "command":
+            console.print(f"[italic white]{random_farewell()}[/italic white]")
+            console.print()
         console.print(f"[grey50]resume session:\ngekai --resume {session_id}[/grey50]")
 
 
