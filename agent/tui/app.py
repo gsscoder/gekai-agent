@@ -22,7 +22,7 @@ from textual.worker import Worker
 from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.persistence import append_command, append_debug, append_event, _normalize_path
+from agent.persistence import append_command, append_debug, append_event, load_route_decisions, _normalize_path
 from agent.pipeline import Route
 from agent.pipeline.blast_radius import count_blast_areas
 from agent.session import Session
@@ -670,6 +670,7 @@ class GekaiApp(App[None]):
         )
 
         if self._restored_timeline:
+            route_decisions = load_route_decisions(self._restored_id) if self._agent.debug and self._restored_id else {}
             for entry in self._restored_timeline:
                 kind = entry.get("kind", "turn")
                 content = entry.get("content", "")
@@ -677,6 +678,9 @@ class GekaiApp(App[None]):
                     role = entry.get("role")
                     if role == "user":
                         await conversation.mount(MessageWidget(MessageKind.USER, content))
+                        decision = route_decisions.get(entry.get("turn", ""))
+                        if decision:
+                            await conversation.mount(MessageWidget(MessageKind.OPERATION, f"\\[router: {decision}]", color="#BA55D3"))
                     elif role == "assistant":
                         await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
                 elif kind == "command":

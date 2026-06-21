@@ -118,6 +118,23 @@ def load_session(session_id: str) -> tuple[str, Path, list[dict]] | None:
     return session_id, working_dir, messages
 
 
+def load_route_decisions(session_id: str) -> dict[str, str]:
+    """Return {turn_id: decision} for every router decision logged for this session."""
+    decisions: dict[str, str] = {}
+    for log_path in (Path.home() / ".gekai" / "logs").glob("events-*.jsonl"):
+        try:
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                if entry.get("evt") == "route" and entry.get("session") == session_id and "turn" in entry:
+                    decisions[entry["turn"]] = entry["decision"]
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return decisions
+
+
 def load_timeline(session_id: str) -> tuple[Path, list[dict]] | None:
     """Return (working_dir, all entries ordered) for chat rebuild.
 
