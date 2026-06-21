@@ -7,6 +7,16 @@ Checkpoint-oriented: built around frequent human validation, not long autonomous
 ## Core Technologies
 Python 3.11+, asyncio, PyPI
 
+## Architecture
+Textual TUI on top of a per-turn pipeline:
+- `Router` — single LLM call, classifies the turn as `main` / `trivial` / `rejected` / `<subagent>`
+- `FileLocator` — agentic file discovery for non-trivial turns, biased by a SQLite keyword cache (hints only, never a bypass)
+- Blast-radius gate — for subagent turns only, blocks if too many code areas are touched at once
+- `PromptRewriter` — weaves located files into the prompt before the model sees it
+- `Harness` — the tool-calling agent loop; runs directly or spawned as a specialist subagent
+- Permissions (read/write/exec) gate filesystem/shell tools, persisted to `.gekai/settings.local.json`
+- Persistence: `session.jsonl` (visible, resumable chat history) + always-on `events-*.jsonl` telemetry; `--debug` adds `debug.jsonl` (internal-only)
+
 ## Memory
 The development documents are organized in the `memory-bank` dir:
 - `progress.md`: progress log

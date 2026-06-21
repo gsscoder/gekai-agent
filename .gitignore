@@ -1,14 +1,25 @@
+# secrets / env
 .env
-.gekai/
+
+# python bytecode
 __pycache__/
 *.pyc
 *.pyo
+
+# virtualenvs
 .venv/
 venv/
+
+# build artifacts
 dist/
 *.egg-info/
+
+# AI
 .claude/
 .claude/agents/
-_agents/
-.vscode/
+.gekai/
 mcps/
+_agentsfiles/
+
+# editor
+.vscode/
