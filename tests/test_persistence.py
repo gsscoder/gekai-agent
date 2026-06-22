@@ -6,10 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from agent.diff import DiffLine
 from agent.persistence import (
     append_command,
+    append_diff,
     append_event,
     append_message,
+    append_operation,
+    append_subagent_done,
+    append_subagent_start,
     load_session,
     load_timeline,
     session_file,
@@ -56,6 +61,99 @@ def test_append_event_round_trip(tmp_path: Path) -> None:
     assert entry["kind"] == "event"
     assert entry["source"] == "gate"
     assert entry["content"] == "gate blocked: 6 areas"
+
+
+# ---------------------------------------------------------------------------
+# append_diff / append_subagent_start / append_subagent_done / append_operation
+# round-trip (Phase A/B/C resume-fidelity timeline writers)
+# ---------------------------------------------------------------------------
+
+def test_append_diff_round_trip(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_diff(
+        s,
+        "src/foo.py",
+        [DiffLine(kind="add", text="+ x"), DiffLine(kind="del", text="- y")],
+    )
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["kind"] == "diff"
+    assert entry["path"] == "src/foo.py"
+    assert entry["lines"] == [{"k": "add", "t": "+ x"}, {"k": "del", "t": "- y"}]
+    # no turn kwarg passed -> key absent (matches append_message's `if turn:` pattern)
+    assert "turn" not in entry
+
+
+def test_append_diff_with_turn_id(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_diff(s, "src/foo.py", [DiffLine(kind="context", text=" unchanged")], turn="abc123")
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["turn"] == "abc123"
+
+
+def test_append_subagent_start_round_trip(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_subagent_start(
+        s,
+        namespace="code",
+        name="code-fixer",
+        bg_color="#3a6ea5",
+        ui_label="fix the bug",
+    )
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["kind"] == "subagent_start"
+    assert entry["namespace"] == "code"
+    assert entry["name"] == "code-fixer"
+    assert entry["bg_color"] == "#3a6ea5"
+    assert entry["ui_label"] == "fix the bug"
+    assert "turn" not in entry
+
+
+def test_append_subagent_start_with_turn_id(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_subagent_start(
+        s,
+        namespace="code",
+        name="code-fixer",
+        bg_color="#3a6ea5",
+        ui_label="fix the bug",
+        turn="abc123",
+    )
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["turn"] == "abc123"
+
+
+def test_append_subagent_done_round_trip(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_subagent_done(s, "3 tools · 1.2k tokens · 4.1s", bg_color="#3a6ea5")
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["kind"] == "subagent_done"
+    assert entry["summary"] == "3 tools · 1.2k tokens · 4.1s"
+    assert entry["bg_color"] == "#3a6ea5"
+    assert "turn" not in entry
+
+
+def test_append_subagent_done_with_turn_id(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_subagent_done(s, "done", bg_color="#3a6ea5", turn="abc123")
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["turn"] == "abc123"
+
+
+def test_append_operation_round_trip(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_operation(s, "* Crafted for 2.3s (3 tools)", "#00ff88")
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["kind"] == "operation"
+    assert entry["content"] == "* Crafted for 2.3s (3 tools)"
+    assert entry["color"] == "#00ff88"
+    assert "turn" not in entry
+
+
+def test_append_operation_with_turn_id(tmp_path: Path) -> None:
+    s = _make_session(tmp_path)
+    append_operation(s, "* Crafted for 2.3s (3 tools)", "#00ff88", turn="abc123")
+    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    assert entry["turn"] == "abc123"
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +217,34 @@ def test_load_timeline_includes_all_kinds(tmp_path: Path) -> None:
     _, entries = result
     kinds = [e["kind"] for e in entries]
     assert kinds == ["turn", "command", "event", "turn", "event"]
+
+
+def test_load_timeline_includes_new_kinds(tmp_path: Path) -> None:
+    """Extends test_load_timeline_includes_all_kinds with the Phase A/B/C kinds."""
+    s = _make_session(tmp_path)
+    append_message(s, {"role": "user", "content": "fix the diff"})
+    append_diff(s, "src/foo.py", [DiffLine(kind="add", text="+ x")])
+    append_subagent_start(
+        s, namespace="code", name="code-fixer", bg_color="#3a6ea5", ui_label="fix the bug"
+    )
+    append_command(s, "/config:gate off")
+    append_subagent_done(s, "3 tools · 1.2k tokens · 4.1s", bg_color="#3a6ea5")
+    append_operation(s, "* Crafted for 2.3s (3 tools)", "#00ff88")
+    append_message(s, {"role": "assistant", "content": "done"})
+
+    result = load_timeline(s.id)
+    assert result is not None
+    _, entries = result
+    kinds = [e["kind"] for e in entries]
+    assert kinds == [
+        "turn",
+        "diff",
+        "subagent_start",
+        "command",
+        "subagent_done",
+        "operation",
+        "turn",
+    ]
 
 
 def test_load_timeline_excludes_non_persistent_system(tmp_path: Path) -> None:

@@ -22,7 +22,18 @@ from textual.worker import Worker
 from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.persistence import append_command, append_debug, append_event, load_route_decisions, _normalize_path
+from agent.diff import DiffLine
+from agent.persistence import (
+    append_command,
+    append_debug,
+    append_diff,
+    append_event,
+    append_operation,
+    append_subagent_done,
+    append_subagent_start,
+    load_route_decisions,
+    _normalize_path,
+)
 from agent.pipeline import Route
 from agent.pipeline.blast_radius import count_blast_areas
 from agent.session import Session
@@ -101,9 +112,7 @@ class SubAgentRenderer:
         self._badge_color = bg_color
         await self._conversation.mount(Static("", classes="assistant-spacer"))
         if namespace is not None:
-            header_markup = f"[black on {bg_color} bold] {name} [/]"
-            if ui_label:
-                header_markup += f"[white]\\[{ui_label}][/white]"
+            header_markup = _subagent_header_markup(name, bg_color, ui_label)
         else:
             header_markup = "[bold #666666]Thinking...[/bold #666666]"
         widget = MessageWidget(MessageKind.HEADER, header_markup)
@@ -172,7 +181,7 @@ class SubAgentRenderer:
             self._total_tokens += event.completion_tokens
         self._infer_count += 1
 
-    async def done(self, thinking_chars: int = 0) -> None:
+    async def done(self, thinking_chars: int = 0) -> str:
         if self._spinner_task is not None:
             self._spinner_task.cancel()
             self._spinner_task = None
@@ -198,6 +207,8 @@ class SubAgentRenderer:
             # permanent connector line beneath it (it is now the sole survivor
             # under the header, so it always anchors the L-connector)
             await self._conversation.mount(Static(f"  ⎿ Done ({summary})"))
+            self._conversation.scroll_end(animate=False)
+            return summary
         else:
             parts = []
             if self._total_tokens > 0:
@@ -211,7 +222,15 @@ class SubAgentRenderer:
                 self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
                 self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought ({summary})[/#666666]")
                 self._header_widget = None
-        self._conversation.scroll_end(animate=False)
+            self._conversation.scroll_end(animate=False)
+            return summary
+
+
+def _subagent_header_markup(name: str, bg_color: str, ui_label: str) -> str:
+    markup = f"[black on {bg_color} bold] {name} [/]"
+    if ui_label:
+        markup += f"[white]\\[{ui_label}][/white]"
+    return markup
 
 
 def _fallback_ui_label(text: str, max_words: int = 6) -> str:
@@ -673,6 +692,7 @@ class GekaiApp(App[None]):
 
         if self._restored_timeline:
             route_decisions = load_route_decisions(self._restored_id) if self._agent.debug and self._restored_id else {}
+            last_subagent_header: MessageWidget | None = None
             for entry in self._restored_timeline:
                 kind = entry.get("kind", "turn")
                 content = entry.get("content", "")
@@ -697,8 +717,23 @@ class GekaiApp(App[None]):
                         await conversation.mount(MessageWidget(MessageKind.ERROR, content))
                     elif source == "interrupted":
                         await conversation.mount(MessageWidget(MessageKind.INTERRUPTED, content))
-                    elif source in ("farewell", "max_iterations"):
+                    elif source == "max_iterations":
                         await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
+                elif kind == "diff":
+                    diff_lines = [DiffLine(kind=d["k"], text=d["t"]) for d in entry.get("lines", [])]
+                    await conversation.mount(DiffWidget(entry["path"], diff_lines))
+                elif kind == "subagent_start":
+                    header_widget = MessageWidget(MessageKind.HEADER, _subagent_header_markup(entry["name"], entry["bg_color"], entry["ui_label"]))
+                    await conversation.mount(header_widget)
+                    last_subagent_header = header_widget
+                elif kind == "subagent_done":
+                    if last_subagent_header is not None:
+                        bg_color = entry.get("bg_color", "")
+                        last_subagent_header.query_one(".header-dot", Static).update(f"[{bg_color}]●[/{bg_color}]")
+                        last_subagent_header = None
+                    await conversation.mount(Static(f"  ⎿ Done ({entry.get('summary', '')})"))
+                elif kind == "operation":
+                    await conversation.mount(MessageWidget(MessageKind.OPERATION, entry.get("content", ""), color=entry.get("color")))
             self.call_after_refresh(conversation.scroll_end)
         elif self._restored_messages:
             for msg in self._restored_messages:
@@ -1094,6 +1129,15 @@ class GekaiApp(App[None]):
                                 ui_label=ui_label,
                                 bg_color=NAMESPACE_COLORS[route.subagent.namespace],
                             )
+                            if self._session is not None:
+                                append_subagent_start(
+                                    self._session,
+                                    namespace=route.subagent.namespace,
+                                    name=item.name,
+                                    bg_color=NAMESPACE_COLORS[route.subagent.namespace],
+                                    ui_label=ui_label,
+                                    turn=turn_id,
+                                )
                         else:
                             self._set_route_label(item.name, color=item.color)
                             await ws_renderer.start(item.name)
@@ -1105,6 +1149,8 @@ class GekaiApp(App[None]):
                                 tool_counts[item.tool_name] = tool_counts.get(item.tool_name, 0) + 1
                         elif isinstance(item, DiffEvent):
                             await conversation.mount(DiffWidget(item.path, item.diff_lines))
+                            if self._session is not None:
+                                append_diff(self._session, item.path, item.diff_lines, turn=turn_id)
                             conversation.scroll_end(animate=False)
                         elif isinstance(item, InferEndEvent):
                             ws_renderer.accumulate_tokens(item)
@@ -1116,9 +1162,14 @@ class GekaiApp(App[None]):
                         elif isinstance(item, StatusUpdateEvent):
                             await ws_renderer.status_update(item)
                         elif isinstance(item, DoneEvent):
-                            await ws_renderer.done(item.thinking_chars)
+                            done_summary = await ws_renderer.done(item.thinking_chars)
                             thinking_chars_total = item.thinking_chars
                             files_touched_total = item.files_touched
+                            if route.subagent is not None and self._session is not None:
+                                append_subagent_done(
+                                    self._session, done_summary,
+                                    bg_color=NAMESPACE_COLORS[route.subagent.namespace], turn=turn_id,
+                                )
                         elif isinstance(item, MaxIterationsEvent):
                             max_iter_hit = True
 
@@ -1156,13 +1207,10 @@ class GekaiApp(App[None]):
                 self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
                 await conversation.mount(self._assistant_widget)
                 elapsed = time.monotonic() - start
-                await conversation.mount(
-                    MessageWidget(
-                        MessageKind.OPERATION,
-                        f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({query_tool_count} {'tool' if query_tool_count == 1 else 'tools'})" if query_tool_count > 0 else ""),
-                        color=color,
-                    )
-                )
+                operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({query_tool_count} {'tool' if query_tool_count == 1 else 'tools'})" if query_tool_count > 0 else "")
+                await conversation.mount(MessageWidget(MessageKind.OPERATION, operation_text, color=color))
+                if self._session is not None:
+                    append_operation(self._session, operation_text, color, turn=turn_id)
             conversation.scroll_end(animate=False)
         except Exception as error:
             error_msg = str(error) or type(error).__name__

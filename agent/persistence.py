@@ -53,6 +53,46 @@ def append_event(session: Session, content: str, source: str) -> None:
     _append(session, {"kind": "event", "source": source, "content": content})
 
 
+def append_diff(session: Session, path: str, diff_lines: list, *, turn: str | None = None) -> None:
+    entry: dict = {
+        "kind": "diff",
+        "path": path,
+        "lines": [{"k": dl.kind, "t": dl.text} for dl in diff_lines],
+    }
+    if turn:
+        entry["turn"] = turn
+    _append(session, entry)
+
+
+def append_subagent_start(
+    session: Session, *, namespace: str, name: str, bg_color: str, ui_label: str, turn: str | None = None,
+) -> None:
+    entry: dict = {
+        "kind": "subagent_start",
+        "namespace": namespace,
+        "name": name,
+        "bg_color": bg_color,
+        "ui_label": ui_label,
+    }
+    if turn:
+        entry["turn"] = turn
+    _append(session, entry)
+
+
+def append_subagent_done(session: Session, summary: str, *, bg_color: str, turn: str | None = None) -> None:
+    entry: dict = {"kind": "subagent_done", "summary": summary, "bg_color": bg_color}
+    if turn:
+        entry["turn"] = turn
+    _append(session, entry)
+
+
+def append_operation(session: Session, content: str, color: str, *, turn: str | None = None) -> None:
+    entry: dict = {"kind": "operation", "content": content, "color": color}
+    if turn:
+        entry["turn"] = turn
+    _append(session, entry)
+
+
 def append_debug(session: Session, message: dict) -> None:
     base = Path.home() / ".gekai" / "workspaces" / _normalize_path(session.working_dir)
     base.mkdir(parents=True, exist_ok=True)
