@@ -97,6 +97,94 @@ def test_route_strips_extra_whitespace() -> None:
     assert not route.rejected
 
 
+def test_route_plan_two_steps() -> None:
+    router = _make_router()
+    plan_text = (
+        "<plan>\n"
+        "code-expert:\n"
+        "  add a /healthz endpoint to the API\n"
+        "test-expert:\n"
+        "  write tests for the new endpoint\n"
+    )
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response(plan_text))
+    route = run(router.route("add a /healthz endpoint to the API and write tests for it"))
+    assert route.plan is not None
+    assert len(route.plan) == 2
+    assert route.plan[0].subagent.name == "code-expert"
+    assert route.plan[0].raw == "add a /healthz endpoint to the API"
+    assert route.plan[1].subagent.name == "test-expert"
+    assert route.plan[1].raw == "write tests for the new endpoint"
+    assert route.subagent is None
+    assert not route.rejected
+
+
+def test_route_plan_with_main_step() -> None:
+    router = _make_router()
+    plan_text = (
+        "<plan>\n"
+        "main:\n"
+        "  explain the current architecture\n"
+        "code-expert:\n"
+        "  then refactor the router module\n"
+    )
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response(plan_text))
+    route = run(router.route("explain the architecture then refactor the router module"))
+    assert route.plan is not None
+    assert len(route.plan) == 2
+    assert route.plan[0].subagent is None
+    assert route.plan[0].raw == "explain the current architecture"
+    assert route.plan[1].subagent.name == "code-expert"
+    assert route.plan[1].raw == "then refactor the router module"
+
+
+def test_route_plan_single_step_collapses_to_subagent() -> None:
+    router = _make_router()
+    plan_text = (
+        "<plan>\n"
+        "code-expert:\n"
+        "  create sqrt.py and code the Quake version of the function inside\n"
+    )
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response(plan_text))
+    route = run(router.route("create sqrt.py and code the Quake version of the function inside"))
+    assert route.plan is None
+    assert route.subagent is not None
+    assert route.subagent.name == "code-expert"
+
+
+def test_route_plan_single_step_main_collapses_to_main() -> None:
+    router = _make_router()
+    plan_text = "<plan>\nmain:\n  explain how async/await works\n"
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response(plan_text))
+    route = run(router.route("explain how async/await works"))
+    assert route.plan is None
+    assert route.subagent is None
+
+
+def test_route_plan_unknown_agent_falls_back_to_main() -> None:
+    router = _make_router()
+    plan_text = (
+        "<plan>\n"
+        "code-expert:\n"
+        "  do the first part\n"
+        "nonsense-agent:\n"
+        "  do the second part\n"
+    )
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response(plan_text))
+    route = run(router.route("do something with two parts"))
+    assert route.plan is None
+    assert route.subagent is None
+    assert not route.rejected
+
+
+def test_route_plan_zero_blocks_falls_back_to_main() -> None:
+    router = _make_router()
+    plan_text = "<plan>\nthis is not a valid block at all\n"
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response(plan_text))
+    route = run(router.route("do something"))
+    assert route.plan is None
+    assert route.subagent is None
+
+
 def test_route_passes_history_to_model() -> None:
     router = _make_router()
     create_mock = AsyncMock(return_value=_mock_response("main"))

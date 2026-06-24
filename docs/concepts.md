@@ -25,10 +25,17 @@ Undecided still: whether it blocks/reverts on failure or only reports into the h
 Gekai is built around keeping a human in the loop, not long unsupervised execution. Every turn is
 expected to produce something a human looks at before the next one starts. This shapes
 everything downstream: subagents run cold with no carried context (fire-and-forget per turn,
-by design), the harness doesn't chain multi-turn plans on its own, and diff/event output exists
-specifically to give the human something concrete to check at each step. The tool is not
-optimized for "give it a task and come back later" — it's optimized for "watch it work in small
-verifiable increments."
+by design), and diff/event output exists specifically to give the human something concrete to
+check at each step.
+
+The router can decompose one request into a multi-step plan — several different specialists run
+in order, each on its own locate/gate/rewrite/dispatch pass — but this is still transparent,
+auto-run, single-turn machinery, not autonomous multi-turn operation: there is no interactive
+plan-mode approval gate, no revert-on-failure, and no resume of a stopped plan. A failing step
+stops the whole plan in place (completed steps' work stays, nothing rolls back) and reports which
+step failed; the human still reviews everything that happened in one sitting before deciding what
+to do next. The tool is not optimized for "give it a task and come back later" — it's optimized
+for "watch it work in small verifiable increments," even when those increments are now chained.
 
 ## Routing is a guard, not a classifier
 

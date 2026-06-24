@@ -85,10 +85,10 @@ class Agent:
             await asyncio.wait_for(self._run_loop(messages), self.wall_clock_timeout)
 
     async def _run_loop(self, messages: list[Message]) -> None:
-        async def _complete() -> CompletionResponse:
+        async def _complete(*, with_tools: bool = True) -> CompletionResponse:
             self.usage.record_call()
             final: CompletionResponse | None = None
-            async for ev in self.provider.stream(**self._provider_kwargs(messages)):
+            async for ev in self.provider.stream(**self._provider_kwargs(messages, with_tools=with_tools)):
                 if isinstance(ev, ThinkingDelta):
                     self._emit(ThinkingChunkReceived(text=ev.text))
                 elif isinstance(ev, StreamDone):
@@ -108,13 +108,37 @@ class Agent:
                 if not await self._apply_response(response, messages, turn=turn):
                     self._emit(AgentStopped(stop_reason="complete", turns=self.usage.turns))
                     return
+
+            budget_exhausted = False
+            if not self._assistant_text(messages):
+                budget_exhausted = True
+                turn = self.max_iterations + 1
+                self._emit(TurnStarted(turn=turn))
+                self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
+                response = await retry_call(
+                    self._instrumented_policy(turn), lambda: _complete(with_tools=False)
+                )
+                self._emit(ModelResponseReceived(turn=turn, response=response))
+                await self._apply_response(response, messages, turn=turn)
+
+            if self._assistant_text(messages):
+                self._emit(
+                    AgentStopped(
+                        stop_reason="complete",
+                        turns=self.usage.turns,
+                        budget_exhausted=budget_exhausted,
+                    )
+                )
+                return
         except (asyncio.CancelledError, asyncio.TimeoutError):
             raise
         except BaseException as exc:
             self._emit_stopped_for(exc)
             raise
 
-        self._emit(AgentStopped(stop_reason="max_iterations", turns=self.usage.turns))
+        self._emit(
+            AgentStopped(stop_reason="max_iterations", turns=self.usage.turns, budget_exhausted=True)
+        )
         raise MaxIterationsExceeded(
             f"Agent exceeded max_iterations={self.max_iterations} without terminating"
         )
@@ -146,6 +170,38 @@ class Agent:
                 if not await self._apply_response(final_response, messages, turn=turn):
                     self._emit(AgentStopped(stop_reason="complete", turns=self.usage.turns))
                     return
+
+            budget_exhausted = False
+            if not self._assistant_text(messages):
+                budget_exhausted = True
+                turn = self.max_iterations + 1
+                final_response = None
+                self.usage.record_call()
+                self._emit(TurnStarted(turn=turn))
+                self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
+                async for event in self.provider.stream(
+                    **self._provider_kwargs(messages, with_tools=False)
+                ):
+                    if isinstance(event, StreamDone):
+                        final_response = event.response
+                    yield event
+
+                if final_response is None:
+                    raise RuntimeError(
+                        f"{type(self.provider).__name__}.stream() ended without a StreamDone event"
+                    )
+                self._emit(ModelResponseReceived(turn=turn, response=final_response))
+                await self._apply_response(final_response, messages, turn=turn)
+
+            if self._assistant_text(messages):
+                self._emit(
+                    AgentStopped(
+                        stop_reason="complete",
+                        turns=self.usage.turns,
+                        budget_exhausted=budget_exhausted,
+                    )
+                )
+                return
         except asyncio.CancelledError:
             self._emit(AgentStopped(stop_reason="cancelled", turns=self.usage.turns))
             raise
@@ -153,7 +209,9 @@ class Agent:
             self._emit_stopped_for(exc)
             raise
 
-        self._emit(AgentStopped(stop_reason="max_iterations", turns=self.usage.turns))
+        self._emit(
+            AgentStopped(stop_reason="max_iterations", turns=self.usage.turns, budget_exhausted=True)
+        )
         raise MaxIterationsExceeded(
             f"Agent exceeded max_iterations={self.max_iterations} without terminating"
         )
@@ -194,9 +252,11 @@ class Agent:
         messages: list[Message] = self._normalize_prompt(prompt)
         stop_reason: StopReason = "complete"
         error: Exception | None = None
+        budget_exhausted = False
         self._emit(AgentStarted(prompt=prompt, model=self.model))
 
         try:
+            completed = False
             for turn in range(1, self.max_iterations + 1):
                 final_response: CompletionResponse | None = None
                 self.usage.record_call()
@@ -214,11 +274,35 @@ class Agent:
                 self._emit(ModelResponseReceived(turn=turn, response=final_response))
 
                 if not await self._apply_response(final_response, messages, turn=turn):
+                    completed = True
                     break
-            else:
+
+            if not completed and not self._assistant_text(messages):
+                budget_exhausted = True
+                turn = self.max_iterations + 1
+                final_response = None
+                self.usage.record_call()
+                self._emit(TurnStarted(turn=turn))
+                self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
+                async for event in self.provider.stream(
+                    **self._provider_kwargs(messages, with_tools=False)
+                ):
+                    if isinstance(event, StreamDone):
+                        final_response = event.response
+                    yield event
+
+                if final_response is None:
+                    raise RuntimeError(
+                        f"{type(self.provider).__name__}.stream() ended without a StreamDone event"
+                    )
+                self._emit(ModelResponseReceived(turn=turn, response=final_response))
+                await self._apply_response(final_response, messages, turn=turn)
+
+            if not completed and not self._assistant_text(messages):
                 stop_reason = "max_iterations"
         except MaxIterationsExceeded:
             stop_reason = "max_iterations"
+            budget_exhausted = True
         except CostCeilingExceeded as exc:
             stop_reason = "cost_ceiling"
             error = exc
@@ -229,7 +313,14 @@ class Agent:
             stop_reason = "error"
             error = exc
 
-        self._emit(AgentStopped(stop_reason=stop_reason, turns=self.usage.turns, error=error))
+        self._emit(
+            AgentStopped(
+                stop_reason=stop_reason,
+                turns=self.usage.turns,
+                budget_exhausted=budget_exhausted,
+                error=error,
+            )
+        )
         yield AgentResultEvent(
             result=self._build_result(messages, stop_reason=stop_reason, error=error)
         )
@@ -271,12 +362,12 @@ class Agent:
             return [Message(role="user", content=prompt)]
         return list(prompt)
 
-    def _provider_kwargs(self, messages: list[Message]) -> dict[str, Any]:
+    def _provider_kwargs(self, messages: list[Message], *, with_tools: bool = True) -> dict[str, Any]:
         return {
             "model": self.model,
             "messages": messages,
             "system": self.system,
-            "tools": self.tools.definitions() or None,
+            "tools": (self.tools.definitions() or None) if with_tools else None,
             "max_tokens": self.max_tokens,
             **self.extra_params,
         }
@@ -333,11 +424,24 @@ class Agent:
 
     def _emit_stopped_for(self, exc: BaseException) -> None:
         if isinstance(exc, MaxIterationsExceeded):
-            self._emit(AgentStopped(stop_reason="max_iterations", turns=self.usage.turns))
+            self._emit(
+                AgentStopped(
+                    stop_reason="max_iterations", turns=self.usage.turns, budget_exhausted=True
+                )
+            )
         elif isinstance(exc, CostCeilingExceeded):
             self._emit(AgentStopped(stop_reason="cost_ceiling", turns=self.usage.turns, error=exc))
         elif isinstance(exc, Exception):
             self._emit(AgentStopped(stop_reason="error", turns=self.usage.turns, error=exc))
+
+    @staticmethod
+    def _assistant_text(messages: list[Message]) -> str:
+        for msg in reversed(messages):
+            if msg.role == "assistant":
+                if isinstance(msg.content, str):
+                    return msg.content
+                return "".join(b.text for b in msg.content if isinstance(b, TextBlock))
+        return ""
 
     def _build_result(
         self,
@@ -346,14 +450,7 @@ class Agent:
         stop_reason: StopReason,
         error: Exception | None,
     ) -> AgentResult:
-        text = ""
-        for msg in reversed(messages):
-            if msg.role == "assistant":
-                if isinstance(msg.content, str):
-                    text = msg.content
-                else:
-                    text = "".join(b.text for b in msg.content if isinstance(b, TextBlock))
-                break
+        text = self._assistant_text(messages)
         return AgentResult(
             messages=messages,
             text=text,

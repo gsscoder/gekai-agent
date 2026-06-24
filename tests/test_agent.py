@@ -117,6 +117,46 @@ def test_process_stream_writes_user_turn_before_assistant(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
+# append_user=False (plan steps 2..N) skips the user-turn persist, keeps the
+# assistant-turn persist
+# ---------------------------------------------------------------------------
+
+def test_process_stream_append_user_false_skips_user_turn(tmp_path: Path) -> None:
+    session = _make_session(tmp_path)
+    agent = _stub_agent(["reply"])
+    run(_drain(agent.process_stream(session, "step 2 raw", Route(), append_user=False)))
+
+    turns = _turns(session)
+    assert [t["role"] for t in turns] == ["assistant"]
+
+
+def test_process_stream_append_user_true_matches_default(tmp_path: Path) -> None:
+    session = _make_session(tmp_path)
+    agent = _stub_agent(["reply"])
+    run(_drain(agent.process_stream(session, "hi", Route(), append_user=True)))
+
+    roles = [t["role"] for t in _turns(session)]
+    assert roles == ["user", "assistant"]
+
+
+def test_process_stream_plan_two_steps_persist_one_user_two_assistant(tmp_path: Path) -> None:
+    session = _make_session(tmp_path)
+    turn_id = "shared-turn"
+
+    agent_step1 = _stub_agent(["step1 reply"])
+    run(_drain(agent_step1.process_stream(session, "original prompt", Route(), turn_id=turn_id)))
+
+    agent_step2 = _stub_agent(["step2 reply"])
+    run(_drain(agent_step2.process_stream(session, "step 2 raw", Route(), turn_id=turn_id, append_user=False)))
+
+    turns = _turns(session)
+    assert [t["role"] for t in turns] == ["user", "assistant", "assistant"]
+    assert turns[0]["content"] == "original prompt"
+    assert turns[1]["content"] == "step1 reply"
+    assert turns[2]["content"] == "step2 reply"
+
+
+# ---------------------------------------------------------------------------
 # trivial routes run main with empty extra_params (no thinking)
 # ---------------------------------------------------------------------------
 

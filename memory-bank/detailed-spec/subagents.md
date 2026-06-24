@@ -39,10 +39,14 @@ All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
 - `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, and computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`)
 
 > **Subagent vs harness-worker:** `Subagent` (and the streamers spawned for it) serve a
-> *user-turn* — selected by the router from user intent. A reserved-but-unbuilt `harness-worker`
-> category would instead serve the system/lifecycle directly (e.g. a future workspace-scan
-> revival) — work that runs outside any single user turn. Zero code exists for this yet; the
-> name marks the conceptual slot for a future evolution.
+> *user-turn* — selected by the router from user intent. `ws-manager` (`agent/subagents/worker/ws_manager.py`,
+> namespace `worker`) is the first built example of a system-flavored member that is nonetheless
+> `user_invocable=True` and `is_fallback=True` for `worker` — the router/plan can assign it like any
+> other subagent. Its mandate is scoped to repo/filesystem scaffolding only (project skeletons,
+> directories, manifest files, conventional layout) — never application logic; tools granted are
+> `READ_TOOLS + EDIT_TOOLS + FS_TOOLS` (no shell). A separate, still-unbuilt `harness-worker`
+> category would serve the system/lifecycle directly (e.g. a future workspace-scan revival) — work
+> that runs outside any single user turn; zero code exists for this category yet.
 
 ## Adding a New Subagent-Style Streamer
 There is no base class to inherit — any async generator yielding `AgentEvent`s following the

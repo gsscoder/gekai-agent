@@ -33,26 +33,80 @@ stay with `Harness` directly, or does it match a specialist subagent (or get rej
 
 `Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-`Route` dataclass: `subagent: Subagent | None = None`, `rejected: bool = False`, `trivial: bool = False`.
+`Route` dataclass: `subagent: Subagent | None = None`, `rejected: bool = False`, `trivial: bool = False`,
+`explore: bool = False`, `plan: list[PlanStep] | None = None`.
 No `namespace` property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
-`trivial` and `subagent` are mutually exclusive — `TRIVIAL` token is mapped before the subagent menu check.
+`trivial`/`explore`/`subagent`/`plan` are mutually exclusive — exactly one of the token modes (or `plan`) is set.
+
+`PlanStep` dataclass (`agent/pipeline/router.py`): `subagent: Subagent | None` (`None` ⇒ step runs on `main`),
+`raw: str` (verbatim slice of the original prompt covering that step; never rewritten by the router itself).
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Router prompt offers exactly four kinds of output token:
+Router prompt offers six kinds of output:
 - `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `Harness` handles directly. Bias: prefer `main` unless a specialist clearly fits
 - `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions, acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `main` when unsure (false `main` costs one extra near-empty `FileLocator` call; false `TRIVIAL` denies real codebase context)
+- `EXPLORE` — read-only investigation ending in an answer about files/structure ("list files", "where is X defined", "show project structure"); never chosen if the request also asks for an edit/fix/change — prefer `main` then; prefer `main` when unsure
 - `REJECTED` — non-English input
-- `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty
+- `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty, or explicitly names it
+- `<plan>` — the request clearly needs multiple *different* specialists run in order (see below)
 
 Router output token → Route mapping:
 - `"main"` → `Route()`
 - `"trivial"` → `Route(trivial=True)`
+- `"explore"` → `Route(explore=True)`
 - `"rejected"` → `Route(rejected=True)`
 - `<subagent-name>` (matched) → `Route(subagent=p)`
+- `<plan>...` (parsed, 2+ steps) → `Route(plan=[PlanStep, ...])`
 - unknown token → warning log + host-retained `Route()` (same as `main`)
 
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
+
+### Multi-step plans
+
+A `<plan>` block is emitted by the same router call (no extra round-trip) when the request needs
+multiple *different* specialists run in order; a single specialist phrased with multiple clauses
+stays a single token (bias hard toward single token — see prompt example for "create sqrt.py and
+code the Quake version of the function inside" → one `code-expert` token, not a 2-step plan).
+
+Grammar:
+```
+<plan>
+<agent-name>:
+  <raw extraction of the part of the request this step covers; may span lines>
+<agent-name>:
+  <raw extraction ...>
+```
+`<agent-name>` ∈ subagent menu names ∪ `main`. `_parse_plan` (`agent/pipeline/router.py`) splits on
+`^([\w-]+):\s*$` lines into ordered `(name, body)` blocks.
+
+Fallback (router never hard-fails a turn):
+- malformed `<plan>`, zero parsable blocks, an empty body, or an unknown agent name in any
+  block → `_parse_plan` returns `None` → router logs a warning and degrades to `Route()` (plain `main`)
+- exactly one parsed step → collapses to the equivalent single-token route (`Route(subagent=step.subagent)`),
+  no executor/plan path involved
+- 2+ parsed steps → `Route(plan=steps)`
+
+### Executor (plan dispatch)
+
+`agent/tui/app.py::_run_step(raw, subagent, ...)` is the single per-step pipeline — locate → gate
+(subagent steps only) → rewrite → dispatch — extracted so both the single-token path (called once)
+and the plan path (called once per `PlanStep`, sequentially) share it. Plan loop lives in `_stream`'s
+`route.plan is not None` branch:
+- steps run **sequentially, fail-stop, no revert** — locate runs fresh per step (so it can pick up
+  files written by prior steps); subagent steps run cold (`prior=[]`); a step targeting `main` gets
+  normal recency (`_recency_turns`) and so can see prior steps' assistant text
+- a step's outcome is `"gate_blocked"` (scope gate rejected) or `"max_iterations"` with no answer
+  (budget exhausted with nothing salvaged) → plan stops immediately, no further steps run, completed
+  steps' work (files written, etc.) is left in place
+- on stop: one `MessageWidget(MessageKind.ERROR, ...)` reading
+  `"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`
+- on full success: one trailing `MessageWidget(MessageKind.OPERATION, "* {verb} for {duration} ({n} steps)")`
+- each step that produces an answer is mounted as its own separate `MessageWidget(ASSISTANT, ...)` —
+  N assistant widgets can appear in a row for one user turn
+- persistence: `process_stream(..., append_user=...)` — step 1 of a plan persists the user's turn
+  (`append_user=True`); steps 2..N pass `append_user=False`; all N assistant segments + the one user
+  turn share the same `turn_id`
 
 ## File Location & Blast-Radius Gate
 Locate runs on every **non-`TRIVIAL`** route (`main` and `<subagent>` alike). Gate applies only

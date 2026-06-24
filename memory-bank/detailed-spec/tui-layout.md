@@ -98,6 +98,13 @@ Runs as exclusive Textual worker.
 - on complete: mount ASSISTANT widget + OPERATION widget `"* {verb[1]} for {duration}"` (appends `" ({n} tools)"` if `query_tool_count > 0`), scroll end
 - `finally`: `_stop_status_animation()`, `ws_renderer.stop_spinner()` if set, handle `_worker_cancelled` (mount INTERRUPTED widget), `_worker = None`, `_focus_prompt()`
 
+**Multi-step plan turns** (`route.plan is not None`): the same per-step widget sequence above
+(HEADER/log widgets via `SubAgentRenderer`, then ASSISTANT widget) repeats N times in a row for
+one user turn — no extra user input between repetitions, each step dispatched by `_run_step`. The
+whole sequence is capped by exactly one trailing widget: an OPERATION line
+(`"* {verb} for {duration} ({n} steps)"`) on full success, or one ERROR line
+(`"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`) on fail-stop.
+
 ## SubAgentRenderer
 Helper class in `app.py`; one instance per subagent block within a turn.
 - `start(name, description, color)` — mounts `assistant-spacer` Static then a `HEADER` MessageWidget with `"[bold #666666]Thinking...[/bold #666666]"` header text; starts braille-frame `_animate_dot()` asyncio task on `.header-dot`

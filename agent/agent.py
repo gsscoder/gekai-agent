@@ -159,9 +159,11 @@ class GekaiAgent:
         permission_callback: PermissionCallback | None = None,
         turn_id: str | None = None,
         hidden_grant_callback: HiddenGrantCallback | None = None,
+        append_user: bool = True,
     ) -> AsyncIterator[str | AgentEvent]:
-        session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
-        append_message(session, session.messages[-1], turn=turn_id)
+        if append_user:
+            session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
+            append_message(session, session.messages[-1], turn=turn_id)
 
         if entries:
             try:

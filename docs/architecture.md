@@ -3,16 +3,20 @@
 ## Overview
 
 Every turn passes through three layers: **routing → file location (+ gate, subagent-only) → Harness dispatch**.
-`TRIVIAL` routes skip the middle layer entirely — no file location, no rewrite.
+`TRIVIAL` routes skip the middle layer entirely — no file location, no rewrite. `EXPLORE` routes go to a
+separate read-only `FileExplorer`, not shown in the single-step diagram below (see
+[Multi-step Plans](#multi-step-plans) for `<plan>` routes).
 
 ```
 user input
     │
     ▼
 Router                 [support model] — one call; emits a single Route
-    │                  (rejected | trivial | subagent | main)
+    │                  (rejected | trivial | explore | subagent | main | plan)
     │
     ├── REJECTED ────────────────────────────────────────────────────► reject (non-English)
+    │
+    ├── EXPLORE ───────────────────────────────────────────────────────► FileExplorer (read-only investigation)
     │
     ├── TRIVIAL ────────────────────────────────────────────────────┐
     │   greeting / identity / general knowledge —                   │
@@ -42,7 +46,36 @@ Router                 [support model] — one call; emits a single Route
                                             direct mode (no subagent, with recency)
                                             spawn mode  (subagent.build_system_base() + harness-assembled <tools>, cold)
                                             trivial route → extra_params={} (no thinking budget)
+
+    └── <plan> (Route(plan=[PlanStep, ...])) ───► N × (locate → gate → rewrite → Harness), one step
+                                                   at a time, sequential, fail-stop — see below
 ```
+
+### Multi-step plans
+
+When a request clearly needs multiple *different* specialists run in order, the same router call
+emits a `<plan>` block instead of a single token — no extra LLM round-trip. A single specialist
+task phrased with multiple clauses still collapses to one token (router bias is hard toward the
+single-token case); a parsed plan with exactly one step also collapses to the equivalent
+single-token `Route`.
+
+```python
+@dataclass
+class PlanStep:
+    subagent: Subagent | None   # None => this step runs on main
+    raw: str                    # verbatim slice of the request this step covers
+```
+
+Executor (`agent/tui/app.py::_run_step`, looped over `route.plan`): the same locate → gate → rewrite
+→ dispatch pipeline used for a single-token route, run once per `PlanStep`, in order. Steps are
+**sequential and fail-stop, with no revert** — a step that hits the iteration budget with no answer,
+or is gate-rejected, or errors, stops the whole plan immediately; completed steps' work (files
+written, etc.) is left in place, and the chat surfaces
+`"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`. On full success, one trailing
+`"* {verb} for {duration} ({n} steps)"` operation line closes the turn. Each step that produces an
+answer is rendered as its own assistant message — N assistant messages can follow a single user
+turn. All N steps + the one user turn persist under a shared `turn_id` (`process_stream(...,
+append_user=...)`: `True` for step 1, `False` for steps 2..N).
 
 ---
 
@@ -253,15 +286,18 @@ class Route:
     subagent: Subagent | None = None
     rejected: bool = False
     trivial: bool = False
+    explore: bool = False
+    plan: list[PlanStep] | None = None
 ```
 
 There is no `namespace` property — callers read `route.subagent.namespace` directly when
-`route.subagent is not None`. `trivial` and `subagent` are mutually exclusive in practice —
-the router maps `TRIVIAL` to `Route(trivial=True)` before checking the subagent menu.
+`route.subagent is not None`. `trivial`/`explore`/`subagent`/`plan` are mutually exclusive in
+practice — the router maps each single token before checking the subagent menu, and a `<plan>`
+block is only emitted instead of (never alongside) a token.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
-The router prompt offers exactly four kinds of output:
+The router prompt offers six kinds of output:
 
 ```
 ROUTER_PROMPT
@@ -269,9 +305,13 @@ ROUTER_PROMPT
 ├── TRIVIAL          answerable with no codebase access — greetings, identity/capability
 │                    questions, acknowledgments, general knowledge unrelated to this
 │                    workspace; when unsure, NOT this
+├── EXPLORE          read-only investigation ending in an answer about files/structure;
+│                    never chosen if the request also asks for an edit/fix/change
 ├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
 │                    "name — description"); when the request fits its specialty,
 │                    or explicitly asks to use/delegate the task to it by name
+├── <plan>           the request clearly needs multiple *different* specialists run in
+│                    order — see Multi-step Plans above
 └── main             anything else — handled directly by Harness
 ```
 
@@ -288,9 +328,12 @@ false `main` only costs one extra (often near-empty) `FileLocator` call, while a
 |---------------------|------------------------|------------------------------------------------------|
 | `main`              | `Route()`              | Harness handles directly, no subagent spawned        |
 | `TRIVIAL`           | `Route(trivial=True)`  | skips FileLocator + PromptRewriter; Harness still answers, with `extra_params={}` |
+| `EXPLORE`           | `Route(explore=True)`  | dispatched to `FileExplorer`, a separate read-only investigation path |
 | `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies  |
+| `<plan>` (2+ steps) | `Route(plan=[...])`    | multi-step executor, see Multi-step Plans above      |
+| `<plan>` (1 step)   | `Route(subagent=p)`    | collapses to the equivalent single-token route       |
 | `rejected`          | `Route(rejected=True)` | non-English input                                    |
-| unknown token       | `Route()`              | warning log + host-retained, same as `main`          |
+| unknown/malformed   | `Route()`              | warning log + host-retained, same as `main`          |
 
 ---
 
@@ -426,10 +469,14 @@ Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) 
 `subagent.directives` at import time via `dataclasses.replace`.
 Adding a subagent = drop one file; zero other changes required.
 
-`NAMESPACES = ("coding", "generic")` — `"generic"` is innate (no subagents; selector skipped).
-The only `coding`-namespace member is `code_expert` (`is_fallback=True`): general code changes —
-features, fixes, tests — when no specialized subagent fits; its `description` explicitly excludes
-pure refactors / complexity-reduction passes with no behavior change.
+`NAMESPACES` includes `"coding"`, `"testing"`, `"generic"` (innate — no subagents; selector
+skipped), and `"worker"`. The `coding`-namespace fallback is `code_expert` (`is_fallback=True`):
+general code changes — features, fixes, tests — when no specialized subagent fits; its
+`description` explicitly excludes pure refactors / complexity-reduction passes with no behavior
+change. `worker`'s sole member, `ws-manager` (`agent/subagents/worker/ws_manager.py`), is now
+`user_invocable=True` and `is_fallback=True` — the router/plan can assign it like any other
+subagent. Its mandate is scoped to repo/filesystem scaffolding only (project skeletons,
+directories, manifest files, conventional layout) — never application logic.
 
 `validate_registry()` runs at startup — raises if any non-`generic` namespace in `NAMESPACES` has
 no members, has duplicate names, or doesn't have exactly one fallback.
@@ -437,9 +484,11 @@ no members, has duplicate names, or doesn't have exactly one fallback.
 Subagent selection is performed by the `Router` in a single guard call — see [Router](#router) above.
 
 > **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
-> intent via routing. A reserved-but-unbuilt `harness-worker` category would instead serve the
-> *system/lifecycle* (e.g. a future workspace-scan revival) — a system-serving worker that runs
-> outside any single user turn. Zero code exists for this yet; the name marks the conceptual slot.
+> intent via routing. `ws-manager` (`worker` namespace) is the first built, user-invocable example
+> of a system-flavored member, scoped to repo/filesystem scaffolding only. A separate,
+> still-unbuilt `harness-worker` category would instead serve the *system/lifecycle* directly
+> (e.g. a future workspace-scan revival) — work that runs outside any single user turn. Zero code
+> exists for that category yet; the name marks the conceptual slot.
 
 ### Permission overlay
 

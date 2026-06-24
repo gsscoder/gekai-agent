@@ -63,10 +63,17 @@ class SubagentResult:
     """Result of one hosted delegation: a subagent's summary, the files it touched, and whether it completed normally."""
     summary: str = ""
     files_touched: list[str] = field(default_factory=list)
-    status: Literal["ok", "max_iterations"] = "ok"
+    status: Literal["ok", "failed"] = "ok"
+    budget_exhausted: bool = False
 
 
 @dataclass
 class MaxIterationsEvent(AgentEvent):
     """Emitted instead of a text response when the agent hit its iteration limit."""
+    pass
+
+
+@dataclass
+class BudgetExhaustedEvent(AgentEvent):
+    """Emitted when the agent exhausted its iteration budget but a salvage turn (with tools suppressed) was attempted."""
     pass

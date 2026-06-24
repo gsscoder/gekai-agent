@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -11,6 +12,14 @@ _log = logging.getLogger(__name__)
 from ..subagents import Subagent, SUBAGENTS
 from ._directives import PIPELINE_DIRECTIVES
 
+_AGENT_LINE_RE = re.compile(r"^([\w-]+):\s*$")
+
+
+@dataclass
+class PlanStep:
+    subagent: Subagent | None  # None => this step runs on main
+    raw: str  # verbatim slice/extraction of the original prompt; NOT rewritten
+
 
 @dataclass
 class Route:
@@ -18,6 +27,40 @@ class Route:
     rejected: bool = False
     trivial: bool = False
     explore: bool = False
+    plan: list[PlanStep] | None = None
+
+
+def _parse_plan(raw: str, subagents: list[Subagent]) -> list[PlanStep] | None:
+    """Parse a `<plan>` block into ordered `PlanStep`s. Returns None on any parse failure."""
+    lines = raw.splitlines()[1:]  # drop the `<plan>` tag line
+    by_name = {p.name.lower(): p for p in subagents}
+
+    blocks: list[tuple[str, list[str]]] = []
+    for line in lines:
+        match = _AGENT_LINE_RE.match(line)
+        if match:
+            blocks.append((match.group(1), []))
+        elif blocks:
+            blocks[-1][1].append(line)
+
+    if not blocks:
+        return None
+
+    steps: list[PlanStep] = []
+    for name, body_lines in blocks:
+        name_lower = name.lower()
+        body = "\n".join(body_lines).strip("\n")
+        body = body.strip()
+        if not body:
+            return None
+        if name_lower == "main":
+            steps.append(PlanStep(subagent=None, raw=body))
+        elif name_lower in by_name:
+            steps.append(PlanStep(subagent=by_name[name_lower], raw=body))
+        else:
+            return None
+
+    return steps
 
 
 _ROUTER_PROMPT_BASE = (
@@ -34,8 +77,23 @@ _ROUTER_PROMPT_BASE = (
     "or any change — prefer main in that case; when unsure, prefer main\n"
     "  <subagent-name>  — the request fits one subagent's specialty (see below), or explicitly asks to use or delegate the task to it by name\n"
     "  main             — anything else; handled directly by the coding agent\n"
+    "  <plan>           — the request clearly needs multiple *different* specialists run in order; "
+    "see plan format below\n"
     "<subagents>\n"
-    "{subagents-meta}"
+    "{subagents-meta}\n"
+    "<plan format>\n"
+    "emit a single token unless the request clearly needs multiple different specialists; prefer "
+    "the single token — a single specialist task phrased with multiple clauses is still one token, "
+    "not a plan\n"
+    "example: \"create sqrt.py and code the Quake version of the function inside\" — single "
+    "code-expert token, NOT a 2-step plan (one specialist, multiple clauses)\n"
+    "when a plan is warranted, output exactly:\n"
+    "<plan>\n"
+    "<agent-name>:\n"
+    "  <raw extraction of the part of the request this step covers; may span lines>\n"
+    "<agent-name>:\n"
+    "  <raw extraction of the part of the request this step covers; may span lines>\n"
+    "where each <agent-name> is one of the subagent names above or main"
 )
 
 
@@ -79,6 +137,16 @@ class Router:
             ],
         )
         raw: str = response.choices[0].message.content.strip()
+
+        if raw.lower().startswith("<plan>"):
+            steps = _parse_plan(raw, self._subagents)
+            if not steps:
+                _log.warning("router plan parse failure — raw: %r", raw)
+                return Route()
+            if len(steps) == 1:
+                return Route(subagent=steps[0].subagent)
+            return Route(plan=steps)
+
         first = raw.split()[0] if raw.split() else ""
         first_lower = first.lower()
 

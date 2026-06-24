@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import AgentStopped, EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
@@ -18,7 +18,7 @@ from ..persona import SYSTEM_PROMPT, render_tool_instruction
 from ..session import Session
 from ..settings import Permissions
 from ..diff import build_diff
-from ..events import DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..subagents import Subagent
 from ..tools import HiddenGrantCallback, make_tools
 
@@ -168,7 +168,9 @@ class Harness:
         if self._debug:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
 
-        queue: asyncio.Queue[LogEvent | InferEndEvent | ThinkingTokenEvent | None] = asyncio.Queue()
+        queue: asyncio.Queue[
+            LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | BudgetExhaustedEvent | None
+        ] = asyncio.Queue()
         files_touched: list[str] = []
 
         _SINGLE_PATH_TOOLS = ("write_file", "edit_file", "make_dir", "delete_file")
@@ -216,6 +218,8 @@ class Harness:
                     ))
                 elif isinstance(event, ThinkingChunkReceived):
                     await queue.put(ThinkingTokenEvent(text=event.text))
+                elif isinstance(event, AgentStopped) and event.budget_exhausted:
+                    await queue.put(BudgetExhaustedEvent())
             await queue.put(None)
 
         yield SubAgentStartEvent(

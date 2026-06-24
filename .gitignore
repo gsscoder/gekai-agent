@@ -19,7 +19,7 @@ dist/
 .claude/agents/
 .gekai/
 mcps/
-_agentsfiles/
+_agentfiles/
 
 # editor
 .vscode/

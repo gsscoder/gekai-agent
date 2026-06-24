@@ -85,6 +85,7 @@ class RetryAttemptEvent:
 class AgentStopped:
     stop_reason: StopReason
     turns: int
+    budget_exhausted: bool = False
     error: Exception | None = None
     run_id: str = ""
 
