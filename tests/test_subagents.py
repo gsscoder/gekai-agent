@@ -5,6 +5,8 @@ import pytest
 from agent import subagents as subagents_module
 from agent.persona import _SHARED_BODY
 from agent.subagents import NAMESPACE_COLORS, NAMESPACES, Subagent, validate_registry
+from agent.subagents.worker.ws_manager import subagent as ws_manager_subagent
+from agent.tools.catalog import SHELL_TOOLS
 
 
 def _subagent(mandate: str = "", directives: str = "") -> Subagent:
@@ -92,3 +94,36 @@ def test_validate_registry_raises_when_a_namespace_has_no_color(monkeypatch):
     monkeypatch.setattr(subagents_module, "NAMESPACE_COLORS", {**NAMESPACE_COLORS, "ghost": ""})
     with pytest.raises(ValueError, match="ghost"):
         validate_registry()
+
+
+# ---------------------------------------------------------------------------
+# ws-manager — the system-managed worker/onboard subagent (plan 17b context):
+# user-invocable so the router/menu can surface it, but it must never gain
+# shell access, and it must satisfy the worker namespace's fallback invariant.
+# ---------------------------------------------------------------------------
+
+def test_ws_manager_is_user_invocable():
+    assert ws_manager_subagent.user_invocable is True
+
+
+def test_ws_manager_is_the_worker_namespace_fallback():
+    assert ws_manager_subagent.is_fallback is True
+
+
+def test_ws_manager_namespace_is_worker():
+    assert ws_manager_subagent.namespace == "worker"
+
+
+def test_ws_manager_has_no_shell_tools():
+    # scaffolding-only specialist — never gets run_command (or any shell tool)
+    assert ws_manager_subagent.tools is not None
+    for shell_tool in SHELL_TOOLS:
+        assert shell_tool not in ws_manager_subagent.tools
+
+
+def test_ws_manager_is_discoverable_and_registry_stays_valid():
+    # ws-manager is picked up by _discover() and does not break the
+    # "exactly one fallback per namespace with invocable members" invariant
+    # for the real, unmodified registry.
+    assert ws_manager_subagent in subagents_module.SUBAGENTS
+    validate_registry()  # must not raise
