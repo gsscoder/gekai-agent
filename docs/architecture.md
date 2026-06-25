@@ -12,9 +12,7 @@ user input
     │
     ▼
 Router                 [support model] — one call; emits a single Route
-    │                  (rejected | trivial | explore | subagent | main | plan)
-    │
-    ├── REJECTED ────────────────────────────────────────────────────► reject (non-English)
+    │                  (trivial | explore | subagent | main | plan)
     │
     ├── EXPLORE ───────────────────────────────────────────────────────► FileExplorer (read-only investigation)
     │
@@ -280,7 +278,6 @@ makes **one LLM call** on the **support model**, temperature 0, and returns a si
 @dataclass
 class Route:
     subagent: Subagent | None = None
-    rejected: bool = False
     trivial: bool = False
     explore: bool = False
     plan: list[PlanStep] | None = None
@@ -293,11 +290,10 @@ block is only emitted instead of (never alongside) a token.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
-The router prompt offers six kinds of output:
+The router prompt offers five kinds of output:
 
 ```
 ROUTER_PROMPT
-├── REJECTED         non-English input
 ├── TRIVIAL          answerable with no codebase access — greetings, identity/capability
 │                    questions, acknowledgments, general knowledge unrelated to this
 │                    workspace; when unsure, NOT this
@@ -328,7 +324,6 @@ false `main` only costs one extra (often near-empty) `FileLocator` call, while a
 | `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned                             |
 | `<plan>` (2+ steps) | `Route(plan=[...])`    | multi-step executor, see Multi-step Plans above      |
 | `<plan>` (1 step)   | `Route(subagent=p)`    | collapses to the equivalent single-token route       |
-| `rejected`          | `Route(rejected=True)` | non-English input                                    |
 | unknown/malformed   | `Route()`              | warning log + host-retained, same as `main`          |
 
 ---

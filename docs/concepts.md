@@ -43,7 +43,7 @@ for "watch it work in small verifiable increments," even when those increments a
 
 ## Routing is a guard, not a classifier
 
-`Router` makes exactly one decision per turn: does this stay with the main agent, get rejected,
+`Router` makes exactly one decision per turn: does this stay with the main agent,
 get answered without touching the codebase, or get handed to a specialist. It does not attempt
 to understand intent beyond that single fork. Keeping the router's job this narrow keeps it
 cheap, fast, and predictable to reason about — it is infrastructure for dispatch, not a second

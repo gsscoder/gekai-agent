@@ -34,7 +34,6 @@ def test_route_main() -> None:
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("main"))
     route = run(router.route("how does async/await work in Python"))
     assert route.subagent is None
-    assert not route.rejected
 
 
 def test_route_trivial() -> None:
@@ -43,7 +42,6 @@ def test_route_trivial() -> None:
     route = run(router.route("hi there"))
     assert route.trivial
     assert route.subagent is None
-    assert not route.rejected
 
 
 def test_route_default_trivial_is_false() -> None:
@@ -56,26 +54,16 @@ def test_route_explore() -> None:
     route = run(router.route("where is the Router class defined"))
     assert route.explore
     assert route.subagent is None
-    assert not route.rejected
 
 
 def test_route_default_explore_is_false() -> None:
     assert Route().explore is False
 
 
-def test_route_rejected() -> None:
-    router = _make_router()
-    router._client.chat.completions.create = AsyncMock(return_value=_mock_response("REJECTED"))
-    route = run(router.route("¿cómo funciona esto?"))
-    assert route.rejected
-    assert route.subagent is None
-
-
 def test_route_known_subagent() -> None:
     router = _make_router()
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("code-expert"))
     route = run(router.route("add a new endpoint to the API"))
-    assert not route.rejected
     assert route.subagent is not None
     assert route.subagent.name == "code-expert"
     assert route.subagent.namespace == "coding"
@@ -85,7 +73,6 @@ def test_route_unknown_token_falls_back_to_main() -> None:
     router = _make_router()
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("nonsense-token"))
     route = run(router.route("do something"))
-    assert not route.rejected
     assert route.subagent is None
 
 
@@ -94,7 +81,6 @@ def test_route_strips_extra_whitespace() -> None:
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("  main  "))
     route = run(router.route("explain closures"))
     assert route.subagent is None
-    assert not route.rejected
 
 
 def test_route_plan_two_steps() -> None:
@@ -115,7 +101,6 @@ def test_route_plan_two_steps() -> None:
     assert route.plan[1].subagent.name == "test-expert"
     assert route.plan[1].raw == "write tests for the new endpoint"
     assert route.subagent is None
-    assert not route.rejected
 
 
 def test_route_plan_with_main_step() -> None:
@@ -173,7 +158,6 @@ def test_route_plan_unknown_agent_falls_back_to_main() -> None:
     route = run(router.route("do something with two parts"))
     assert route.plan is None
     assert route.subagent is None
-    assert not route.rejected
 
 
 def test_route_plan_zero_blocks_falls_back_to_main() -> None:

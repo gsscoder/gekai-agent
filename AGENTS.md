@@ -17,6 +17,10 @@ Textual TUI on top of a per-turn pipeline:
 - Permissions (read/write/exec) gate filesystem/shell tools, persisted to `.gekai/settings.local.json`
 - Persistence: `session.jsonl` (visible, resumable chat history) + always-on `events-*.jsonl` telemetry; `--debug` adds `debug.jsonl` (internal-only)
 
+## Maturity
+- The system is currently under development
+- Backward compatibility is not required when changing existing features
+
 ## Memory
 The development documents are organized in the `memory-bank` dir:
 - `progress.md`: progress log

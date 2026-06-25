@@ -265,8 +265,6 @@ def _ms(seconds: float) -> int:
 
 
 def _route_decision(route: Route) -> str:
-    if route.rejected:
-        return "rejected"
     if route.plan is not None:
         return f"plan({len(route.plan)})"
     if route.subagent is not None:
@@ -721,8 +719,6 @@ class GekaiApp(App[None]):
                     source = entry.get("source", "")
                     if source == "command":
                         await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, content))
-                    elif source == "router":
-                        await conversation.mount(MessageWidget(MessageKind.REJECTED, content))
                     elif source == "error":
                         await conversation.mount(MessageWidget(MessageKind.ERROR, content))
                     elif source == "interrupted":
@@ -1208,12 +1204,6 @@ class GekaiApp(App[None]):
             t0 = time.monotonic()
             route = await self._agent.route(user_input, history=self._session.messages)
             events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
-            if route.rejected:
-                outcome = "rejected"
-                msg = "User input must be in English"
-                await conversation.mount(MessageWidget(MessageKind.REJECTED, msg))
-                append_event(self._session, msg, source="router")
-                return
 
             if route.plan is not None:
                 if self._agent.debug:

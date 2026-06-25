@@ -1,7 +1,7 @@
 """Coverage for `_route_decision`, the TUI's pure Route -> debug-label mapper.
 
 Source: agent/tui/app.py:268-279 (plan 17, multi-step router).
-The function checks fields in this precedence order: rejected, plan, subagent,
+The function checks fields in this precedence order: plan, subagent,
 trivial, explore, else "main". Kept in its own file (rather than
 tests/test_router.py, which only imports agent.pipeline.router) to avoid
 mixing agent.tui.app imports into the router-only test module.
@@ -16,11 +16,6 @@ from agent.tui.app import _route_decision
 # REQ-001: Route(subagent=...) -> "{namespace}/{name}"; use a real registered
 # subagent so the test is anchored to the actual registry, not a fabricated one.
 _CODE_EXPERT = next(p for p in SUBAGENTS if p.name == "code-expert")
-
-
-def test_route_decision_rejected() -> None:
-    # REQ: Route.rejected=True takes the "rejected" label.
-    assert _route_decision(Route(rejected=True)) == "rejected"
 
 
 def test_route_decision_plan_reports_step_count() -> None:
@@ -66,14 +61,6 @@ def test_route_decision_explore() -> None:
 def test_route_decision_default_route_is_main() -> None:
     # REQ: an all-default Route (handled directly by the coding agent) -> "main".
     assert _route_decision(Route()) == "main"
-
-
-def test_route_decision_rejected_takes_precedence_over_plan() -> None:
-    # REQ: precedence order — rejected is checked first, so a Route with both
-    # rejected=True and a populated plan still reports "rejected".
-    plan = [PlanStep(subagent=None, raw="ignored")]
-    route = Route(rejected=True, plan=plan)
-    assert _route_decision(route) == "rejected"
 
 
 def test_route_decision_plan_takes_precedence_over_subagent() -> None:

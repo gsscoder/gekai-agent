@@ -24,7 +24,6 @@ class PlanStep:
 @dataclass
 class Route:
     subagent: Subagent | None = None
-    rejected: bool = False
     trivial: bool = False
     explore: bool = False
     plan: list[PlanStep] | None = None
@@ -67,7 +66,6 @@ _ROUTER_PROMPT_BASE = (
     "you route a user message for a coding agent on a local workspace\n"
     "output exactly one token — no prose, no punctuation\n"
     "choices:\n"
-    "  REJECTED         — the message is not in English\n"
     "  TRIVIAL          — answerable with no codebase access: greetings, identity/capability "
     "questions, acknowledgments, general knowledge unrelated to this workspace; "
     "when unsure, do NOT choose this\n"
@@ -150,8 +148,6 @@ class Router:
         first = raw.split()[0] if raw.split() else ""
         first_lower = first.lower()
 
-        if first_lower == "rejected":
-            return Route(rejected=True)
         if first_lower == "main":
             return Route()
         if first_lower == "trivial":

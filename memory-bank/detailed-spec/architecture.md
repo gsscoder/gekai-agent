@@ -29,11 +29,11 @@ Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_language
 
 ## Router
 `Router` is a pure **guard**, not an intent classifier — it makes one decision: does this turn
-stay with `Harness` directly, or does it match a specialist subagent (or get rejected)?
+stay with `Harness` directly, or does it match a specialist subagent?
 
 `Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-`Route` dataclass: `subagent: Subagent | None = None`, `rejected: bool = False`, `trivial: bool = False`,
+`Route` dataclass: `subagent: Subagent | None = None`, `trivial: bool = False`,
 `explore: bool = False`, `plan: list[PlanStep] | None = None`.
 No `namespace` property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
 `trivial`/`explore`/`subagent`/`plan` are mutually exclusive — exactly one of the token modes (or `plan`) is set.
@@ -43,11 +43,10 @@ No `namespace` property — callers read `route.subagent.namespace` directly whe
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Router prompt offers six kinds of output:
+Router prompt offers five kinds of output:
 - `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `Harness` handles directly. Bias: prefer `main` unless a specialist clearly fits
 - `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions, acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `main` when unsure (false `main` costs one extra near-empty `FileLocator` call; false `TRIVIAL` denies real codebase context)
 - `EXPLORE` — read-only investigation ending in an answer about files/structure ("list files", "where is X defined", "show project structure"); never chosen if the request also asks for an edit/fix/change — prefer `main` then; prefer `main` when unsure
-- `REJECTED` — non-English input
 - `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty, or explicitly names it
 - `<plan>` — the request clearly needs multiple *different* specialists run in order (see below)
 
@@ -55,7 +54,6 @@ Router output token → Route mapping:
 - `"main"` → `Route()`
 - `"trivial"` → `Route(trivial=True)`
 - `"explore"` → `Route(explore=True)`
-- `"rejected"` → `Route(rejected=True)`
 - `<subagent-name>` (matched) → `Route(subagent=p)`
 - `<plan>...` (parsed, 2+ steps) → `Route(plan=[PlanStep, ...])`
 - unknown token → warning log + host-retained `Route()` (same as `main`)

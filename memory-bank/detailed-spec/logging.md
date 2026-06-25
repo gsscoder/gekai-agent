@@ -38,7 +38,7 @@ Per-turn — all carry `session=`, `turn=`, emitted from `_stream` (`tui/app.py`
 | Event | Fields | Notes |
 |---|---|---|
 | `turn.start` | `input_len` | |
-| `route` | `decision` (`_route_decision(route)`), `duration_ms` | decision: `main` / `trivial` / `explore` / `rejected` / `<namespace>/<subagent>` / `plan(N)` (`N = len(route.plan)`) |
+| `route` | `decision` (`_route_decision(route)`), `duration_ms` | decision: `main` / `trivial` / `explore` / `<namespace>/<subagent>` / `plan(N)` (`N = len(route.plan)`) |
 | `locate` | `files`, `duration_ms`, `step` (plan only) | skipped for `route.trivial` (no locate stage) |
 | `rewrite` | `ok=True`, `duration_ms`, `step` (plan only) | only when `entries` non-empty |
 | `harness` | `outcome` (`ok`/`max_iterations`), `llm_calls`, `prompt_tokens`, `completion_tokens`, `thinking_chars`, `tools` (dict tool→count), `duration_ms`, `budget_exhausted`, `step` (plan only) | `outcome` here is a local `harness_outcome` variable computed in `tui/app.py::_run_step` — `"max_iterations"` iff the loop hit its cap *and* produced no answer text; it is independent of, and not renamed by, the `budget_exhausted` flag below |
@@ -56,7 +56,6 @@ Command — `command` (slash-command dispatch, `tui/app.py`): `session`, `name` 
 
 ## `outcome` State Machine (`turn.end`)
 Starts `"ok"`, last write wins, evaluated in `finally`:
-- `"rejected"` — router rejected non-English input
 - `"error"` — exception caught (also emits `error`)
 - `"max_iterations"` — harness hit iteration cap with no answer chunks
 - `"interrupted"` — user cancelled the worker
