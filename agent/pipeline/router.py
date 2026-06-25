@@ -27,6 +27,8 @@ class Route:
     trivial: bool = False
     explore: bool = False
     plan: list[PlanStep] | None = None
+    rejected: bool = False
+    reason: str = ""
 
 
 def _parse_plan(raw: str, subagents: list[Subagent]) -> list[PlanStep] | None:
@@ -74,6 +76,10 @@ _ROUTER_PROMPT_BASE = (
     "\"show project structure\"; NEVER choose this if the request also asks for an edit, fix, "
     "or any change — prefer main in that case; when unsure, prefer main\n"
     "  <subagent-name>  — the request fits one subagent's specialty (see below), or explicitly asks to use or delegate the task to it by name\n"
+    "  REJECTED <name>  — the user explicitly names/asks for a specific subagent by name and that "
+    "name is not in <subagents> below (typo, unknown name, or a system-only agent never offered to "
+    "users); do NOT substitute the closest specialty, do NOT choose main, do NOT guess — output "
+    "exactly REJECTED followed by the literal name the user wrote\n"
     "  main             — anything else; handled directly by the coding agent\n"
     "  <plan>           — the request clearly needs multiple *different* specialists run in order; "
     "see plan format below\n"
@@ -118,6 +124,13 @@ class Router:
             for p in self._subagents
         )
         self._prompt = PIPELINE_DIRECTIVES + _ROUTER_PROMPT_BASE.replace("{subagents-meta}", menu)
+        non_invocable = [p for p in SUBAGENTS if not p.user_invocable]
+        if non_invocable:
+            system_only = "\n".join(f"  {p.name}" for p in non_invocable)
+            self._prompt += (
+                "\n<system-only — if the user explicitly asks for one of these by name, "
+                "REJECTED, never route to it>\n" + system_only
+            )
 
     async def route(
         self, user_input: str, history: list[dict] | None = None,
@@ -154,6 +167,10 @@ class Router:
             return Route(trivial=True)
         if first_lower == "explore":
             return Route(explore=True)
+        if first_lower == "rejected":
+            rest = raw.split(maxsplit=1)
+            name = rest[1].strip() if len(rest) > 1 else ""
+            return Route(rejected=True, reason=name)
         for p in self._subagents:
             if first_lower == p.name.lower():
                 return Route(subagent=p)

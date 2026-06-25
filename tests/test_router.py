@@ -60,6 +60,25 @@ def test_route_default_explore_is_false() -> None:
     assert Route().explore is False
 
 
+def test_route_rejected_with_name() -> None:
+    router = _make_router()
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response("REJECTED agent-xxx"))
+    route = run(router.route("use agent-xxx to do this"))
+    assert route.rejected is True
+    assert route.reason == "agent-xxx"
+    assert route.subagent is None
+    assert route.trivial is False
+    assert route.explore is False
+
+
+def test_route_rejected_bare() -> None:
+    router = _make_router()
+    router._client.chat.completions.create = AsyncMock(return_value=_mock_response("REJECTED"))
+    route = run(router.route("use some agent to do this"))
+    assert route.rejected is True
+    assert route.reason == ""
+
+
 def test_route_known_subagent() -> None:
     router = _make_router()
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("code-expert"))
@@ -74,6 +93,7 @@ def test_route_unknown_token_falls_back_to_main() -> None:
     router._client.chat.completions.create = AsyncMock(return_value=_mock_response("nonsense-token"))
     route = run(router.route("do something"))
     assert route.subagent is None
+    assert route.rejected is False
 
 
 def test_route_strips_extra_whitespace() -> None:

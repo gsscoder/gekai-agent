@@ -80,3 +80,15 @@ def test_route_decision_trivial_takes_precedence_over_explore() -> None:
     # REQ: precedence order — trivial is checked before explore.
     route = Route(trivial=True, explore=True)
     assert _route_decision(route) == "trivial"
+
+
+def test_route_decision_rejected() -> None:
+    # REQ: Route.rejected=True -> "rejected".
+    assert _route_decision(Route(rejected=True)) == "rejected"
+
+
+def test_route_decision_rejected_takes_precedence_over_plan() -> None:
+    # REQ: precedence order — rejected is checked before plan.
+    plan = [PlanStep(subagent=None, raw="x")]
+    route = Route(rejected=True, plan=plan)
+    assert _route_decision(route) == "rejected"

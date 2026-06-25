@@ -265,6 +265,8 @@ def _ms(seconds: float) -> int:
 
 
 def _route_decision(route: Route) -> str:
+    if route.rejected:
+        return "rejected"
     if route.plan is not None:
         return f"plan({len(route.plan)})"
     if route.subagent is not None:
@@ -1204,6 +1206,13 @@ class GekaiApp(App[None]):
             t0 = time.monotonic()
             route = await self._agent.route(user_input, history=self._session.messages)
             events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
+
+            if route.rejected:
+                error_msg = f"'{route.reason}' is not an available agent" if route.reason else "no such agent"
+                await conversation.mount(MessageWidget(MessageKind.ERROR, error_msg))
+                append_event(self._session, error_msg, source="router")
+                outcome = "rejected"
+                return
 
             if route.plan is not None:
                 if self._agent.debug:
