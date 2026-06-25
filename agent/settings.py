@@ -107,44 +107,6 @@ def resolve_permissions(choice: str) -> Permissions | None:
     return None
 
 
-def load_scope_gate(working_dir: Path) -> bool:
-    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
-        try:
-            val = json.loads(path.read_text()).get("scope_gate")
-            if isinstance(val, bool):
-                return val
-        except (OSError, ValueError):
-            pass
-    return True
-
-
-def validate_gate_config(working_dir: Path) -> list[str]:
-    errors: list[str] = []
-    paths = [_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"]
-    for path in paths:
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        val = data.get("scope_gate")
-        if val is not None and not isinstance(val, bool):
-            errors.append(f"{path}: scope_gate must be a boolean (got: {val})")
-    return errors
-
-
-def load_blast_radius_limit(working_dir: Path) -> int:
-    for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
-        try:
-            val = json.loads(path.read_text()).get("blast_radius_limit")
-            if isinstance(val, int) and val > 0:
-                return val
-        except (OSError, ValueError):
-            pass
-    return 5
-
-
 def load_context_limit(working_dir: Path) -> int | None:
     for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
         try:

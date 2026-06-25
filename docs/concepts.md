@@ -2,6 +2,15 @@
 
 What makes Gekai different — conceptually, independent of current implementation status.
 
+## The harness is the multiplier
+
+The core bet: a well-built harness — tight scoping, precise file location, structured prompts,
+checkpointed execution — lets a smaller, cheaper model produce results comparable to, or close
+to, a stronger model used without one. Model strength is one input; how the model is orchestrated
+is the other, and orchestration is what Gekai is actually optimizing. If the bet holds, the
+ceiling on what's achievable stops being "which model can you afford" and becomes "how good is
+the harness around it." Every other concept below is in service of this one.
+
 ## Surgical means precise, not small
 
 The instinct is to call a tool "surgical" because it limits *how much* it touches. Gekai's
@@ -9,15 +18,10 @@ position: scope size is not the safety property that matters. A one-line edit in
 place is worse than a mechanical rename across fifty files. What makes an intervention surgical
 is whether it's *correct*, not whether it's *small*.
 
-The blast-radius gate (area-count limit before a subagent runs) exists, but it is a coarse,
-cheap pre-filter — not the feature that defines the tool. It catches runaway mis-scoping early;
-it says nothing about whether the change itself was right. Treating it as the core safety
-mechanism overstates what it does and risks blocking legitimate wide-but-correct changes.
-
-The real precision mechanism is meant to be **verification of the change itself** — a check
-that runs on what was actually created or modified, not on how many files were touched before
+The precision mechanism is meant to be **verification of the change itself** — a check that
+runs on what was actually created or modified, not on how many files were touched before
 anything happened. This is the direction, not yet a settled design: a non-invocable subagent
-that reviews a create/update once it's non-trivial, as a second pass distinct from the gate.
+that reviews a create/update once it's non-trivial, as a second pass after the work is done.
 Undecided still: whether it blocks/reverts on failure or only reports into the human checkpoint.
 
 ## Checkpoint-oriented, not autonomous-run-oriented
@@ -29,7 +33,7 @@ by design), and diff/event output exists specifically to give the human somethin
 check at each step.
 
 The router can decompose one request into a multi-step plan — several different specialists run
-in order, each on its own locate/gate/rewrite/dispatch pass — but this is still transparent,
+in order, each on its own locate/rewrite/dispatch pass — but this is still transparent,
 auto-run, single-turn machinery, not autonomous multi-turn operation: there is no interactive
 plan-mode approval gate, no revert-on-failure, and no resume of a stopped plan. A failing step
 stops the whole plan in place (completed steps' work stays, nothing rolls back) and reports which
@@ -56,8 +60,8 @@ handing work to strangers.
 
 ## Each pipeline stage does exactly one job, and fails loud
 
-Locate finds files. Rewrite attributes them into the request. The gate bounds area. None of
-these stages absorb another's responsibility, and none of them silently degrade on failure —
-a broken locate or a broken rewrite blocks the turn rather than guessing. The cost of this is
-occasional hard stops; the benefit is that when the agent acts, every upstream step that fed it
-context is known-good, not best-effort.
+Locate finds files. Rewrite attributes them into the request. Neither stage absorbs the
+other's responsibility, and neither silently degrades on failure — a broken locate or a broken
+rewrite blocks the turn rather than guessing. The cost of this is occasional hard stops; the
+benefit is that when the agent acts, every upstream step that fed it context is known-good,
+not best-effort.

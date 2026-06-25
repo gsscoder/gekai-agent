@@ -16,5 +16,3 @@ class Session:
     )
     working_dir: Path = field(default_factory=Path.cwd)
     permissions: Permissions = field(default_factory=lambda: Permissions(read=True, write=False, exec=False))
-    scope_gate: bool = True
-    blast_radius_limit: int = 5

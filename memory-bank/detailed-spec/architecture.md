@@ -9,14 +9,14 @@ neutral module shared by `subagents`, `pipeline.router`, `harness`), `settings.p
 `diff.py` (diff rendering), `shell.py` (TUI shell helper)
 Subpackages:
 - `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`), `file_locator.py` (`FileLocator`)
-- `pipeline/` — `router.py` (`Route`, guard router), `blast_radius.py` (gate only), `rewriter.py` (prompt rewriter)
+- `pipeline/` — `router.py` (`Route`, guard router), `rewriter.py` (prompt rewriter)
 - `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`) + one file per subagent + `_coding.py` shared directives
 - `tools/` — `__init__.py` (`make_tools`), `catalog.py` (tool-name groups: `READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`
   — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`
 - `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry), `workspace/` (workspace context)
 
 ## Session
-`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`, `scope_gate: bool = True`, `blast_radius_limit: int = 5`
+`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`
 
 `messages` starts with two system entries: `SYSTEM_PROMPT` at `[0]` + workspace context at `[1]` (TOON-encoded)
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
@@ -89,14 +89,14 @@ Fallback (router never hard-fails a turn):
 
 ### Executor (plan dispatch)
 
-`agent/tui/app.py::_run_step(raw, subagent, ...)` is the single per-step pipeline — locate → gate
-(subagent steps only) → rewrite → dispatch — extracted so both the single-token path (called once)
+`agent/tui/app.py::_run_step(raw, subagent, ...)` is the single per-step pipeline — locate →
+rewrite → dispatch — extracted so both the single-token path (called once)
 and the plan path (called once per `PlanStep`, sequentially) share it. Plan loop lives in `_stream`'s
 `route.plan is not None` branch:
 - steps run **sequentially, fail-stop, no revert** — locate runs fresh per step (so it can pick up
   files written by prior steps); subagent steps run cold (`prior=[]`); a step targeting `main` gets
   normal recency (`_recency_turns`) and so can see prior steps' assistant text
-- a step's outcome is `"gate_blocked"` (scope gate rejected) or `"max_iterations"` with no answer
+- a step's outcome is `"max_iterations"` with no answer
   (budget exhausted with nothing salvaged) → plan stops immediately, no further steps run, completed
   steps' work (files written, etc.) is left in place
 - on stop: one `MessageWidget(MessageKind.ERROR, ...)` reading
@@ -108,35 +108,20 @@ and the plan path (called once per `PlanStep`, sequentially) share it. Plan loop
   (`append_user=True`); steps 2..N pass `append_user=False`; all N assistant segments + the one user
   turn share the same `turn_id`
 
-## File Location & Blast-Radius Gate
-Locate runs on every **non-`TRIVIAL`** route (`main` and `<subagent>` alike). Gate applies only
-when a subagent is selected (`route.subagent is not None`); `main` and `TRIVIAL` bypass the gate.
+## File Location
+Locate runs on every **non-`TRIVIAL`** route (`main` and `<subagent>` alike).
 
 Pipeline (in TUI `_stream`):
 1. `Router.route()` → `Route`
 2. `route.trivial`: `entries = []`, skip locate + rewrite entirely
 3. else: `FileLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
-4. `route.subagent is not None`: `evaluate_blast_radius_gate(entries, session.blast_radius_limit)` → `(rejected, reason)`; if rejected and `session.scope_gate`: display rejection, return
-5. `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → `(processed_input, ui_label)`; `original_input = user_input` (see Prompt Rewriter)
+4. `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → `(processed_input, ui_label)`; `original_input = user_input` (see Prompt Rewriter)
 
 `FileLocator` (`agent/harness/file_locator.py`) — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
 
-Area metric — **ancestor-collapsed directory count, code files only:**
-1. Filter `entries` to `_CODE_EXTENSIONS` paths only
-2. Collect parent dir of each surviving file
-3. Drop any dir that has an ancestor also in the set
-4. Count survivors
-
-`_CODE_EXTENSIONS`: all popular languages — `.py .pyi .ipynb` · `.js .jsx .mjs .cjs` · `.ts .tsx` · `.vue .svelte` · `.go` · `.java` · `.cs` · `.kt .kts` · `.swift` · `.rs` · `.c .h .cpp .cc .cxx .hpp` · `.rb` · `.php` · `.scala` · `.dart` · `.ex .exs` · `.lua` · `.hs` · `.r`
-Broader than `_EXT_TO_LANG` (AST support) — gate coverage ≠ symbol-parse coverage.
-Manifests/configs/docs (`pyproject.toml`, `package.json`, `.yaml`, `.md`, etc.) are inspected but never counted.
-All-config change → 0 areas → always passes.
-
-`blast_radius_limit` loaded via `load_blast_radius_limit(working_dir)`: project `.gekai/settings.local.json` overrides user `~/.gekai/settings.json`; absent → `5`. Manual JSON edit only — no slash command. Gate on/off reuses `/config:gate on|off`.
-
 ## Prompt Rewriter
 `PromptRewriter` (`rewriter.py`) runs whenever `FileLocator` returned **non-empty `entries`** —
-for `main` and `<subagent>` routes alike, *after* the gate passes (subagent only). `TRIVIAL`
+for `main` and `<subagent>` routes alike. `TRIVIAL`
 routes, and any route with empty `entries`, skip it.
 
 `PromptRewriter.rewrite(request, entries) -> tuple[str, str]` — returns `(rewritten_request, ui_label)`. Single **CORE-model** call, temperature 0, **no thinking params** (constructed with no `extra_params`, so non-thinking even on a reasoning-capable core model). Not agentic, no tools — the locator already discovered/verified files, so this stage only *attributes* them.
@@ -206,8 +191,8 @@ Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session
 
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
-{ts, kind:"command", content:"/config:gate off"}              ← slash command typed by user
-{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: gate, router, error, interrupted, farewell, max_iterations
+{ts, kind:"command", content:"/clear"}                        ← slash command typed by user
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: router, error, interrupted, farewell, max_iterations
 ```
 
 Entries without `kind` (legacy files) default to `"turn"`.
@@ -238,7 +223,6 @@ Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.
 Slash-prefixed input intercepted by `CommandPalette` then dispatched via `CommandRegistry`.
 - `/exit` — exit to terminal (with farewell message + delay)
 - `/clear` — clears chat and starts a new session (resets session ID)
-- `/config:gate on|off` — enable or disable the scope gate for the current project; persists to `.gekai/settings.local.json`; updates `session.scope_gate` immediately
 
 ## CLI Flags
 - `--debug` — prints `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt; trivial turns also get a `{"route": "trivial", "skipped": ["locate", "rewrite"]}` debug entry

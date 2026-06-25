@@ -2,7 +2,7 @@
 
 ## Overview
 
-Every turn passes through three layers: **routing → file location (+ gate, subagent-only) → Harness dispatch**.
+Every turn passes through three layers: **routing → file location → Harness dispatch**.
 `TRIVIAL` routes skip the middle layer entirely — no file location, no rewrite. `EXPLORE` routes go to a
 separate read-only `FileExplorer`, not shown in the single-step diagram below (see
 [Multi-step Plans](#multi-step-plans) for `<plan>` routes).
@@ -30,10 +30,6 @@ Router                 [support model] — one call; emits a single Route
                        FileLocator   [support model] — locate       │
                        relevant/affected files (path | keywords)    │
                                 │                                   │
-                       <subagent> only: blast-radius gate —         │
-                       count ancestor-collapsed dirs (code files    │
-                       only); reject if count > limit               │
-                                │                                   │
                        entries non-empty? ── no ────────────────────┤
                                 │ yes                               │
                                 ▼                                   │
@@ -47,7 +43,7 @@ Router                 [support model] — one call; emits a single Route
                                             spawn mode  (subagent.build_system_base() + harness-assembled <tools>, cold)
                                             trivial route → extra_params={} (no thinking budget)
 
-    └── <plan> (Route(plan=[PlanStep, ...])) ───► N × (locate → gate → rewrite → Harness), one step
+    └── <plan> (Route(plan=[PlanStep, ...])) ───► N × (locate → rewrite → Harness), one step
                                                    at a time, sequential, fail-stop — see below
 ```
 
@@ -66,10 +62,10 @@ class PlanStep:
     raw: str                    # verbatim slice of the request this step covers
 ```
 
-Executor (`agent/tui/app.py::_run_step`, looped over `route.plan`): the same locate → gate → rewrite
+Executor (`agent/tui/app.py::_run_step`, looped over `route.plan`): the same locate → rewrite
 → dispatch pipeline used for a single-token route, run once per `PlanStep`, in order. Steps are
 **sequential and fail-stop, with no revert** — a step that hits the iteration budget with no answer,
-or is gate-rejected, or errors, stops the whole plan immediately; completed steps' work (files
+or errors, stops the whole plan immediately; completed steps' work (files
 written, etc.) is left in place, and the chat surfaces
 `"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`. On full success, one trailing
 `"* {verb} for {duration} ({n} steps)"` operation line closes the turn. Each step that produces an
@@ -329,7 +325,7 @@ false `main` only costs one extra (often near-empty) `FileLocator` call, while a
 | `main`              | `Route()`              | Harness handles directly, no subagent spawned        |
 | `TRIVIAL`           | `Route(trivial=True)`  | skips FileLocator + PromptRewriter; Harness still answers, with `extra_params={}` |
 | `EXPLORE`           | `Route(explore=True)`  | dispatched to `FileExplorer`, a separate read-only investigation path |
-| `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned; blast-radius gate applies  |
+| `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned                             |
 | `<plan>` (2+ steps) | `Route(plan=[...])`    | multi-step executor, see Multi-step Plans above      |
 | `<plan>` (1 step)   | `Route(subagent=p)`    | collapses to the equivalent single-token route       |
 | `rejected`          | `Route(rejected=True)` | non-English input                                    |
@@ -351,56 +347,10 @@ Any exception propagates — there is no fail-open; a broken locate blocks the t
 
 ---
 
-## Blast-Radius Gate
-
-Applies **only when a subagent is selected** (`route.subagent is not None`). Routes that resolve
-to `main` (`Route()`) or `TRIVIAL` (`Route(trivial=True)`) are not gated.
-
-### Area metric
-
-**Ancestor-collapsed directory count, restricted to code files:**
-
-```
-1. filter located files to _CODE_EXTENSIONS only (manifests/configs/docs excluded)
-2. collect parent dir of each surviving file
-3. drop any dir that has an ancestor also in the set
-4. count the survivors
-```
-
-`_CODE_EXTENSIONS` covers all popular compiled and scripted languages:
-`.py .pyi .ipynb` · `.js .jsx .mjs .cjs` · `.ts .tsx` · `.vue .svelte` · `.go` · `.java` · `.cs` · `.kt .kts` · `.swift` · `.rs` · `.c .h .cpp .cc .cxx .hpp` · `.rb` · `.php` · `.scala` · `.dart` · `.ex .exs` · `.lua` · `.hs` · `.r`
-
-Deliberately broader than `_EXT_TO_LANG` (AST/symbol-parse support) — gate coverage ≠ tree-sitter coverage.
-Non-code files (`pyproject.toml`, `package.json`, `.yaml`, `.md`, etc.) are inspected by the locator but never counted toward blast radius.
-A change that touches only non-code files produces 0 areas and always passes the gate.
-
-Examples:
-- `agent/tools/shell.py` + `agent/tools/helpers/fs.py` → `{agent/tools}` = **1**
-- `agent/tools/read.py` + `agent/helpers/sanitizer.py` → `{agent/tools, agent/helpers}` = **2**
-- `agent/foo.py` + `agent/tools/bar.py` → `{agent}` = **1** (root pulls in subdirs)
-- `agent/tools/shell.py` + `pyproject.toml` → `{agent/tools}` = **1** (manifest excluded)
-
-### Gate evaluation
-
-`evaluate_blast_radius_gate(entries, limit) -> tuple[bool, str | None]`
-
-Rejects when `count > blast_radius_limit`. Rejection reason: `"change spans N areas (limit M): area1, area2, …"`.
-
-### Configuration
-
-`Session.blast_radius_limit` (default `5`). Loaded at session start via `load_blast_radius_limit(working_dir)`:
-project-level `.gekai/settings.local.json` overrides user-level `~/.gekai/settings.json`; absent → `5`.
-Set manually in the JSON file — no slash command.
-
-Gate enable/disable reuses the existing `/config:gate on|off` toggle (`session.scope_gate`).
-
----
-
 ## Prompt Rewriter
 
 Runs whenever `FileLocator` returned **non-empty entries** — for `main` and `<subagent>` routes
-alike, *after* the gate passes (subagent routes only). `TRIVIAL` routes, and any route where the
-locator found nothing, skip it.
+alike. `TRIVIAL` routes, and any route where the locator found nothing, skip it.
 
 `PromptRewriter.rewrite(request, entries) -> tuple[str, str]` — a single **core-model** call, temperature 0,
 **no thinking params** (non-thinking even on a reasoning-capable core model). Not agentic, no tools:
@@ -609,11 +559,11 @@ Every entry is timestamped JSON with a `kind` field:
 
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context only
-{ts, kind:"command", content:"/config:gate off"}              ← slash command typed by user
+{ts, kind:"command", content:"/clear"}                        ← slash command typed by user
 {ts, kind:"event",   source:"...", content:"..."}             ← system-side, non-LLM
 ```
 
-Event sources: `gate` · `router` · `error` · `interrupted` · `farewell` · `max_iterations` · `command` (command result).
+Event sources: `router` · `error` · `interrupted` · `farewell` · `max_iterations` · `command` (command result).
 Entries without `kind` (legacy) default to `"turn"`.
 
 **Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, route tokens, locate list, rewritten text) — `--debug` only.

@@ -15,10 +15,10 @@ is explicitly out of scope (see Non-goals).
 
 ## Naming change (do this first)
 
-"Blast radius" is the **guard's** concept (`evaluate_blast_radius_gate`,
-`agent/pipeline/blast_radius.py`) — the area metric that decides whether a turn
-is too broad. Persisting locator output is a **general file_locator** concern,
-not a guard concern. The current name `save_blast_radius` conflates the two.
+"Blast radius" was the now-removed scope-gate's concept — the area metric that
+decided whether a turn was too broad. Persisting locator output is a **general
+file_locator** concern, unrelated to that gate. The current name
+`save_blast_radius` carries that leftover naming.
 
 Rename, no compatibility shims (alpha):
 
@@ -32,7 +32,6 @@ Rename, no compatibility shims (alpha):
 - Vocabulary: locator produces **findings** (write); a new request reads
   **candidates** (read). Coherent narrative, no "blast radius" leakage.
 - Table names `files` / `file_keywords` are already generic — keep them.
-- Guard code (`blast_radius.py`, `evaluate_blast_radius_gate`) is untouched.
 - Call site `agent/agent.py:164` updates to `save_findings`.
 
 ## Schema evolution

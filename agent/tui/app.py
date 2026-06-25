@@ -36,11 +36,10 @@ from agent.persistence import (
     _normalize_path,
 )
 from agent.pipeline import Route
-from agent.pipeline.blast_radius import count_blast_areas
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS, Subagent
 from agent.subagents.worker import ws_manager
-from agent.settings import PERMISSION_CHOICES, load_blast_radius_limit, load_context_limit, load_scope_gate, resolve_permissions, save_permissions
+from agent.settings import PERMISSION_CHOICES, load_context_limit, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import random_accent_color, random_operative_verb
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult
@@ -375,9 +374,9 @@ def _strip_default_bg(style: Style | None) -> Style | None:
 
 @dataclass
 class _StepResult:
-    """Outcome of one locate->gate->rewrite->dispatch pipeline run for a single
+    """Outcome of one locate->rewrite->dispatch pipeline run for a single
     step (a plan step, or the equivalent single-token turn)."""
-    outcome: str = "ok"  # "ok" | "gate_blocked" | "max_iterations"
+    outcome: str = "ok"  # "ok" | "max_iterations"
     answer: str = ""
     max_iter_hit: bool = False
     query_tool_count: int = 0
@@ -689,9 +688,6 @@ class GekaiApp(App[None]):
         )
         self._agent.events.emit("session.start", session=self._session.id, resumed=self._restored_id is not None)
 
-        self._session.scope_gate = load_scope_gate(self._working_dir)
-        self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
-
         history_path = (
             Path.home() / ".gekai" / "workspaces"
             / _normalize_path(self._working_dir) / "history.jsonl"
@@ -725,7 +721,7 @@ class GekaiApp(App[None]):
                     source = entry.get("source", "")
                     if source == "command":
                         await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, content))
-                    elif source in ("router", "gate"):
+                    elif source == "router":
                         await conversation.mount(MessageWidget(MessageKind.REJECTED, content))
                     elif source == "error":
                         await conversation.mount(MessageWidget(MessageKind.ERROR, content))
@@ -804,8 +800,6 @@ class GekaiApp(App[None]):
         await conversation.remove_children()
         self._session = self._agent.start_session()
         self._agent.events.emit("session.start", session=self._session.id, resumed=False)
-        self._session.scope_gate = load_scope_gate(self._working_dir)
-        self._session.blast_radius_limit = load_blast_radius_limit(self._working_dir)
         self.query_one("#context-bar", Static).update(
             _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
@@ -1014,7 +1008,7 @@ class GekaiApp(App[None]):
         stage: list[str], trivial: bool = False, explore: bool = False,
         append_user: bool = True, step_index: int | None = None,
     ) -> _StepResult:
-        """Run locate->gate->rewrite->dispatch for `raw` against `subagent` (None => main).
+        """Run locate->rewrite->dispatch for `raw` against `subagent` (None => main).
         `stage` is a 1-element mutable holder the caller's except-block reads to attribute
         which sub-stage failed; trivial/explore are only ever set by the single-token call
         site (a plan step's target is never trivial/explore)."""
@@ -1046,20 +1040,6 @@ class GekaiApp(App[None]):
             )
             if self._agent.debug:
                 append_debug(self._session, {"content": {"locate": [path for path, _ in entries], "hints": hint_paths}})
-
-        if subagent is not None:
-            stage[0] = "gate"
-            rejected, reason = self._agent.check_gate(entries, self._session.blast_radius_limit)
-            events.emit(
-                "gate", session=session_id, turn=turn_id, step=step_index,
-                areas=count_blast_areas([path for path, _ in entries]),
-                limit=self._session.blast_radius_limit, passed=not rejected,
-            )
-            if rejected and self._session.scope_gate:
-                reason_text = reason or "request exceeds scope"
-                await conversation.mount(MessageWidget(MessageKind.REJECTED, reason_text))
-                append_event(self._session, reason_text, source="gate")
-                return _StepResult(outcome="gate_blocked")
 
         processed_input = raw
         original_input: str | None = None
@@ -1261,10 +1241,6 @@ class GekaiApp(App[None]):
                         )
                         break
                     ws_renderer = step_result.ws_renderer
-                    if step_result.outcome == "gate_blocked":
-                        failure_kind = "gate_blocked"
-                        failure_reason = "request exceeds scope"
-                        break
                     if step_result.outcome == "max_iterations" and not step_result.answer:
                         failure_kind = "max_iterations"
                         failure_reason = "hit iteration limit without producing a response"
@@ -1297,9 +1273,6 @@ class GekaiApp(App[None]):
             )
             ws_renderer = step_result.ws_renderer
 
-            if step_result.outcome == "gate_blocked":
-                outcome = "gate_blocked"
-                return
             if step_result.outcome == "max_iterations":
                 outcome = "max_iterations"
 

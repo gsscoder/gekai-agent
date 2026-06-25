@@ -15,7 +15,7 @@ from .llm.model_caps import resolve_thinking_params
 from .harness import Harness, FileExplorer, FileLocator, HiddenGrantCallback
 from .permissions import PermissionCallback
 from .subagents import Subagent
-from .pipeline import Route, Router, evaluate_blast_radius_gate, PromptRewriter
+from .pipeline import Route, Router, PromptRewriter
 from .session import Session
 from .settings import Permissions
 from .logging import EventLogger
@@ -138,11 +138,6 @@ class GekaiAgent:
             pass
         entries, timed_out = await self._locator.locate(working_dir, text, hint_paths=hint_paths or None)
         return entries, hint_paths, timed_out
-
-    def check_gate(
-        self, entries: list[tuple[str, list[str]]], limit: int,
-    ) -> tuple[bool, str | None]:
-        return evaluate_blast_radius_gate(entries, limit)
 
     async def rewrite(
         self, request: str, entries: list[tuple[str, list[str]]],

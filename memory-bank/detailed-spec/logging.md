@@ -21,7 +21,7 @@ API:
 ## Join Key: `turn_id`
 `events.new_turn()` mints a turn id at the start of `_stream` (`tui/app.py`). Stamped as `turn=` on every per-turn event below, and passed through to `process_stream(..., turn_id=turn_id)` → `append_message(session, msg, turn=turn_id)`. This is the cross-reference between `events-*.jsonl` and the `turn` field on `session.jsonl` entries.
 
-For a multi-step plan, every per-step event (`locate`/`gate`/`rewrite`/`harness`/`delegation`) also carries
+For a multi-step plan, every per-step event (`locate`/`rewrite`/`harness`/`delegation`) also carries
 a `step` field (1-indexed position in `route.plan`) in addition to the shared `turn`/`turn_id` — one user
 turn, N steps, all joinable under the same `turn_id`.
 
@@ -40,11 +40,10 @@ Per-turn — all carry `session=`, `turn=`, emitted from `_stream` (`tui/app.py`
 | `turn.start` | `input_len` | |
 | `route` | `decision` (`_route_decision(route)`), `duration_ms` | decision: `main` / `trivial` / `explore` / `rejected` / `<namespace>/<subagent>` / `plan(N)` (`N = len(route.plan)`) |
 | `locate` | `files`, `duration_ms`, `step` (plan only) | skipped for `route.trivial` (no locate stage) |
-| `gate` | `areas` (`count_blast_areas`), `limit` (`session.blast_radius_limit`), `passed`, `step` (plan only) | only when `route.subagent is not None` |
 | `rewrite` | `ok=True`, `duration_ms`, `step` (plan only) | only when `entries` non-empty |
 | `harness` | `outcome` (`ok`/`max_iterations`), `llm_calls`, `prompt_tokens`, `completion_tokens`, `thinking_chars`, `tools` (dict tool→count), `duration_ms`, `budget_exhausted`, `step` (plan only) | `outcome` here is a local `harness_outcome` variable computed in `tui/app.py::_run_step` — `"max_iterations"` iff the loop hit its cap *and* produced no answer text; it is independent of, and not renamed by, the `budget_exhausted` flag below |
 | `delegation` | `host`, `delegate`, `namespace`, `status` (`ok`/`failed`), `files`, `files_touched`, `summary_len`, `budget_exhausted`, `step` (plan only) | only when `subagent is not None`; mirrors `SubagentResult` |
-| `error` | `stage`, `error_type`, `message` | level=`warning`; `stage` is the pipeline stage executing when caught (`route`/`locate`/`gate`/`rewrite`/`harness`) |
+| `error` | `stage`, `error_type`, `message` | level=`warning`; `stage` is the pipeline stage executing when caught (`route`/`locate`/`rewrite`/`harness`) |
 | `turn.end` | `outcome`, `duration_ms` | emitted in `finally`, once per turn |
 
 `budget_exhausted` (new, on both `harness` and `delegation`) is a diagnostic signal, not a pass/fail
@@ -58,7 +57,6 @@ Command — `command` (slash-command dispatch, `tui/app.py`): `session`, `name` 
 ## `outcome` State Machine (`turn.end`)
 Starts `"ok"`, last write wins, evaluated in `finally`:
 - `"rejected"` — router rejected non-English input
-- `"gate_blocked"` — blast-radius gate blocked
 - `"error"` — exception caught (also emits `error`)
 - `"max_iterations"` — harness hit iteration cap with no answer chunks
 - `"interrupted"` — user cancelled the worker
