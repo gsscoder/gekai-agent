@@ -14,6 +14,7 @@ from ..persistence import append_debug
 from ..persona import _IDENTITY_SUB, _SHARED_BODY, render_tool_instruction
 from ..session import Session
 from ..events import DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..shell import resolve_shell
 from ..tools import HiddenGrantCallback, make_tools
 from .core import _fmt_tool_call, _recency_turns
 
@@ -49,7 +50,7 @@ class FileExplorer:
         selected = [t for t in make_tools(session.working_dir, grant_cb=hidden_grant_callback) if t.is_read_only]
         system = (
             _IDENTITY_SUB + _ROLE + _SHARED_BODY
-            + "\n<tools>\n" + render_tool_instruction([t.name for t in selected])
+            + "\n<tools>\n" + render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)
         )
 
         adapter = OpenAIAdapter(

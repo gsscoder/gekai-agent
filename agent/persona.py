@@ -67,12 +67,20 @@ _TOOL_GUIDANCE: tuple[tuple[tuple[str, ...], str, str], ...] = (
      "prefer read_file/grep/list_files over shell equivalents for reading files"),
 )
 
+_SHELL_KIND_FACTS: dict[str, str] = {
+    "powershell": "the shell is PowerShell — chain commands with ';' or separate calls, not '&&'; no POSIX pipes/heredocs",
+    "bash": "the shell is bash — POSIX operators ('&&', '|', heredocs) are available",
+    "sh": "the shell is sh — POSIX operators ('&&', '|') are available",
+}
 
-def render_tool_instruction(assigned: Sequence[str]) -> str:
+
+def render_tool_instruction(assigned: Sequence[str], *, shell_kind: str | None = None) -> str:
     have = set(assigned)
     fragments = []
     for trigger, mode, text in _TOOL_GUIDANCE:
         hit = have.issuperset(trigger) if mode == "all" else bool(have & set(trigger))
         if hit:
             fragments.append(text)
+            if trigger == SHELL_TOOLS and shell_kind is not None and shell_kind in _SHELL_KIND_FACTS:
+                fragments.append(_SHELL_KIND_FACTS[shell_kind])
     return "; ".join(fragments)

@@ -58,3 +58,27 @@ def test_edit_and_fs_only_set_yields_no_guidance():
 
 def test_empty_toolset_yields_empty_instruction():
     assert render_tool_instruction([]) == ""
+
+
+def test_shell_kind_powershell_adds_powershell_fact_only():
+    text = render_tool_instruction(SHELL_TOOLS, shell_kind="powershell")
+    assert "the shell is PowerShell" in text
+    assert "the shell is bash" not in text
+
+
+def test_shell_kind_bash_adds_bash_fact_only():
+    text = render_tool_instruction(SHELL_TOOLS, shell_kind="bash")
+    assert "the shell is bash" in text
+    assert "the shell is PowerShell" not in text
+
+
+def test_shell_kind_fact_does_not_leak_without_shell_trigger():
+    text = render_tool_instruction(READ_TOOLS, shell_kind="powershell")
+    assert "the shell is PowerShell" not in text
+
+
+def test_shell_kind_omitted_adds_no_fact():
+    text = render_tool_instruction(SHELL_TOOLS)
+    assert "the shell is PowerShell" not in text
+    assert "the shell is bash" not in text
+    assert "the shell is sh" not in text

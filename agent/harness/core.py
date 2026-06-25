@@ -19,6 +19,7 @@ from ..session import Session
 from ..settings import Permissions
 from ..diff import build_diff
 from ..events import BudgetExhaustedEvent, DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..shell import resolve_shell
 from ..subagents import Subagent
 from ..tools import HiddenGrantCallback, make_tools
 
@@ -113,7 +114,7 @@ def _build_agent(
             continue
         selected.append(t)
 
-    system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected])}"
+    system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)}"
 
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
     agent = Agent(
