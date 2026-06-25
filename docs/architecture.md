@@ -258,6 +258,8 @@ FileExplorer.stream(session, user_input, hidden_grant_callback)  agent/harness/f
   └─ make_tools(session.working_dir, grant_cb=hidden_grant_callback)  (read-only subset)
 
 GekaiAgent.process_stream(..., hidden_grant_callback)  agent/agent.py
+  ├─ route.rejected → mounts ERROR message (names route.reason), logs source="router",
+  │                   outcome="rejected", returns — locate/rewrite/harness never reached
   ├─ route.explore  → self._explorer.stream(..., hidden_grant_callback=hidden_grant_callback)
   └─ main           → self._main.stream(..., hidden_grant_callback=hidden_grant_callback)
 
@@ -281,16 +283,19 @@ class Route:
     trivial: bool = False
     explore: bool = False
     plan: list[PlanStep] | None = None
+    rejected: bool = False
+    reason: str = ""
 ```
 
 There is no `namespace` property — callers read `route.subagent.namespace` directly when
-`route.subagent is not None`. `trivial`/`explore`/`subagent`/`plan` are mutually exclusive in
-practice — the router maps each single token before checking the subagent menu, and a `<plan>`
-block is only emitted instead of (never alongside) a token.
+`route.subagent is not None`. `trivial`/`explore`/`subagent`/`plan`/`rejected` are mutually
+exclusive in practice — the router maps each single token before checking the subagent menu, and a
+`<plan>` block is only emitted instead of (never alongside) a token. `reason` carries the echoed
+name on a `rejected` route; it is `""` on all other outcomes.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
-The router prompt offers five kinds of output:
+The router prompt offers six kinds of output:
 
 ```
 ROUTER_PROMPT
@@ -304,6 +309,9 @@ ROUTER_PROMPT
 │                    or explicitly asks to use/delegate the task to it by name
 ├── <plan>           the request clearly needs multiple *different* specialists run in
 │                    order — see Multi-step Plans above
+├── REJECTED <name>  the user explicitly named a specific subagent that is NOT in the menu
+│                    (typo, unknown name, or system-only/non-invocable); the LLM echoes the
+│                    name and never substitutes the closest specialty or falls back to main
 └── main             anything else — handled directly by Harness
 ```
 
@@ -324,7 +332,8 @@ false `main` only costs one extra (often near-empty) `FileLocator` call, while a
 | `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned                             |
 | `<plan>` (2+ steps) | `Route(plan=[...])`    | multi-step executor, see Multi-step Plans above      |
 | `<plan>` (1 step)   | `Route(subagent=p)`    | collapses to the equivalent single-token route       |
-| unknown/malformed   | `Route()`              | warning log + host-retained, same as `main`          |
+| `REJECTED <name>`   | `Route(rejected=True, reason=name)` | fires only when the user names an unavailable agent; never guesses a substitute; bare `REJECTED` (no name) → `reason=""` |
+| unknown/malformed   | `Route()`              | genuinely unparseable token — warning log + host-retained, same as `main` (distinct from an explicit `REJECTED`) |
 
 ---
 
@@ -459,7 +468,8 @@ effective = Permissions(
 | finally (any exit)        | `default`                | `#3a3a3a`                                      |
 
 Debug label (`--debug`, shown as `[router: ...]`): `[subagent.namespace, subagent.name]` joined
-by `/` when a subagent is selected; `["trivial"]` when `route.trivial`; else `["main"]`. The
+by `/` when a subagent is selected; `["trivial"]` when `route.trivial`; `["rejected"]` when
+`route.rejected`; else `["main"]`. The
 status-indicator border title itself does not distinguish `TRIVIAL` from `main` — both show
 `main` / `#3a3a3a`; only the debug label surfaces the distinction.
 

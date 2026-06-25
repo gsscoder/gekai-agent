@@ -34,21 +34,22 @@ stay with `Harness` directly, or does it match a specialist subagent?
 `Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
 `Route` dataclass: `subagent: Subagent | None = None`, `trivial: bool = False`,
-`explore: bool = False`, `plan: list[PlanStep] | None = None`.
+`explore: bool = False`, `plan: list[PlanStep] | None = None`, `rejected: bool = False`, `reason: str = ""`.
 No `namespace` property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
-`trivial`/`explore`/`subagent`/`plan` are mutually exclusive — exactly one of the token modes (or `plan`) is set.
+`trivial`/`explore`/`subagent`/`plan`/`rejected` are mutually exclusive — exactly one of the token modes (or `plan`) is set.
 
 `PlanStep` dataclass (`agent/pipeline/router.py`): `subagent: Subagent | None` (`None` ⇒ step runs on `main`),
 `raw: str` (verbatim slice of the original prompt covering that step; never rewritten by the router itself).
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Router prompt offers five kinds of output:
+Router prompt offers six kinds of output:
 - `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `Harness` handles directly. Bias: prefer `main` unless a specialist clearly fits
 - `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions, acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `main` when unsure (false `main` costs one extra near-empty `FileLocator` call; false `TRIVIAL` denies real codebase context)
 - `EXPLORE` — read-only investigation ending in an answer about files/structure ("list files", "where is X defined", "show project structure"); never chosen if the request also asks for an edit/fix/change — prefer `main` then; prefer `main` when unsure
 - `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty, or explicitly names it
 - `<plan>` — the request clearly needs multiple *different* specialists run in order (see below)
+- `REJECTED <name>` / `REJECTED` — user explicitly named a specific agent not in the menu (unknown, typo, or system-only); LLM does not substitute, does not choose `main`, does not guess; `<name>` is the literal name the user wrote; omitted (bare `REJECTED`) when no name identifiable
 
 Router output token → Route mapping:
 - `"main"` → `Route()`
@@ -56,7 +57,8 @@ Router output token → Route mapping:
 - `"explore"` → `Route(explore=True)`
 - `<subagent-name>` (matched) → `Route(subagent=p)`
 - `<plan>...` (parsed, 2+ steps) → `Route(plan=[PlanStep, ...])`
-- unknown token → warning log + host-retained `Route()` (same as `main`)
+- `"rejected"` / `"REJECTED <name>"` → `Route(rejected=True, reason=<name>)` (bare `REJECTED` → `reason=""`)
+- unknown token → warning log + host-retained `Route()` (same as `main`; distinct from explicit `REJECTED`)
 
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
 
@@ -111,9 +113,10 @@ Locate runs on every **non-`TRIVIAL`** route (`main` and `<subagent>` alike).
 
 Pipeline (in TUI `_stream`):
 1. `Router.route()` → `Route`
-2. `route.trivial`: `entries = []`, skip locate + rewrite entirely
-3. else: `FileLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
-4. `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → `(processed_input, ui_label)`; `original_input = user_input` (see Prompt Rewriter)
+2. `route.rejected`: mount `MessageWidget(MessageKind.ERROR, ...)`, `append_event(source="router")`, `outcome="rejected"`, early `return` — locate/rewrite/harness never invoked; `finally:` still runs (label reset, animation stop, `turn.end` emit)
+3. `route.trivial`: `entries = []`, skip locate + rewrite entirely
+4. else: `FileLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
+5. `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → `(processed_input, ui_label)`; `original_input = user_input` (see Prompt Rewriter)
 
 `FileLocator` (`agent/harness/file_locator.py`) — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
 
@@ -190,7 +193,7 @@ Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
 {ts, kind:"command", content:"/clear"}                        ← slash command typed by user
-{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: router, error, interrupted, farewell, max_iterations
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: router, error, interrupted, farewell, max_iterations; rejected turn → `{source:"router", content:"'<name>' is not an available agent"}` (or `"no such agent"` when bare `REJECTED`)
 ```
 
 Entries without `kind` (legacy files) default to `"turn"`.
@@ -223,6 +226,6 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/clear` — clears chat and starts a new session (resets session ID)
 
 ## CLI Flags
-- `--debug` — prints `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt; trivial turns also get a `{"route": "trivial", "skipped": ["locate", "rewrite"]}` debug entry
+- `--debug` — prints `[router: rejected]` (`route.rejected`, checked first), `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt; trivial turns also get a `{"route": "trivial", "skipped": ["locate", "rewrite"]}` debug entry
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)
