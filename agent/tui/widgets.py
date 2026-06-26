@@ -451,16 +451,19 @@ _wbt_pad = (_WB_W - len(_WB_TITLE)) // 2
 _WB_TITLE_LINE = " " * _wbt_pad + _WB_TITLE + " " * (_WB_W - len(_WB_TITLE) - _wbt_pad)
 _WB_L1, _WB_S1 = "Insert a new line in the input box", "ctrl+J"
 _WB_SP1 = " " * (_WB_W - 2 - len(_WB_L1) - len(_WB_S1))
-_WB_L2, _WB_S2 = "Scroll to bottom", "ctrl+B"
+_WB_L2, _WB_S2 = "Recall prompt history", "ctrl+R"
 _WB_SP2 = " " * (_WB_W - 2 - len(_WB_L2) - len(_WB_S2))
-_WB_L3, _WB_S3 = "Exit the application", "ctrl+Q"
+_WB_L3, _WB_S3 = "Scroll to bottom", "ctrl+B"
 _WB_SP3 = " " * (_WB_W - 2 - len(_WB_L3) - len(_WB_S3))
+_WB_L4, _WB_S4 = "Exit the application", "ctrl+Q"
+_WB_SP4 = " " * (_WB_W - 2 - len(_WB_L4) - len(_WB_S4))
 _WELCOME_CONTENT = (
     f"[dim]{_WB_TITLE_LINE}[/dim]\n"
     f"\n"
     f"[#4a4a4a]\\[[/][dim]{_WB_L1}[/dim]{_WB_SP1}[#888888]{_WB_S1}[/#888888][#4a4a4a]][/]\n"
     f"[#4a4a4a]\\[[/][dim]{_WB_L2}[/dim]{_WB_SP2}[#888888]{_WB_S2}[/#888888][#4a4a4a]][/]\n"
-    f"[#4a4a4a]\\[[/][dim]{_WB_L3}[/dim]{_WB_SP3}[#888888]{_WB_S3}[/#888888][#4a4a4a]][/]"
+    f"[#4a4a4a]\\[[/][dim]{_WB_L3}[/dim]{_WB_SP3}[#888888]{_WB_S3}[/#888888][#4a4a4a]][/]\n"
+    f"[#4a4a4a]\\[[/][dim]{_WB_L4}[/dim]{_WB_SP4}[#888888]{_WB_S4}[/#888888][#4a4a4a]][/]"
 )
 
 
@@ -471,7 +474,7 @@ class WelcomeOverlay(Widget):
     WelcomeOverlay {
         layer: overlay;
         width: 62;
-        height: 9;
+        height: 10;
         background: ansi_default;
         border: round #4a4a4a;
         padding: 1 2;
