@@ -25,6 +25,7 @@ class Subagent:
     name: str  # unique subagent id, e.g. "code-refactorer"
     namespace: str  # one of NAMESPACES
     description: str  # one-line LLM selection menu entry
+    short_description: str = ""  # concise one-liner shown in the slash-command palette
     mandate: str = ""  # 1-2 line activation hook: "your specialization is…"
     directives: str = ""  # system-prompt fragment injected after the mandate
     tools: list[str] | None = None  # tool-name allowlist; None = all tools

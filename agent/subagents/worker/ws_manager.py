@@ -10,6 +10,7 @@ from ...tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS
 
 subagent = Subagent(
     name="ws-manager",
+    short_description="repo scaffolding: project skeletons, dirs, manifests",
     namespace="worker",
     description=(
         "repo/filesystem scaffolding: project skeletons, directories, manifest files, conventional "

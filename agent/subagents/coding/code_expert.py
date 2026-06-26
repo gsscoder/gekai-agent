@@ -2,6 +2,7 @@ from .. import Subagent
 
 subagent = Subagent(
     name="code-expert",
+    short_description="features, fixes, and decided implementation swaps",
     namespace="coding",
     description=(
         "general code changes: features, fixes, and behavior-changing rewrites where the approach is "

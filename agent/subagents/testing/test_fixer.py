@@ -3,6 +3,7 @@ from ...tools.catalog import EDIT_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 subagent = Subagent(
     name="test-fixer",
+    short_description="realign failing tests to current implementation",
     namespace="testing",
     description=(
         "realign existing tests broken by implementation changes — update references, signatures, and "

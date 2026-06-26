@@ -3,6 +3,7 @@ from ...tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS
 
 subagent = Subagent(
     name="code-refactorer",
+    short_description="extract, rename, dedup — no behavior change",
     namespace="coding",
     description=(
         "behavior-preserving restructuring of code: extract functions/methods/classes, rename code "

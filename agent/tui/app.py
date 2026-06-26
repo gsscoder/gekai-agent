@@ -37,7 +37,7 @@ from agent.persistence import (
 )
 from agent.pipeline import Route
 from agent.session import Session
-from agent.subagents import NAMESPACE_COLORS, Subagent
+from agent.subagents import NAMESPACE_COLORS, SUBAGENTS, Subagent
 from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_context_limit, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
@@ -233,7 +233,7 @@ def _subagent_header_markup(name: str, bg_color: str, ui_label: str) -> str:
     return markup
 
 
-def _fallback_ui_label(text: str, max_words: int = 6) -> str:
+def _fallback_ui_label(text: str, max_words: int = 12) -> str:
     """Cheap stand-in for the rewriter's <ui_label> when rewriting is skipped
     (no located entries) or the label comes back empty — strips backtick-quoted
     paths so file names don't leak into the badge, then takes the leading words."""
@@ -639,6 +639,9 @@ class GekaiApp(App[None]):
         self._status_paused: bool = False
         self._welcome_dismissed: bool = False
         self._exit_reason: str = "quit"
+        self._invocable_subagents: dict[str, Subagent] = {
+            p.name: p for p in SUBAGENTS if p.user_invocable
+        }
         super().__init__(**kwargs)
         self.ansi_color = True
 
@@ -648,7 +651,11 @@ class GekaiApp(App[None]):
             yield ChoiceBar(id="choice-bar")
             yield Static("", id="status-line")
             yield Static("", id="status-spacer")
-            yield CommandPalette(self._command_registry, id="command-palette")
+            yield CommandPalette(
+                self._command_registry,
+                subagents=[(p.name, p.short_description) for p in SUBAGENTS if p.user_invocable],
+                id="command-palette",
+            )
             yield Static("", id="hint-area")
             with Container(id="scroll-hint-wrap"):
                 yield Static("Scroll to bottom (ctrl+B) ↓", id="scroll-hint")
@@ -950,8 +957,15 @@ class GekaiApp(App[None]):
         stripped = prompt.text.strip()
         if palette.display:
             cmd = palette.selected_command
+            is_subagent_sel = palette.selected_is_subagent
             palette.hide()
             if cmd:
+                if is_subagent_sel:
+                    prompt.clear()
+                    prompt.text = f"/{cmd} "
+                    self._prompt_move_to_end(prompt)
+                    self._focus_prompt()
+                    return
                 stripped = f"/{cmd}"
         if not stripped:
             self._focus_prompt()
@@ -965,6 +979,22 @@ class GekaiApp(App[None]):
         prompt.clear()
         conversation = self.query_one("#conversation", ScrollableContainer)
         if stripped.startswith("/"):
+            _slash_parts = stripped.lstrip("/").split(None, 1)
+            _slash_name = _slash_parts[0] if _slash_parts else ""
+            if _slash_name in self._invocable_subagents:
+                _subagent = self._invocable_subagents[_slash_name]
+                _user_prompt = _slash_parts[1].strip() if len(_slash_parts) > 1 else ""
+                if not _user_prompt:
+                    await conversation.mount(MessageWidget(MessageKind.ERROR, f"/{_slash_name} needs a prompt — e.g. /{_slash_name} <instructions>"))
+                    conversation.scroll_end(animate=False)
+                    self._focus_prompt()
+                    return
+                await conversation.mount(MessageWidget(MessageKind.USER, _user_prompt))
+                self._worker = self.run_worker(
+                    self._stream(_resolve_at_refs(_user_prompt), forced_route=Route(subagent=_subagent)),
+                    exclusive=True,
+                )
+                return
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
             conversation.scroll_end(animate=False)
             had_prior = self.session_has_interactions
@@ -1187,7 +1217,7 @@ class GekaiApp(App[None]):
             ws_renderer=ws_renderer,
         )
 
-    async def _stream(self, user_input: str) -> None:
+    async def _stream(self, user_input: str, forced_route: Route | None = None) -> None:
         start = time.monotonic()
         events = self._agent.events
         turn_id = events.new_turn()
@@ -1202,10 +1232,14 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(verb[0], color)
-            self._set_route_label("route", color=_PIPELINE_COLOR)
-            t0 = time.monotonic()
-            route = await self._agent.route(user_input, history=self._session.messages)
-            events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
+            if forced_route is not None:
+                route = forced_route
+                events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=0)
+            else:
+                self._set_route_label("route", color=_PIPELINE_COLOR)
+                t0 = time.monotonic()
+                route = await self._agent.route(user_input, history=self._session.messages)
+                events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
 
             if route.rejected:
                 error_msg = f"'{route.reason}' is not an available agent" if route.reason else "no such agent"
@@ -1608,8 +1642,14 @@ class GekaiApp(App[None]):
 
     async def action_select_command(self, name: str) -> None:
         palette = self.query_one(CommandPalette)
+        is_subagent_sel = palette.selected_is_subagent
         palette.hide()
         prompt = self.query_one("#prompt", TextArea)
+        if is_subagent_sel:
+            prompt.text = f"/{name} "
+            self._prompt_move_to_end(prompt)
+            self._focus_prompt()
+            return
         prompt.text = f"/{name}"
         await self._submit_prompt()
 
