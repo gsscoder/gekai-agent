@@ -6,12 +6,15 @@ import sqlite3
 import time
 from pathlib import Path
 
+import sqlite_vec
+
 from agent import __version__
 
 _HASH_CHUNK_SIZE = 65536
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
 SCHEMA_VERSION = __version__
+_EMBED_DIM = 384
 
 _META_DDL = """
 CREATE TABLE IF NOT EXISTS _meta (
@@ -20,7 +23,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 );
 """
 
-_DDL = """
+_DDL = f"""
 CREATE TABLE IF NOT EXISTS files (
     id           INTEGER PRIMARY KEY,
     path         TEXT NOT NULL UNIQUE,
@@ -37,9 +40,16 @@ CREATE TABLE IF NOT EXISTS file_keywords (
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_keywords_keyword ON file_keywords(keyword);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS file_chunks USING vec0(
+    +file_id INTEGER,
+    +chunk_idx INTEGER,
+    vector FLOAT[{_EMBED_DIM}]
+);
 """
 
 _REBUILD_DDL = """
+DROP TABLE IF EXISTS file_chunks;
 DROP TABLE IF EXISTS file_keywords;
 DROP TABLE IF EXISTS files;
 """
@@ -47,16 +57,24 @@ DROP TABLE IF EXISTS files;
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_META_DDL)
-    row = conn.execute(
+    version_row = conn.execute(
         "SELECT value FROM _meta WHERE key = 'schema_version'"
     ).fetchone()
-    if row is not None and row[0] != SCHEMA_VERSION:
-        # cache is disposable: drop and rebuild rather than migrate (alpha, no shims)
+    dim_row = conn.execute(
+        "SELECT value FROM _meta WHERE key = 'embed_dim'"
+    ).fetchone()
+    schema_stale = version_row is not None and version_row[0] != SCHEMA_VERSION
+    dim_stale = dim_row is not None and dim_row[0] != str(_EMBED_DIM)
+    if schema_stale or dim_stale:
         conn.executescript(_REBUILD_DDL)
     conn.executescript(_DDL)
     conn.execute(
         "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
         (SCHEMA_VERSION,),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO _meta(key, value) VALUES ('embed_dim', ?)",
+        (str(_EMBED_DIM),),
     )
     conn.commit()
 
@@ -67,6 +85,9 @@ def ensure(working_dir: Path) -> sqlite3.Connection:
     db_path = gekai_dir / "workspace.db"
 
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -124,6 +145,29 @@ def save_findings(
                     "INSERT OR IGNORE INTO file_keywords(file_id, keyword) VALUES (?, ?)",
                     (file_id, kw_norm),
                 )
+    conn.commit()
+
+
+def save_chunk_vectors(
+    conn: sqlite3.Connection,
+    rel_path: str,
+    chunks: list[str],
+    vectors: list[list[float]],
+) -> None:
+    row = conn.execute("SELECT id FROM files WHERE path = ?", (rel_path,)).fetchone()
+    if row is None:
+        return
+    file_id = row[0]
+    old_rowids = conn.execute(
+        "SELECT rowid FROM file_chunks WHERE file_id = ?", (file_id,)
+    ).fetchall()
+    if old_rowids:
+        conn.executemany("DELETE FROM file_chunks WHERE rowid = ?", old_rowids)
+    for chunk_idx, (_, vec) in enumerate(zip(chunks, vectors)):
+        conn.execute(
+            "INSERT INTO file_chunks(file_id, chunk_idx, vector) VALUES (?, ?, ?)",
+            (file_id, chunk_idx, sqlite_vec.serialize_float32(vec)),
+        )
     conn.commit()
 
 
@@ -204,6 +248,69 @@ def find_candidates(
         conn.commit()
 
     return candidates[:limit]
+
+
+def find_semantic(
+    conn: sqlite3.Connection,
+    working_dir: Path,
+    query: str,
+    k: int = 10,
+) -> list[tuple[str, float]]:
+    from .embed import embed_texts  # lazy: keeps fastembed out of module-level import
+    vec_bytes = sqlite_vec.serialize_float32(embed_texts([query])[0])
+    rows = conn.execute(
+        "SELECT file_id, distance FROM file_chunks"
+        " WHERE vector MATCH ? AND k = ? ORDER BY distance",
+        (vec_bytes, k * 3),
+    ).fetchall()
+
+    results: list[tuple[str, float]] = []
+    stale_ids: list[int] = []
+    seen: set[int] = set()
+    for file_id, dist in rows:
+        if file_id in seen:
+            continue
+        seen.add(file_id)
+        row = conn.execute(
+            "SELECT path, size, mtime_ns, content_hash FROM files WHERE id = ?",
+            (file_id,),
+        ).fetchone()
+        if row is None:
+            stale_ids.append(file_id)
+            continue
+        path, size, mtime_ns, content_hash = row
+        if is_fresh(working_dir, path, size, mtime_ns, content_hash):
+            results.append((path, dist))
+        else:
+            stale_ids.append(file_id)
+
+    if stale_ids:
+        conn.executemany("DELETE FROM files WHERE id = ?", [(i,) for i in stale_ids])
+        conn.commit()
+
+    return results[:k]
+
+
+_RRF_C = 60
+
+
+def find_hybrid(
+    conn: sqlite3.Connection,
+    working_dir: Path,
+    keywords: list[str],
+    query: str,
+    k: int = 10,
+) -> list[str]:
+    lexical = find_candidates(conn, working_dir, keywords, limit=k * 2)
+    semantic = find_semantic(conn, working_dir, query, k=k * 2)
+
+    scores: dict[str, float] = {}
+    for rank, (path, _) in enumerate(lexical):
+        scores[path] = scores.get(path, 0.0) + 1.0 / (_RRF_C + rank)
+    for rank, (path, _) in enumerate(semantic):
+        scores[path] = scores.get(path, 0.0) + 1.0 / (_RRF_C + rank)
+
+    return sorted(scores, key=lambda p: scores[p], reverse=True)[:k]
 
 
 def mine_keywords(request: str) -> list[str]:

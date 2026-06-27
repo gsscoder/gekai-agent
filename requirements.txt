@@ -10,3 +10,5 @@ tree-sitter-javascript==0.25.0
 tree-sitter-typescript==0.23.2
 tree-sitter-go==0.25.0
 pathspec==1.1.1
+sqlite-vec==0.1.9
+fastembed==0.8.0

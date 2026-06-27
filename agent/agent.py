@@ -129,11 +129,10 @@ class GekaiAgent:
         try:
             conn = workspace_db.ensure(working_dir)
             keywords = workspace_db.mine_keywords(text)
-            candidates = await asyncio.to_thread(
-                workspace_db.find_candidates, conn, working_dir, keywords
+            hint_paths = await asyncio.to_thread(
+                workspace_db.find_hybrid, conn, working_dir, keywords, text
             )
             conn.close()
-            hint_paths = [path for path, _ in candidates]
         except Exception:
             pass
         entries, timed_out = await self._locator.locate(working_dir, text, hint_paths=hint_paths or None)

@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import db, scanner
+from . import chunker, db, embed, scanner
 from .symbols import _EXT_TO_LANG, extract_symbol_names
 
 
@@ -17,6 +17,7 @@ class IndexStats:
     symbols_extracted: int
     symbol_files: int
     duration_ms: int
+    chunk_count: int = 0
 
 
 def _stat_fresh(
@@ -42,19 +43,38 @@ def _stat_fresh(
     return st.st_size == size and st.st_mtime_ns == mtime_ns
 
 
+def _flush_chunk_batch(
+    conn: sqlite3.Connection,
+    working_dir: Path,
+    chunk_batch: list[tuple[str, list[str]]],
+) -> int:
+    if not chunk_batch:
+        return 0
+    all_texts: list[str] = []
+    mapping: list[tuple[str, int]] = []
+    for rel_path, chunks in chunk_batch:
+        mapping.append((rel_path, len(chunks)))
+        all_texts.extend(chunks)
+    vectors = embed.embed_texts(all_texts)
+    vec_idx = 0
+    total = 0
+    for rel_path, count in mapping:
+        db.save_chunk_vectors(
+            conn, rel_path,
+            all_texts[vec_idx : vec_idx + count],
+            vectors[vec_idx : vec_idx + count],
+        )
+        total += count
+        vec_idx += count
+    return total
+
+
 def build_index(
     working_dir: Path,
     conn: sqlite3.Connection,
     *,
     batch_size: int = 200,
 ) -> IndexStats:
-    """Eagerly populate `files`/`file_keywords` for every file in the repo.
-
-    Flips the locator cache from reactive (populated only after `FileLocator`
-    visits a file) to proactive: path tokens are extracted for every file,
-    and tree-sitter symbol names for languages in `_EXT_TO_LANG`. Files whose
-    stat (size + mtime_ns) matches the existing row are skipped.
-    """
     start = time.monotonic()
 
     all_files = scanner.list_files(working_dir)
@@ -67,7 +87,9 @@ def build_index(
     skipped_fresh = 0
     symbols_extracted = 0
     symbol_files = 0
-    batch: list[tuple[str, list[str]]] = []
+    chunk_count = 0
+    keyword_batch: list[tuple[str, list[str]]] = []
+    chunk_batch: list[tuple[str, list[str]]] = []
 
     for rel_path in all_files:
         if _stat_fresh(working_dir, rel_path, existing.get(rel_path)):
@@ -84,15 +106,28 @@ def build_index(
                 keywords.extend(names)
                 symbols_extracted += len(names)
 
-        batch.append((rel_path, keywords))
+        keyword_batch.append((rel_path, keywords))
         indexed_count += 1
 
-        if len(batch) >= batch_size:
-            db.save_findings(conn, working_dir, batch)
-            batch = []
+        try:
+            full_path = working_dir / rel_path
+            if full_path.stat().st_size <= chunker.MAX_FILE_BYTES:
+                text = full_path.read_text(encoding="utf-8", errors="replace")
+                chunks = chunker.chunk_text(text)
+                if chunks:
+                    chunk_batch.append((rel_path, chunks))
+        except OSError:
+            pass
 
-    if batch:
-        db.save_findings(conn, working_dir, batch)
+        if len(keyword_batch) >= batch_size:
+            db.save_findings(conn, working_dir, keyword_batch)
+            chunk_count += _flush_chunk_batch(conn, working_dir, chunk_batch)
+            keyword_batch = []
+            chunk_batch = []
+
+    if keyword_batch:
+        db.save_findings(conn, working_dir, keyword_batch)
+        chunk_count += _flush_chunk_batch(conn, working_dir, chunk_batch)
 
     return IndexStats(
         file_count=len(all_files),
@@ -100,5 +135,6 @@ def build_index(
         skipped_fresh=skipped_fresh,
         symbols_extracted=symbols_extracted,
         symbol_files=symbol_files,
+        chunk_count=chunk_count,
         duration_ms=int((time.monotonic() - start) * 1000),
     )

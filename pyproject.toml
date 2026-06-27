@@ -16,6 +16,8 @@ dependencies = [
     "tree-sitter-typescript",
     "tree-sitter-go",
     "pathspec>=0.12",
+    "sqlite-vec",
+    "fastembed",
 ]
 
 [project.scripts]
