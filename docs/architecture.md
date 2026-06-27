@@ -400,7 +400,6 @@ class Subagent:
     directives: str = ""   # the *how* — operational specifics
     tools: list[str] | None = None        # allowlist; None = all tools
     permissions: Permissions | None = None # overlay, ANDed with session permissions
-    is_fallback: bool = False
 
     def build_system_base(self) -> str: ...  # _IDENTITY_SUB + mandate + _SHARED_BODY + <directives>
                                               # <tools> appended later by the Harness
@@ -417,23 +416,24 @@ into the agent's own context once spawned — "who you act as right now," distin
 determine the *effective* tool set (and therefore the `<tools>` prompt content).
 
 Package layout: `__init__.py` exports `Subagent`, `SUBAGENTS`, `NAMESPACES`, `validate_registry`,
-and `_discover()` auto-discovery (plus the internal `_by_namespace` index it relies on).
+and `_discover()` auto-discovery.
 One file per subagent — currently just `code_expert.py`.
 Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) — composed into
 `subagent.directives` at import time via `dataclasses.replace`.
 Adding a subagent = drop one file; zero other changes required.
 
 `NAMESPACES` includes `"coding"`, `"testing"`, `"generic"` (innate — no subagents; selector
-skipped), and `"worker"`. The `coding`-namespace fallback is `code_expert` (`is_fallback=True`):
-general code changes — features, fixes, tests — when no specialized subagent fits; its
-`description` explicitly excludes pure refactors / complexity-reduction passes with no behavior
-change. `worker`'s sole member, `ws-manager` (`agent/subagents/worker/ws_manager.py`), is now
-`user_invocable=True` and `is_fallback=True` — the router/plan can assign it like any other
-subagent. Its mandate is scoped to repo/filesystem scaffolding only (project skeletons,
-directories, manifest files, conventional layout) — never application logic.
+skipped), and `"worker"`. There is no fallback subagent: each subagent stands on its own
+`description`, and any request that doesn't clearly fit one routes to `main` (the default
+generalist). `code_expert` handles general code changes — features, fixes, behavior-changing
+rewrites where the approach is decided; its `description` excludes pure refactors /
+complexity-reduction passes with no behavior change. `worker`'s sole member, `ws-manager`
+(`agent/subagents/worker/ws_manager.py`), is `user_invocable=False` — never routed or surfaced
+in the menu/palette. It is a system-managed worker dispatched only via `run()` (currently
+`onboard` → `build_index`), bypassing the LLM/spawn path entirely.
 
-`validate_registry()` runs at startup — raises if any non-`generic` namespace in `NAMESPACES` has
-no members, has duplicate names, or doesn't have exactly one fallback.
+`validate_registry()` runs at startup — raises if any namespace in `NAMESPACES` has no badge
+color, a subagent has an unknown namespace, or names collide.
 
 Subagent selection is performed by the `Router` in a single guard call — see [Router](#router) above.
 

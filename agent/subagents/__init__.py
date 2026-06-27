@@ -30,7 +30,6 @@ class Subagent:
     directives: str = ""  # system-prompt fragment injected after the mandate
     tools: list[str] | None = None  # tool-name allowlist; None = all tools
     permissions: Permissions | None = None  # permission overlay; None = inherit session
-    is_fallback: bool = False  # marks the per-namespace residual fallback
     user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
 
     def build_system_base(self) -> str:
@@ -79,10 +78,6 @@ def _discover() -> list[Subagent]:
 
 SUBAGENTS: list[Subagent] = _discover()
 
-_by_namespace: dict[str, list[Subagent]] = {}
-for _p in SUBAGENTS:
-    _by_namespace.setdefault(_p.namespace, []).append(_p)
-
 
 def validate_registry() -> None:
     """Startup validation; raises ValueError on any violation."""
@@ -96,12 +91,3 @@ def validate_registry() -> None:
         if p.name in seen:
             raise ValueError(f"duplicate subagent name: {p.name!r}")
         seen.add(p.name)
-    for ns in NAMESPACES:
-        members = [p for p in _by_namespace.get(ns, []) if p.user_invocable]
-        if not members:
-            continue
-        fallbacks = [p for p in members if p.is_fallback]
-        if len(fallbacks) != 1:
-            raise ValueError(
-                f"namespace {ns!r} must have exactly one fallback subagent (got {len(fallbacks)})"
-            )

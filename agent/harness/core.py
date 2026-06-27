@@ -159,6 +159,16 @@ class Harness:
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
+        is_empty = not any(
+            p for p in session.working_dir.iterdir()
+            if p.name != ".gekai"
+        )
+        system_base += (
+            f"\n<environment>"
+            f"\nworking directory (project root): {session.working_dir}"
+            f"\nall file tool paths are relative to this root"
+            + ("\nthis workspace is empty — create project files directly here, do not create a wrapper directory" if is_empty else "")
+        )
         effective_extra_params = self._extra_params if extra_params is None else extra_params
         agent = _build_agent(
             self._model, self._api_key, self._api_base, effective_extra_params,

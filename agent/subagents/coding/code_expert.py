@@ -5,13 +5,13 @@ subagent = Subagent(
     short_description="features, fixes, and decided implementation swaps",
     namespace="coding",
     description=(
-        "general code changes: features, fixes, and behavior-changing rewrites where the approach is "
-        "decided — implementation/algorithm swaps that keep the interface but change output. "
-        "Not for: pure refactors or complexity-reduction passes with no behavior change"
+        "changes to existing code: features, fixes, and behavior-changing rewrites where the approach "
+        "is decided — implementation/algorithm swaps that keep the interface but change output. "
+        "Not for: creating a new app or project from scratch (that's main), or pure refactors / "
+        "complexity-reduction passes with no behavior change"
     ),
     mandate=(
-        "you act as a general code-change specialist — features, fixes, and decided implementation "
-        "swaps where the interface holds but behavior may change"
+        "you act as a coding specialist for existing code — features, fixes, and decided "
+        "implementation swaps where the interface holds but behavior may change"
     ),
-    is_fallback=True,
 )

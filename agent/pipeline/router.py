@@ -80,7 +80,10 @@ _ROUTER_PROMPT_BASE = (
     "name is not in <subagents> below (typo, unknown name, or a system-only agent never offered to "
     "users); do NOT substitute the closest specialty, do NOT choose main, do NOT guess — output "
     "exactly REJECTED followed by the literal name the user wrote\n"
-    "  main             — anything else; handled directly by the coding agent\n"
+    "  main             — the default generalist; the coding agent handles the request directly. "
+    "Choose main for general or simple requests, reading/explaining/running code, and creating or "
+    "scaffolding a new app or project. A subagent below is the exception, not the default — pick one "
+    "only when the request clearly fits its specialty; when unsure, choose main\n"
     "  <plan>           — the request clearly needs multiple *different* specialists run in order; "
     "see plan format below\n"
     "<subagents>\n"
@@ -115,14 +118,7 @@ class Router:
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
         self._subagents = [p for p in SUBAGENTS if p.user_invocable]
-        menu = "\n".join(
-            f"  {p.name} — {p.description}" + (
-                f" — also pick this for any other {p.namespace}-type request that doesn't match a "
-                "more specific subagent above"
-                if p.is_fallback else ""
-            )
-            for p in self._subagents
-        )
+        menu = "\n".join(f"  {p.name} — {p.description}" for p in self._subagents)
         self._prompt = PIPELINE_DIRECTIVES + _ROUTER_PROMPT_BASE.replace("{subagents-meta}", menu)
         non_invocable = [p for p in SUBAGENTS if not p.user_invocable]
         if non_invocable:
