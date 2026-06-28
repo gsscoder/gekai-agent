@@ -164,10 +164,10 @@ class Harness:
             if p.name != ".gekai"
         )
         system_base += (
-            f"\n<environment>"
-            f"\nworking directory (project root): {session.working_dir}"
-            f"\nall file tool paths are relative to this root"
-            + ("\nthis workspace is empty — create project files directly here, do not create a wrapper directory" if is_empty else "")
+            f"\nworking root directory: {session.working_dir}"
+            f"\nfile tool paths are relative to this root"
+            f"\nthe directory name is only a label — do not infer requirements from it or use it to add unrequested features or complexity"
+            + ("\nthis directory is empty — do not create a redundant wrapper subdirectory mirroring the project name; package layout (src/, tests/, etc.) is fine" if is_empty else "")
         )
         effective_extra_params = self._extra_params if extra_params is None else extra_params
         agent = _build_agent(
@@ -200,6 +200,12 @@ class Harness:
                         new_str = inp.get("new_str", "")
                         if old_str != new_str:
                             diff_lines = build_diff(old_str, new_str)
+                            await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
+                    elif event.call.name == "write_file":
+                        inp = event.call.input or {}
+                        content = inp.get("content", "")
+                        if content:
+                            diff_lines = build_diff("", content)
                             await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
                     if not event.result.is_error:
                         inp = event.call.input or {}
@@ -267,11 +273,15 @@ class Harness:
             )
             yield DoneEvent(thinking_chars=thinking_chars, files_touched=files_touched)
 
-            last = history[-1]
-            if isinstance(last.content, list):
-                text = "\n".join(b.text for b in last.content if isinstance(b, TextBlock))
-            else:
-                text = last.content or ""
+            text = ""
+            for msg in reversed(history):
+                if msg.role == "assistant":
+                    if isinstance(msg.content, list):
+                        text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
+                    else:
+                        text = msg.content or ""
+                    if text:
+                        break
             if text:
                 yield text
         finally:

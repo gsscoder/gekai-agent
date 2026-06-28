@@ -1185,7 +1185,7 @@ class GekaiApp(App[None]):
                     elif isinstance(item, BudgetExhaustedEvent):
                         budget_exhausted_hit = True
 
-        harness_outcome = "max_iterations" if (max_iter_hit and not answer_chunks) else "ok"
+        harness_outcome = "max_iterations" if (max_iter_hit and not answer_chunks) or (not answer_chunks and not files_touched_total) else "ok"
         events.emit(
             "harness", session=session_id, turn=turn_id, step=step_index, outcome=harness_outcome,
             llm_calls=llm_calls, prompt_tokens=prompt_tokens_total,

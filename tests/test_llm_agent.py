@@ -215,6 +215,49 @@ def test_run_stream_with_result_salvages_closing_text_when_budget_exhausted() ->
     assert stopped[0].budget_exhausted is True
 
 
+def test_run_loop_nudges_when_early_complete_is_textless() -> None:
+    responses = [
+        CompletionResponse(content=[], stop_reason="end_turn"),
+        CompletionResponse(content=[TextBlock(text="nudged answer")], stop_reason="end_turn"),
+    ]
+    provider = _ScriptedProvider(responses)
+    agent = Agent(
+        provider=provider,
+        model="test-model",
+        tools=_build_registry(),
+        max_iterations=3,
+    )
+
+    messages = run(agent.run("do the thing"))
+
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["tools"] is None
+    assert "nudged answer" in agent._assistant_text(messages)
+
+
+def test_run_stream_nudges_when_early_complete_is_textless() -> None:
+    responses = [
+        CompletionResponse(content=[], stop_reason="end_turn"),
+        CompletionResponse(content=[TextBlock(text="nudged answer")], stop_reason="end_turn"),
+    ]
+    provider = _ScriptedProvider(responses)
+    agent = Agent(
+        provider=provider,
+        model="test-model",
+        tools=_build_registry(),
+        max_iterations=3,
+    )
+
+    async def _drain() -> None:
+        async for _ in agent.run_stream("do the thing"):
+            pass
+
+    run(_drain())
+
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["tools"] is None
+
+
 def test_run_stream_with_result_raises_when_salvage_also_empty() -> None:
     max_iterations = 3
     responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]

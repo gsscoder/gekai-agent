@@ -35,7 +35,7 @@ from typing import Any
 
 import pytest
 
-from agent.events import AgentEvent, BudgetExhaustedEvent, MaxIterationsEvent
+from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, MaxIterationsEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.providers.base import ProviderAdapter
@@ -140,3 +140,26 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_also_fails(
     budget_events = [e for e in collected if isinstance(e, BudgetExhaustedEvent)]
     assert len(budget_events) == 1
     assert any(isinstance(e, MaxIterationsEvent) for e in collected)
+
+
+def test_write_file_emits_diff_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    file_content = "print('hello')\n"
+    responses = [
+        CompletionResponse(
+            content=[ToolUseBlock(id="wf-1", name="write_file", input={"path": "hello.py", "content": file_content})],
+            stop_reason="tool_use",
+        ),
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    diff_events = [e for e in collected if isinstance(e, DiffEvent)]
+    assert len(diff_events) == 1
+    assert diff_events[0].path == "hello.py"

@@ -47,10 +47,10 @@ Router                 [support model] — one call; emits a single Route
 
 ### Multi-step plans
 
-When a request clearly needs multiple *different* specialists run in order, the same router call
-emits a `<plan>` block instead of a single token — no extra LLM round-trip. A single specialist
-task phrased with multiple clauses still collapses to one token (router bias is hard toward the
-single-token case); a parsed plan with exactly one step also collapses to the equivalent
+When a request holds two or more substantial deliverables needing different specialists, the same router call emits a `<plan>` block instead
+of a single token — no extra LLM round-trip. A plan is the rare exception: a single app or
+library is one deliverable and is built whole by one agent (structure and code together, never
+as scaffold-then-code). A parsed plan with exactly one step collapses to the equivalent
 single-token `Route`.
 
 ```python
@@ -307,16 +307,21 @@ ROUTER_PROMPT
 ├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
 │                    "name — description"); when the request fits its specialty,
 │                    or explicitly asks to use/delegate the task to it by name
-├── <plan>           the request clearly needs multiple *different* specialists run in
-│                    order — see Multi-step Plans above
+├── <plan>           rare: the request holds two or more substantial deliverables needing
+│                    different specialists in sequence; a single app or library is one
+│                    deliverable, not a plan — see Multi-step Plans above
 ├── REJECTED <name>  the user explicitly named a specific subagent that is NOT in the menu
 │                    (typo, unknown name, or system-only/non-invocable); the LLM echoes the
 │                    name and never substitutes the closest specialty or falls back to main
-└── main             anything else — handled directly by Harness
+└── main             the generalist default: general or simple requests, reading/explaining/
+                     running code, and building a small or simple app whole — scaffolds
+                     structure and writes the code itself; pick a subagent only when the
+                     request clearly fits its specialty
 ```
 
-`main` is listed **last** with no explicit "host-retained"/"bias" line: the choices are
-self-defining and position signals that `main` is host-retained by default. Terminology is uniform
+`main` is listed **last** with no explicit bias annotation: the choices are self-defining and
+position signals that subagents are the exception — pick one only when the request clearly fits
+its specialty domain; when unsure, choose `main`. Terminology is uniform
 (`subagent`, never "specialist") so the model reads one concept, not two. `TRIVIAL` is
 deliberately conservative — the prompt tells the model to prefer `main` when unsure, since a
 false `main` only costs one extra (often near-empty) `FileLocator` call, while a false
@@ -423,11 +428,13 @@ Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) 
 Adding a subagent = drop one file; zero other changes required.
 
 `NAMESPACES` includes `"coding"`, `"testing"`, `"generic"` (innate — no subagents; selector
-skipped), and `"worker"`. There is no fallback subagent: each subagent stands on its own
-`description`, and any request that doesn't clearly fit one routes to `main` (the default
-generalist). `code_expert` handles general code changes — features, fixes, behavior-changing
-rewrites where the approach is decided; its `description` excludes pure refactors /
-complexity-reduction passes with no behavior change. `worker`'s sole member, `ws-manager`
+skipped), and `"worker"`. There is no fallback subagent: each subagent stands on its own `description`. `main` is the
+**generalist default** — general or simple requests, reading/explaining/running code, and
+building a small or simple app whole (structure and code together); pick a subagent only when
+the request clearly fits its specialty. `code-expert` handles **substantial or specialized code work** —
+features, fixes, and behavior-changing rewrites; it builds its deliverable whole, structure
+included; its `description` excludes small or simple apps (those go to `main`, end to end) and
+pure refactors / complexity-reduction passes with no behavior change (those go to `code-refactorer`). `worker`'s sole member, `ws-manager`
 (`agent/subagents/worker/ws_manager.py`), is `user_invocable=False` — never routed or surfaced
 in the menu/palette. It is a system-managed worker dispatched only via `run()` (currently
 `onboard` → `build_index`), bypassing the LLM/spawn path entirely.

@@ -22,7 +22,7 @@ subagent = Subagent(
         "gather evidence before writing: read specs, design docs, and comments in full; read the "
         "implementation — signatures, return types, error handling, boundary conditions\n"
         "before any test, produce a requirements inventory (REQ / EDGE / GAP items, each with a cited "
-        "source); if significant gaps exist, ask before proceeding\n"
+        "source); if significant gaps exist, state assumptions explicitly and proceed\n"
         "map every REQ and EDGE to a named test with a cited source; arrange-act-assert; no test "
         "depends on another test's state\n"
         "always evaluate: happy path, boundaries (min/max, empty, zero, single), null/missing, error "

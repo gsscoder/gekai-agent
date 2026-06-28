@@ -106,6 +106,11 @@ class Agent:
                 response = await retry_call(self._instrumented_policy(turn), _complete)
                 self._emit(ModelResponseReceived(turn=turn, response=response))
                 if not await self._apply_response(response, messages, turn=turn):
+                    if not self._assistant_text(messages):
+                        nudge = await retry_call(
+                            self._instrumented_policy(turn), lambda: _complete(with_tools=False)
+                        )
+                        await self._apply_response(nudge, messages, turn=turn)
                     self._emit(AgentStopped(stop_reason="complete", turns=self.usage.turns))
                     return
 
@@ -168,6 +173,21 @@ class Agent:
                 self._emit(ModelResponseReceived(turn=turn, response=final_response))
 
                 if not await self._apply_response(final_response, messages, turn=turn):
+                    if not self._assistant_text(messages):
+                        final_response = None
+                        self.usage.record_call()
+                        async for event in self.provider.stream(
+                            **self._provider_kwargs(messages, with_tools=False)
+                        ):
+                            if isinstance(event, StreamDone):
+                                final_response = event.response
+                            yield event
+                        if final_response is None:
+                            raise RuntimeError(
+                                f"{type(self.provider).__name__}.stream() ended without a StreamDone event"
+                            )
+                        self._emit(ModelResponseReceived(turn=turn, response=final_response))
+                        await self._apply_response(final_response, messages, turn=turn)
                     self._emit(AgentStopped(stop_reason="complete", turns=self.usage.turns))
                     return
 
