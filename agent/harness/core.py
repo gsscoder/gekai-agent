@@ -27,6 +27,16 @@ _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
 
 
+def _enrich_system_base(system_base: str, working_dir: Path) -> str:
+    is_empty = not any(p for p in working_dir.iterdir() if p.name != ".gekai")
+    return system_base + (
+        f"\nworking root directory: {working_dir}"
+        f"\nfile tool paths are relative to this root"
+        f"\nthe directory name is only a label — do not infer requirements from it or use it to add unrequested features or complexity"
+        + ("\nthis directory is empty — do not create a redundant wrapper subdirectory mirroring the project name; package layout (src/, tests/, etc.) is fine" if is_empty else "")
+    )
+
+
 def _recency_turns(messages: list[dict], n: int) -> list[Message]:
     turns = [m for m in messages[:-1] if m["role"] in ("user", "assistant")]
     return [Message(role=m["role"], content=m["content"]) for m in turns[-(n * 2):]]
@@ -130,6 +140,22 @@ def _build_agent(
         permissions=effective,
         on_request=permission_callback,
     ))
+
+    if subagent is None:
+        from ..tools.delegate import make_delegate_tool
+        delegate_t = make_delegate_tool(
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            extra_params=extra_params,
+            working_dir=working_dir,
+            permissions=permissions,
+            permission_callback=permission_callback,
+            bus=bus,
+            hidden_grant_callback=hidden_grant_callback,
+        )
+        agent.tools.register(delegate_t)
+
     return agent
 
 
@@ -159,16 +185,7 @@ class Harness:
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
-        is_empty = not any(
-            p for p in session.working_dir.iterdir()
-            if p.name != ".gekai"
-        )
-        system_base += (
-            f"\nworking root directory: {session.working_dir}"
-            f"\nfile tool paths are relative to this root"
-            f"\nthe directory name is only a label — do not infer requirements from it or use it to add unrequested features or complexity"
-            + ("\nthis directory is empty — do not create a redundant wrapper subdirectory mirroring the project name; package layout (src/, tests/, etc.) is fine" if is_empty else "")
-        )
+        system_base = _enrich_system_base(system_base, session.working_dir)
         effective_extra_params = self._extra_params if extra_params is None else extra_params
         agent = _build_agent(
             self._model, self._api_key, self._api_base, effective_extra_params,

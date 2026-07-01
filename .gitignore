@@ -1,5 +1,6 @@
 # secrets / env
 .env
+tests/.env.test
 
 # python bytecode
 __pycache__/

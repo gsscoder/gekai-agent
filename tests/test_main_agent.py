@@ -142,6 +142,8 @@ def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
 
 def test_direct_mode_tools_block_uses_full_set(tmp_path: Path):
     system, registered = _build(tmp_path, subagent=None)
-    assert registered == set(ALL_TOOLS)
+    # main agent has the full workspace tool set plus the delegate tool
+    assert set(ALL_TOOLS) <= registered
+    assert "delegate" in registered
     assert system.startswith("base prompt")
     assert "<tools>" in system

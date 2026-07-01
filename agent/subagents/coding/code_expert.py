@@ -5,14 +5,14 @@ subagent = Subagent(
     short_description="features, fixes, and decided implementation swaps",
     namespace="coding",
     description=(
-        "substantial or specialized code work: features, fixes, and behavior-changing rewrites where "
+        "code work by kind: features, fixes, and behavior-changing rewrites where "
         "the approach is decided (implementation/algorithm swaps that keep the interface but change "
-        "output). Builds its deliverable whole, structure included. Not for: small or simple apps "
-        "(that's main, end to end), or pure refactors / complexity-reduction passes with no behavior "
+        "output). Owns its assigned step's implementation in full. Not for: general/scaffolding/glue "
+        "work (that's main), or pure refactors / complexity-reduction passes with no behavior "
         "change (that's code-refactorer)"
     ),
     mandate=(
-        "you act as a coding specialist for substantial code work — features, fixes, and decided "
+        "you act as a coding specialist — features, fixes, and decided "
         "implementation swaps where the interface holds but behavior may change"
     ),
 )

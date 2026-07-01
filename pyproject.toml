@@ -25,6 +25,9 @@ gekai = "agent.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "llm: marks tests that make real LLM calls (deselected by default, run with --llm)",
+]
 
 [build-system]
 requires = ["hatchling"]

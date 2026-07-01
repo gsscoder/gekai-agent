@@ -267,15 +267,11 @@ def _ms(seconds: float) -> int:
 def _route_decision(route: Route) -> str:
     if route.rejected:
         return "rejected"
-    if route.plan is not None:
-        return f"plan({len(route.plan)})"
     if route.subagent is not None:
         return f"{route.subagent.namespace}/{route.subagent.name}"
     if route.trivial:
         return "trivial"
-    if route.explore:
-        return "explore"
-    return "main"
+    return "act"
 
 
 def _fmt_duration(elapsed: float) -> str:
@@ -374,12 +370,12 @@ def _strip_default_bg(style: Style | None) -> Style | None:
 
 @dataclass
 class _StepResult:
-    """Outcome of one locate->rewrite->dispatch pipeline run for a single
-    step (a plan step, or the equivalent single-token turn)."""
+    """Outcome of one dispatch pipeline run for a single step."""
     outcome: str = "ok"  # "ok" | "max_iterations"
     answer: str = ""
     max_iter_hit: bool = False
     query_tool_count: int = 0
+    ui_label: str = ""
     ws_renderer: SubAgentRenderer | None = None
 
 
@@ -1033,68 +1029,26 @@ class GekaiApp(App[None]):
     async def _run_step(
         self, raw: str, subagent: Subagent | None, *,
         turn_id: str, session_id: str, conversation: ScrollableContainer,
-        stage: list[str], trivial: bool = False, explore: bool = False,
-        append_user: bool = True, step_index: int | None = None,
+        stage: list[str], trivial: bool = False,
+        append_user: bool = True,
     ) -> _StepResult:
-        """Run locate->rewrite->dispatch for `raw` against `subagent` (None => main).
+        """Run dispatch for `raw` against `subagent` (None => main).
         `stage` is a 1-element mutable holder the caller's except-block reads to attribute
-        which sub-stage failed; trivial/explore are only ever set by the single-token call
-        site (a plan step's target is never trivial/explore)."""
+        which sub-stage failed."""
         events = self._agent.events
 
         if subagent is not None:
             _label, _color = subagent.namespace, NAMESPACE_COLORS[subagent.namespace]
-        elif explore:
-            _label, _color = "explore", _DEFAULT_ROUTE_COLOR
         else:
             _label, _color = "main", _DEFAULT_ROUTE_COLOR
 
-        if trivial or explore:
-            entries = []
-            if self._agent.debug:
-                append_debug(self._session, {"content": {"route": "explore" if explore else "trivial", "skipped": ["locate", "rewrite"]}})
-        else:
-            stage[0] = "locate"
-            self._set_route_label("locate", color=_PIPELINE_COLOR)
-            t0 = time.monotonic()
-            entries, hint_paths, locate_timed_out = await self._agent.locate(self._session.working_dir, raw)
-            located_paths = {path for path, _ in entries}
-            overlap = len(set(hint_paths) & located_paths) / len(located_paths) if located_paths else 0.0
-            events.emit(
-                "locate", session=session_id, turn=turn_id, step=step_index,
-                files=len(entries), hints=len(hint_paths), overlap=round(overlap, 3),
-                timed_out=locate_timed_out,
-                duration_ms=_ms(time.monotonic() - t0),
-            )
-            if self._agent.debug:
-                append_debug(self._session, {"content": {"locate": [path for path, _ in entries], "hints": hint_paths}})
-
-        processed_input = raw
-        original_input: str | None = None
-        ui_label = ""
-
-        if entries or subagent is not None:
-            stage[0] = "rewrite"
-            self._set_route_label("rewrite", color=_PIPELINE_COLOR)
-            t0 = time.monotonic()
-            processed_input, rewrite_label = await self._agent.rewrite(raw, entries)
-            events.emit("rewrite", session=session_id, turn=turn_id, step=step_index, ok=True, duration_ms=_ms(time.monotonic() - t0))
-            original_input = raw
-            if rewrite_label:
-                ui_label = rewrite_label
-            if self._agent.debug:
-                append_debug(self._session, {"content": {"rewritten": processed_input}})
-
-        if subagent is not None and not ui_label:
-            ui_label = _fallback_ui_label(original_input or raw)
+        ui_label = _fallback_ui_label(raw) if subagent is not None else ""
 
         if self._agent.debug:
             if subagent is not None:
                 parts = [subagent.namespace, subagent.name]
             elif trivial:
                 parts = ["trivial"]
-            elif explore:
-                parts = ["explore"]
             else:
                 parts = ["main"]
             debug_text = f"\\[router: {'/'.join(parts)}]"
@@ -1102,7 +1056,7 @@ class GekaiApp(App[None]):
 
         self._set_route_label(_label, color=_color)
         stage[0] = "harness"
-        step_route = Route(subagent=subagent, trivial=trivial, explore=explore)
+        step_route = Route(subagent=subagent, trivial=trivial)
         harness_start = time.monotonic()
         answer_chunks: list[str] = []
         max_iter_hit = False
@@ -1117,9 +1071,7 @@ class GekaiApp(App[None]):
         files_touched_total: list[str] = []
 
         async for item in self._agent.process_stream(
-            self._session, processed_input, step_route,
-            entries=entries,
-            original_input=original_input,
+            self._session, raw, step_route,
             permission_callback=self._permission_callback,
             hidden_grant_callback=self._hidden_grant_callback,
             turn_id=turn_id,
@@ -1187,7 +1139,7 @@ class GekaiApp(App[None]):
 
         harness_outcome = "max_iterations" if (max_iter_hit and not answer_chunks) or (not answer_chunks and not files_touched_total) else "ok"
         events.emit(
-            "harness", session=session_id, turn=turn_id, step=step_index, outcome=harness_outcome,
+            "harness", session=session_id, turn=turn_id, outcome=harness_outcome,
             llm_calls=llm_calls, prompt_tokens=prompt_tokens_total,
             completion_tokens=completion_tokens_total, thinking_chars=thinking_chars_total,
             tools=tool_counts, duration_ms=_ms(time.monotonic() - harness_start),
@@ -1201,7 +1153,7 @@ class GekaiApp(App[None]):
         )
         if subagent is not None:
             events.emit(
-                "delegation", session=session_id, turn=turn_id, step=step_index,
+                "delegation", session=session_id, turn=turn_id,
                 host="main", delegate=subagent.name, namespace=subagent.namespace,
                 status=subagent_result.status, files=len(subagent_result.files_touched),
                 files_touched=subagent_result.files_touched[:_DELEGATION_FILES_CAP],
@@ -1214,6 +1166,7 @@ class GekaiApp(App[None]):
             answer=subagent_result.summary,
             max_iter_hit=max_iter_hit,
             query_tool_count=query_tool_count,
+            ui_label=ui_label,
             ws_renderer=ws_renderer,
         )
 
@@ -1238,71 +1191,20 @@ class GekaiApp(App[None]):
             else:
                 self._set_route_label("route", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
-                route = await self._agent.route(user_input, history=self._session.messages)
+                route = await self._agent.gate(user_input, history=self._session.messages)
                 events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
 
             if route.rejected:
                 error_msg = f"'{route.reason}' is not an available agent" if route.reason else "no such agent"
                 await conversation.mount(MessageWidget(MessageKind.ERROR, error_msg))
-                append_event(self._session, error_msg, source="router")
+                append_event(self._session, error_msg, source="gate")
                 outcome = "rejected"
-                return
-
-            if route.plan is not None:
-                if self._agent.debug:
-                    append_debug(self._session, {"content": {"plan": [
-                        {"agent": (step.subagent.name if step.subagent is not None else "main"), "raw": step.raw}
-                        for step in route.plan
-                    ]}})
-                n = len(route.plan)
-                completed = 0
-                failure_kind: str | None = None
-                failure_reason = ""
-                for i, step in enumerate(route.plan, start=1):
-                    try:
-                        step_result = await self._run_step(
-                            step.raw, step.subagent,
-                            turn_id=turn_id, session_id=session_id, conversation=conversation,
-                            stage=stage, append_user=(i == 1), step_index=i,
-                        )
-                    except Exception as step_error:
-                        failure_kind = "error"
-                        failure_reason = str(step_error) or type(step_error).__name__
-                        events.emit(
-                            "error", level="warning", session=session_id, turn=turn_id, step=i,
-                            stage=stage[0], error_type=type(step_error).__name__, message=failure_reason,
-                        )
-                        break
-                    ws_renderer = step_result.ws_renderer
-                    if step_result.outcome == "max_iterations" and not step_result.answer:
-                        failure_kind = "max_iterations"
-                        failure_reason = "hit iteration limit without producing a response"
-                        break
-                    completed = i
-                    if step_result.answer:
-                        self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, step_result.answer)
-                        await conversation.mount(self._assistant_widget)
-                        conversation.scroll_end(animate=False)
-
-                if failure_kind is not None:
-                    outcome = failure_kind
-                    msg = f"step {completed + 1} of {n} failed: {failure_reason}; completed steps 1..{completed}"
-                    await conversation.mount(MessageWidget(MessageKind.ERROR, msg))
-                    append_event(self._session, msg, source="plan")
-                else:
-                    outcome = "ok"
-                    elapsed = time.monotonic() - start
-                    operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)} ({n} steps)"
-                    await conversation.mount(MessageWidget(MessageKind.OPERATION, operation_text, color=color))
-                    if self._session is not None:
-                        append_operation(self._session, operation_text, color, turn=turn_id)
-                conversation.scroll_end(animate=False)
                 return
 
             step_result = await self._run_step(
                 user_input, route.subagent,
                 turn_id=turn_id, session_id=session_id, conversation=conversation,
-                stage=stage, trivial=route.trivial, explore=route.explore,
+                stage=stage, trivial=route.trivial,
             )
             ws_renderer = step_result.ws_renderer
 

@@ -2,74 +2,41 @@
 
 ## Overview
 
-Every turn passes through three layers: **routing → file location → Harness dispatch**.
-`TRIVIAL` routes skip the middle layer entirely — no file location, no rewrite. `EXPLORE` routes go to a
-separate read-only `FileExplorer`, not shown in the single-step diagram below (see
-[Multi-step Plans](#multi-step-plans) for `<plan>` routes).
+Every turn passes through a single-classifier front-end then the Harness:
+**Gate (classifier) → Harness dispatch**. `TRIVIAL` reaches the Harness with thinking disabled.
+`REJECTED` terminates immediately. `ACT` runs the main agent (direct mode), which may call the
+`delegate` tool to hand off specialist sub-tasks.
 
 ```
 user input
     │
     ▼
-Router                 [support model] — one call; emits a single Route
-    │                  (trivial | explore | subagent | main | plan)
+Gate                   [supp model, non-thinking] — one call per turn; pure intent classifier
+    │                  TRIVIAL | REJECTED <name> | ACT
     │
-    ├── EXPLORE ───────────────────────────────────────────────────────► FileExplorer (read-only investigation)
+    ├── TRIVIAL ────────────────────────────────────────────────────────────────┐
+    │   greeting / identity / general knowledge —                               │
+    │   answerable with no codebase access                                      │
+    │                                                                           │
+    ├── REJECTED <name> ─────── error displayed; no execution                  │
+    │                                                                           │
+    └── ACT (unknown token also falls to ACT — never silent)                   │
+        any request that requires codebase access or workspace action           │
+                                                                               │
+    ┌──────────────────────────────────────────────────────────────────────────┘
     │
-    ├── TRIVIAL ────────────────────────────────────────────────────┐
-    │   greeting / identity / general knowledge —                   │
-    │   answerable with no codebase access                          │
-    │                                                               │
-    ├── main (Route(), no subagent) ────────┐                       │
-    │                                       │                       │
-    └── <subagent> ─────────────┐           │                       │
-                                │           │                       │
-                                ▼           ▼                       │
-                       FileLocator   [support model] — locate       │
-                       relevant/affected files (path | keywords)    │
-                                │                                   │
-                       entries non-empty? ── no ────────────────────┤
-                                │ yes                               │
-                                ▼                                   │
-                       PromptRewriter  [core model, non-thinking] — │
-                       weave located paths into the request         │
-                                │                                   │
-                                └───────────────────┬───────────────┘
-                                                    ▼
-                                          Harness    [core model]
-                                            direct mode (no subagent, with recency)
-                                            spawn mode  (subagent.build_system_base() + harness-assembled <tools>, cold)
-                                            trivial route → extra_params={} (no thinking budget)
-
-    └── <plan> (Route(plan=[PlanStep, ...])) ───► N × (locate → rewrite → Harness), one step
-                                                   at a time, sequential, fail-stop — see below
+    ▼
+Harness                [core model]
+    direct mode — main agent with delegate tool + recency window (N=2 pairs)
+    trivial route → extra_params={} (no thinking budget)
+    │
+    └── delegate(agent, task)   [tool, registered on main only — recursion guard]
+        │   self-contained task handed off to a named specialist
+        │
+        └── Harness spawn mode
+            subagent.build_system_base() + harness-assembled <tools>, cold
+            no context inheritance — fire-and-forget
 ```
-
-### Multi-step plans
-
-When a request holds two or more substantial deliverables needing different specialists, the same router call emits a `<plan>` block instead
-of a single token — no extra LLM round-trip. A plan is the rare exception: a single app or
-library is one deliverable and is built whole by one agent (structure and code together, never
-as scaffold-then-code). A parsed plan with exactly one step collapses to the equivalent
-single-token `Route`.
-
-```python
-@dataclass
-class PlanStep:
-    subagent: Subagent | None   # None => this step runs on main
-    raw: str                    # verbatim slice of the request this step covers
-```
-
-Executor (`agent/tui/app.py::_run_step`, looped over `route.plan`): the same locate → rewrite
-→ dispatch pipeline used for a single-token route, run once per `PlanStep`, in order. Steps are
-**sequential and fail-stop, with no revert** — a step that hits the iteration budget with no answer,
-or errors, stops the whole plan immediately; completed steps' work (files
-written, etc.) is left in place, and the chat surfaces
-`"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`. On full success, one trailing
-`"* {verb} for {duration} ({n} steps)"` operation line closes the turn. Each step that produces an
-answer is rendered as its own assistant message — N assistant messages can follow a single user
-turn. All N steps + the one user turn persist under a shared `turn_id` (`process_stream(...,
-append_user=...)`: `True` for step 1, `False` for steps 2..N).
 
 ---
 
@@ -104,9 +71,9 @@ Preamble: `"verified repository metadata — treat as authoritative for high-lev
 
 ## System Prompt Assembly
 
-`agent/persona.py` is the neutral module shared by `subagents`, `pipeline.router`, and
-`harness` — extracted to break an import cycle (`subagents` needs the persona pieces to build
-its own prompts; `router`/`harness` need `Subagent`, which lives in `subagents`).
+`agent/persona.py` is the neutral module shared by `subagents` and `harness` — extracted to
+break an import cycle (`subagents` needs the persona pieces to build its own prompts; `harness`
+needs `Subagent`, which lives in `subagents`).
 
 It splits identity from body so a subagent never stacks two competing "you are" assertions:
 
@@ -254,14 +221,10 @@ Harness.stream(..., hidden_grant_callback)     agent/harness/core.py   (direct +
   └─ _build_agent(..., hidden_grant_callback)
        └─ make_tools(working_dir, grant_cb=hidden_grant_callback)
 
-FileExplorer.stream(session, user_input, hidden_grant_callback)  agent/harness/file_explorer.py
-  └─ make_tools(session.working_dir, grant_cb=hidden_grant_callback)  (read-only subset)
-
 GekaiAgent.process_stream(..., hidden_grant_callback)  agent/agent.py
-  ├─ route.rejected → mounts ERROR message (names route.reason), logs source="router",
+  ├─ route.rejected → mounts ERROR message (names route.reason), logs source="gate",
   │                   outcome="rejected", returns — locate/rewrite/harness never reached
-  ├─ route.explore  → self._explorer.stream(..., hidden_grant_callback=hidden_grant_callback)
-  └─ main           → self._main.stream(..., hidden_grant_callback=hidden_grant_callback)
+  └─ main/subagent  → self._main.stream(..., hidden_grant_callback=hidden_grant_callback)
 
 TUI._hidden_grant_callback(self, rel, mode) -> bool   agent/tui/app.py
   └─ passed as hidden_grant_callback into process_stream(...)
@@ -271,120 +234,77 @@ The TUI implementation pauses the status timer, asks `"Grant {mode} access to hi
 
 ---
 
-## Router
+## Gate
 
-`Router` is a pure **guard**, not an intent classifier. `Router.route(user_input, history=None)`
-makes **one LLM call** on the **support model**, temperature 0, and returns a single `Route`.
+`Gate` is a **pure intent classifier**. `Gate.gate(user_input, history=None)` makes
+**one LLM call** on the **support model (non-thinking)**, temperature 0, and returns a single `Route`.
 
 ```python
 @dataclass
 class Route:
     subagent: Subagent | None = None
     trivial: bool = False
-    explore: bool = False
-    plan: list[PlanStep] | None = None
     rejected: bool = False
     reason: str = ""
 ```
 
-There is no `namespace` property — callers read `route.subagent.namespace` directly when
-`route.subagent is not None`. `trivial`/`explore`/`subagent`/`plan`/`rejected` are mutually
-exclusive in practice — the router maps each single token before checking the subagent menu, and a
-`<plan>` block is only emitted instead of (never alongside) a token. `reason` carries the echoed
-name on a `rejected` route; it is `""` on all other outcomes.
+`subagent` is always `None` on a Gate return — it is populated only by the `/`-slash command path
+(forced routes). The flags are mutually exclusive in practice: `trivial` and `rejected` each
+resolve immediately; `reason` carries the echoed name on a `rejected` route, `""` otherwise.
+An unrecognized token falls to `Route()` (ACT) rather than silently downgrading — the gate never
+suppresses action.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
-The router prompt offers six kinds of output:
+The gate prompt produces exactly one of three tokens:
 
 ```
-ROUTER_PROMPT
+GATE_PROMPT
 ├── TRIVIAL          answerable with no codebase access — greetings, identity/capability
 │                    questions, acknowledgments, general knowledge unrelated to this
 │                    workspace; when unsure, NOT this
-├── EXPLORE          read-only investigation ending in an answer about files/structure;
-│                    never chosen if the request also asks for an edit/fix/change
-├── <subagent-name>  one of the subagents in the menu (built from SUBAGENTS,
-│                    "name — description"); when the request fits its specialty,
-│                    or explicitly asks to use/delegate the task to it by name
-├── <plan>           rare: the request holds two or more substantial deliverables needing
-│                    different specialists in sequence; a single app or library is one
-│                    deliverable, not a plan — see Multi-step Plans above
-├── REJECTED <name>  the user explicitly named a specific subagent that is NOT in the menu
-│                    (typo, unknown name, or system-only/non-invocable); the LLM echoes the
-│                    name and never substitutes the closest specialty or falls back to main
-└── main             the generalist default: general or simple requests, reading/explaining/
-                     running code, and building a small or simple app whole — scaffolds
-                     structure and writes the code itself; pick a subagent only when the
-                     request clearly fits its specialty
+├── REJECTED <name>  the user explicitly named a specific agent that is NOT in the roster
+│                    (typo, unknown name); echoes the literal name, never substitutes or
+│                    falls back to main; never routes to any real agent
+└── ACT              any request requiring codebase access or workspace action;
+                     unknown/malformed token also falls here — fail to action, not silence
 ```
 
-`main` is listed **last** with no explicit bias annotation: the choices are self-defining and
-position signals that subagents are the exception — pick one only when the request clearly fits
-its specialty domain; when unsure, choose `main`. Terminology is uniform
-(`subagent`, never "specialist") so the model reads one concept, not two. `TRIVIAL` is
-deliberately conservative — the prompt tells the model to prefer `main` when unsure, since a
-false `main` only costs one extra (often near-empty) `FileLocator` call, while a false
-`TRIVIAL` would deny a real codebase question its file context.
+`TRIVIAL` is deliberately conservative — a false `ACT` costs only the main agent's time, while a
+false `TRIVIAL` would deny a real codebase question any tool access.
 
-### Routing table
+### Gate table
 
-| Output token        | Route                  | Notes                                                |
-|---------------------|------------------------|------------------------------------------------------|
-| `main`              | `Route()`              | Harness handles directly, no subagent spawned        |
-| `TRIVIAL`           | `Route(trivial=True)`  | skips FileLocator + PromptRewriter; Harness still answers, with `extra_params={}` |
-| `EXPLORE`           | `Route(explore=True)`  | dispatched to `FileExplorer`, a separate read-only investigation path |
-| `<subagent-name>`   | `Route(subagent=p)`    | matched subagent spawned                             |
-| `<plan>` (2+ steps) | `Route(plan=[...])`    | multi-step executor, see Multi-step Plans above      |
-| `<plan>` (1 step)   | `Route(subagent=p)`    | collapses to the equivalent single-token route       |
-| `REJECTED <name>`   | `Route(rejected=True, reason=name)` | fires only when the user names an unavailable agent; never guesses a substitute; bare `REJECTED` (no name) → `reason=""` |
-| unknown/malformed   | `Route()`              | genuinely unparseable token — warning log + host-retained, same as `main` (distinct from an explicit `REJECTED`) |
+| Output token         | Route                              | Notes                                        |
+|----------------------|------------------------------------|----------------------------------------------|
+| `TRIVIAL`            | `Route(trivial=True)`              | Harness non-thinking (`extra_params={}`)     |
+| `REJECTED <name>`    | `Route(rejected=True, reason=name)`| error displayed, no execution; bare `REJECTED` → `reason=""` |
+| `ACT`                | `Route()`                          | main agent runs with full thinking params    |
+| unexpected/malformed | `Route()`                          | warning logged; falls to ACT                 |
 
 ---
 
-## File Location
+## Delegate Tool
 
-Runs on every **non-`TRIVIAL`** route — `main` and `<subagent>` alike. `TRIVIAL` routes skip
-this step entirely (`entries = []`, no locate call).
+`delegate(agent, task)` is a tool registered **only on the main agent** (recursion guard: subagents
+never receive it). It hands a self-contained task to a named specialist and returns its text output.
 
-### Locate step
+`make_delegate_tool(...)` in `agent/tools/delegate.py` builds the tool as a closure capturing
+`model`, `api_key`, `working_dir`, `permissions`, `bus`, and related context. The `agent`
+parameter is constrained to an `"enum"` of known `user_invocable` subagent names via
+`dataclasses.replace` on the `Tool.input_schema`.
 
-`FileLocator.locate(working_dir, request)` — agentic support-model call (up to 5 iterations, read-only tools).
-Returns `list[tuple[path, keywords]]`.
+Execution flow:
+1. Resolve `agent` name against the roster (`SUBAGENTS` filtered to `user_invocable`).
+2. Call `_enrich_system_base(resolved.build_system_base(), working_dir)` to add workspace context.
+3. Build a nested agent via `_build_agent(subagent=resolved)` — spawn mode, cold context, no
+   `delegate` tool (recursion guard is the `if subagent is None:` check in `_build_agent`).
+4. `await nested.run(task)` — returns full message history.
+5. Extract the last assistant text block from history and return it as a string.
+6. Any exception → `"[error] {agent} failed: {exc}"` (non-fatal to the main agent's turn).
 
-Any exception propagates — there is no fail-open; a broken locate blocks the turn.
-
----
-
-## Prompt Rewriter
-
-Runs whenever `FileLocator` returned **non-empty entries** — for `main` and `<subagent>` routes
-alike. `TRIVIAL` routes, and any route where the locator found nothing, skip it.
-
-`PromptRewriter.rewrite(request, entries) -> tuple[str, str]` — a single **core-model** call, temperature 0,
-**no thinking params** (non-thinking even on a reasoning-capable core model). Not agentic, no tools:
-the locator already discovered and verified the files, so this stage only *attributes* them.
-
-It takes the original request plus the located `path | keywords` list and returns
-`(rewritten_request, ui_label)`:
-
-```
-1. weave the full path inline wherever a file clearly maps to a phrase in the request
-   "update the passcode dialog to allow 8 chars" + "src/app/auth/passcoder.tsx | passcode, dialog"
-   -> "update 'src/app/auth/passcoder.tsx' to allow 8 chars"
-2. located files it cannot confidently attribute go in a trailing <reference_files> block
-3. paths are quoted verbatim from the list — never invented or altered
-```
-
-**Fail-hard:** `rewritten_request` keeps the locator's contract — any exception (including empty
-output → `ValueError`) propagates and blocks the turn, same as `FileLocator`. `ui_label` is
-**fail-soft** — a missing/malformed label degrades to `""` rather than blocking the turn; it is
-cosmetic (UI badge text), not load-bearing.
-
-**Original vs processed input:** the rewritten string is fed to `Harness` as the live user
-turn (`process_stream`'s `user_input`), while the user's verbatim text is passed as `original_input`
-and is what gets **persisted and displayed**. Later recency windows therefore show the user's real
-phrasing, not the rewrite. When `--debug` is active the rewritten text is written to `.debug.jsonl`.
+**Ordering contract:** callers (the main agent) are instructed never to fragment one artifact
+across multiple `delegate` calls, and to order by dependency (scaffold → logic → tests).
 
 ---
 
@@ -400,7 +320,7 @@ that owns the assembly of its own system prompt:
 class Subagent:
     name: str
     namespace: str
-    description: str       # router's selection signal — positive scope + "Not for…" boundary
+    description: str       # delegate's selection signal — positive scope + "Not for…" boundary
     mandate: str = ""      # 1-2 line role-identity sentence: "you act as a …"
     directives: str = ""   # the *how* — operational specifics
     tools: list[str] | None = None        # allowlist; None = all tools
@@ -410,8 +330,8 @@ class Subagent:
                                               # <tools> appended later by the Harness
 ```
 
-`description` doubles as the router's menu entry (`name — description`) and carries a "Not for…"
-boundary clause to sharpen the router's selection. `mandate` is the role-identity sentence fed
+`description` appears in the `delegate` tool's roster string (`name: description`) and carries a "Not for…"
+boundary clause to sharpen the main agent's delegation decisions. `mandate` is the role-identity sentence fed
 into the agent's own context once spawned — "who you act as right now," distinct from
 `directives` ("how to do it"). `tools` is a name allowlist (mirrored against
 `agent/tools/catalog.py` to guard against drift); `permissions` lets a subagent further
@@ -430,10 +350,10 @@ Adding a subagent = drop one file; zero other changes required.
 `NAMESPACES` includes `"coding"`, `"testing"`, `"generic"` (innate — no subagents; selector
 skipped), and `"worker"`. There is no fallback subagent: each subagent stands on its own `description`. `main` is the
 **generalist default** — general or simple requests, reading/explaining/running code, and
-building a small or simple app whole (structure and code together); pick a subagent only when
-the request clearly fits its specialty. `code-expert` handles **substantial or specialized code work** —
-features, fixes, and behavior-changing rewrites; it builds its deliverable whole, structure
-included; its `description` excludes small or simple apps (those go to `main`, end to end) and
+and all general/glue/scaffolding work in a plan; pick a subagent only when
+the request clearly fits its specialty. `code-expert` handles **code work by kind** —
+features, fixes, and behavior-changing rewrites where the approach is decided; it owns its assigned step's implementation in full;
+its `description` excludes general/scaffolding/glue work (that's `main`) and
 pure refactors / complexity-reduction passes with no behavior change (those go to `code-refactorer`). `worker`'s sole member, `ws-manager`
 (`agent/subagents/worker/ws_manager.py`), is `user_invocable=False` — never routed or surfaced
 in the menu/palette. It is a system-managed worker dispatched only via `run()` (currently
@@ -442,7 +362,7 @@ in the menu/palette. It is a system-managed worker dispatched only via `run()` (
 `validate_registry()` runs at startup — raises if any namespace in `NAMESPACES` has no badge
 color, a subagent has an unknown namespace, or names collide.
 
-Subagent selection is performed by the `Router` in a single guard call — see [Router](#router) above.
+Subagent selection is performed by the main agent via the `delegate` tool — see [Delegate Tool](#delegate-tool) above.
 
 > **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
 > intent via routing. `ws-manager` (`worker` namespace) is the first built, user-invocable example
@@ -474,7 +394,7 @@ effective = Permissions(
 | `route.subagent is None`  | `main` (incl. `TRIVIAL`) | `#3a3a3a` (`_DEFAULT_ROUTE_COLOR`)             |
 | finally (any exit)        | `default`                | `#3a3a3a`                                      |
 
-Debug label (`--debug`, shown as `[router: ...]`): `[subagent.namespace, subagent.name]` joined
+Debug label (`--debug`, shown as `[gate: ...]`): `[subagent.namespace, subagent.name]` joined
 by `/` when a subagent is selected; `["trivial"]` when `route.trivial`; `["rejected"]` when
 `route.rejected`; else `["main"]`. The
 status-indicator border title itself does not distinguish `TRIVIAL` from `main` — both show
@@ -496,7 +416,7 @@ async def stream(self, session, user_input, permission_callback=None, subagent: 
 `extra_params` overrides the Harness's own `self._extra_params` (set at construction from
 `resolve_thinking_params`) for this call only — `None` (the default) means "use the instance
 default"; an explicit `{}` means "no thinking params for this turn" (the `TRIVIAL`-route case —
-see [Router](#router)).
+see [Gate](#gate)).
 
 `stream()` delegates prompt assembly to the module-level `_build_agent(...)`, which is the
 **single point** where the effective tool set — and therefore the final `<tools>` block — is
@@ -575,10 +495,10 @@ Every entry is timestamped JSON with a `kind` field:
 {ts, kind:"event",   source:"...", content:"..."}             ← system-side, non-LLM
 ```
 
-Event sources: `router` · `error` · `interrupted` · `farewell` · `max_iterations` · `command` (command result).
+Event sources: `gate` · `error` · `interrupted` · `farewell` · `max_iterations` · `command` (command result).
 Entries without `kind` (legacy) default to `"turn"`.
 
-**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, route tokens, locate list, rewritten text) — `--debug` only.
+**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, route tokens, per-turn debug context) — `--debug` only.
 Litmus: *did the user see it on screen?* → session; *did only the developer need it?* → debug.
 
 **Two readers:**

@@ -46,7 +46,11 @@ _SHARED_BODY = (
 # subagents: they assemble their own system prompt from _SHARED_BODY +
 # their own directives, independent of SYSTEM_PROMPT.
 _MAIN_DIRECTIVES = (
-    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing"
+    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing\n"
+    "do coherent work yourself; for a unit that fits a specialist, call `delegate` with a self-contained task you write; "
+    "never fragment one artifact (a file, a module) across delegates; "
+    "order by dependency (scaffold → logic → tests) regardless of prompt order; "
+    "a trailing meta directive ('then tell me how to run it') is your own closing step, not a delegation"
 )
 
 SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY + "\n<directives>\n" + _MAIN_DIRECTIVES

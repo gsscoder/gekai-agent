@@ -7,7 +7,4 @@ Incomplete Alpha version
 Implementing missing harness and improving existing one
 
 ## Recent Changes
-- The pipeline matured into its current shape: per-subagent tool allowlists, split subagent identities
-- The router gained multi-step plan execution that sequences a turn across multiple specialists with budget-exhaustion salvage
-- Blast-radius gate was removed since the planner itself scopes subagent turns directly
-- Removed the router's non-English rejection policy, leaving language handling entirely to the model
+- The harness grew orchestration safeguards (empty steps now fail explicitly, write_file emits diff events), routing shifted to owner-seam plan segmentation with overall-goal context threaded into each step, and pipeline housekeeping removed the blast-radius gate and non-English rejection policy

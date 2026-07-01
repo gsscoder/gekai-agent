@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import platform
@@ -12,10 +11,10 @@ from openai import AsyncOpenAI
 
 from . import __version__
 from .llm.model_caps import resolve_thinking_params
-from .harness import Harness, FileExplorer, FileLocator, HiddenGrantCallback
+from .harness import Harness, HiddenGrantCallback
 from .permissions import PermissionCallback
 from .subagents import Subagent
-from .pipeline import Route, Router, PromptRewriter
+from .pipeline import Gate, Route
 from .session import Session
 from .settings import Permissions
 from .logging import EventLogger
@@ -58,30 +57,12 @@ class GekaiAgent:
         self._supp_api_key: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_KEY")
         self._supp_api_base: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_URL")
         self._supp_client = AsyncOpenAI(api_key=self._supp_api_key, base_url=self._supp_api_base)
-        # router runs on CORE with no thinking params (non-thinking call, like the rewriter) —
-        # near-neighbor subagent discrimination needs the stronger model; it is low-volume
-        # (one short completion per turn), so the cost over SUPP is negligible
-        self._router = Router(
-            model=self.model,
-            api_key=self._api_key,
-            api_base=self._api_base,
-        )
-        self._locator = FileLocator(
+        # gate runs on SUPP non-thinking — intent classification is pattern-matching,
+        # not reasoning, and is the high-volume common path (one cheap call per turn)
+        self._gate = Gate(
             model=self._supp_model,
             api_key=self._supp_api_key,
             api_base=self._supp_api_base,
-        )
-        self._explorer = FileExplorer(
-            model=self._supp_model,
-            api_key=self._supp_api_key,
-            api_base=self._supp_api_base,
-            debug=self.debug,
-        )
-        # rewriter runs on CORE with no thinking params (non-thinking call)
-        self._rewriter = PromptRewriter(
-            model=self.model,
-            api_key=self._api_key,
-            api_base=self._api_base,
         )
         self._main = Harness(
             model=self.model,
@@ -119,67 +100,33 @@ class GekaiAgent:
             session.messages.extend(restored_messages)
         return session
 
-    async def route(self, user_input: str, history: list[dict] | None = None) -> Route:
-        return await self._router.route(user_input, history=history)
-
-    async def locate(
-        self, working_dir: Path, text: str,
-    ) -> tuple[list[tuple[str, list[str]]], list[str], bool]:
-        hint_paths: list[str] = []
-        try:
-            conn = workspace_db.ensure(working_dir)
-            keywords = workspace_db.mine_keywords(text)
-            hint_paths = await asyncio.to_thread(
-                workspace_db.find_hybrid, conn, working_dir, keywords, text
-            )
-            conn.close()
-        except Exception:
-            pass
-        entries, timed_out = await self._locator.locate(working_dir, text, hint_paths=hint_paths or None)
-        return entries, hint_paths, timed_out
-
-    async def rewrite(
-        self, request: str, entries: list[tuple[str, list[str]]],
-    ) -> tuple[str, str]:
-        return await self._rewriter.rewrite(request, entries)
+    async def gate(self, user_input: str, history: list[dict] | None = None) -> Route:
+        return await self._gate.gate(user_input, history=history)
 
     async def process_stream(
         self,
         session: Session,
         user_input: str,
         route: Route,
-        entries: list[tuple[str, list[str]]] | None = None,
-        original_input: str | None = None,
         permission_callback: PermissionCallback | None = None,
         turn_id: str | None = None,
         hidden_grant_callback: HiddenGrantCallback | None = None,
         append_user: bool = True,
     ) -> AsyncIterator[str | AgentEvent]:
         if append_user:
-            session.messages.append({"role": "user", "content": original_input if original_input is not None else user_input})
+            session.messages.append({"role": "user", "content": user_input})
             append_message(session, session.messages[-1], turn=turn_id)
-
-        if entries:
-            try:
-                conn = workspace_db.ensure(session.working_dir)
-                workspace_db.save_findings(conn, session.working_dir, entries)
-                conn.close()
-            except Exception:
-                pass
 
         all_chunks: list[str] = []
         max_iter_hit = False
         completed = False
-        if route.explore:
-            stream_iter = self._explorer.stream(session, user_input, hidden_grant_callback=hidden_grant_callback)
-        else:
-            stream_iter = self._main.stream(
-                session, user_input,
-                permission_callback=permission_callback,
-                subagent=route.subagent,
-                extra_params={} if route.trivial else None,
-                hidden_grant_callback=hidden_grant_callback,
-            )
+        stream_iter = self._main.stream(
+            session, user_input,
+            permission_callback=permission_callback,
+            subagent=route.subagent,
+            extra_params={} if route.trivial else None,
+            hidden_grant_callback=hidden_grant_callback,
+        )
         try:
             async for item in stream_iter:
                 if isinstance(item, str):
