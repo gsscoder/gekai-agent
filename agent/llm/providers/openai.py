@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,6 +26,21 @@ from ..types import (
     ToolUseStop,
 )
 from .base import ProviderAdapter
+
+# DeepSeek (and similar DeepSeek-derived models) can leak their native
+# tool-call sentinel format as literal text when the "salvage" completion
+# path omits the `tools` param but the model still "wants" to call a tool.
+# Nothing parses these sentinels back into a structured tool call in that
+# case, so they must be stripped before the text reaches the user.
+_LEAKED_TOOL_CALL_RE = re.compile(
+    r"<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>",
+    re.DOTALL,
+)
+
+
+def _strip_leaked_tool_markup(text: str) -> str:
+    """Strip leaked DeepSeek-style native tool-call markup from completion text."""
+    return _LEAKED_TOOL_CALL_RE.sub("", text)
 
 
 class OpenAIAdapter(ProviderAdapter):
@@ -139,7 +155,9 @@ class OpenAIAdapter(ProviderAdapter):
             content.append(ThinkingBlock(text=reasoning))
         text = getattr(message, "content", None)
         if text:
-            content.append(TextBlock(text=text))
+            text = _strip_leaked_tool_markup(text)
+            if text.strip():
+                content.append(TextBlock(text=text))
         for call in getattr(message, "tool_calls", None) or []:
             try:
                 args = json.loads(call.function.arguments) if call.function.arguments else {}
@@ -239,7 +257,9 @@ class OpenAIAdapter(ProviderAdapter):
             content.append(ThinkingBlock(text=thinking))
         text = "".join(text_buf)
         if text:
-            content.append(TextBlock(text=text))
+            text = _strip_leaked_tool_markup(text)
+            if text.strip():
+                content.append(TextBlock(text=text))
         for idx in tool_call_order:
             tc = tool_calls[idx]
             try:

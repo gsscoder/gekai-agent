@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -163,3 +163,59 @@ def test_write_file_emits_diff_event(
     diff_events = [e for e in collected if isinstance(e, DiffEvent)]
     assert len(diff_events) == 1
     assert diff_events[0].path == "hello.py"
+
+
+class _InspectableAdapter(_ScriptedAdapter):
+    """`_ScriptedAdapter` subclass that records each instance created inside
+    `_build_agent`, so the test can inspect `.calls[0]["system"]` afterward —
+    `_ScriptedAdapter` itself is left untouched since other tests share it.
+    """
+
+    instances: ClassVar[list["_InspectableAdapter"]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        type(self).instances.append(self)
+
+
+def _ok_response() -> CompletionResponse:
+    return CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")
+
+
+def test_subagent_mention_injects_subagents_request_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: agent/harness/core.py `Harness.stream` — when subagent is None (direct
+    # mode) and the user's raw text explicitly names an invocable subagent,
+    # a `<subagents_request>` block naming it is injected into the composed
+    # system prompt sent to the provider.
+    _InspectableAdapter.instances = []
+    _InspectableAdapter.responses = [_ok_response()]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _InspectableAdapter)
+
+    session = _make_session(tmp_path)
+    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    run(_drain(harness, session, "use test-fixer to fix the failing tests"))
+
+    adapter = _InspectableAdapter.instances[0]
+    system = adapter.calls[0]["system"]
+    assert "<subagents_request>" in system
+    assert "test-fixer" in system
+
+
+def test_no_subagent_mention_omits_subagents_request_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Regression guard: a prompt with no agent mention must not spuriously
+    # trigger the injection.
+    _InspectableAdapter.instances = []
+    _InspectableAdapter.responses = [_ok_response()]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _InspectableAdapter)
+
+    session = _make_session(tmp_path)
+    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    run(_drain(harness, session, "list the files in this repo"))
+
+    adapter = _InspectableAdapter.instances[0]
+    system = adapter.calls[0]["system"]
+    assert "<subagents_request>" not in system

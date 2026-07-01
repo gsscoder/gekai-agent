@@ -32,7 +32,6 @@ from agent.persistence import (
     append_operation,
     append_subagent_done,
     append_subagent_start,
-    load_route_decisions,
     _normalize_path,
 )
 from agent.pipeline import Route
@@ -704,7 +703,6 @@ class GekaiApp(App[None]):
         )
 
         if self._restored_timeline:
-            route_decisions = load_route_decisions(self._restored_id) if self._agent.debug and self._restored_id else {}
             last_subagent_header: MessageWidget | None = None
             for entry in self._restored_timeline:
                 kind = entry.get("kind", "turn")
@@ -713,9 +711,6 @@ class GekaiApp(App[None]):
                     role = entry.get("role")
                     if role == "user":
                         await conversation.mount(MessageWidget(MessageKind.USER, content))
-                        decision = route_decisions.get(entry.get("turn", ""))
-                        if decision:
-                            await conversation.mount(MessageWidget(MessageKind.OPERATION, f"\\[router: {decision}]", color="#BA55D3"))
                     elif role == "assistant":
                         await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
                 elif kind == "command":
@@ -1043,16 +1038,6 @@ class GekaiApp(App[None]):
             _label, _color = "main", _DEFAULT_ROUTE_COLOR
 
         ui_label = _fallback_ui_label(raw) if subagent is not None else ""
-
-        if self._agent.debug:
-            if subagent is not None:
-                parts = [subagent.namespace, subagent.name]
-            elif trivial:
-                parts = ["trivial"]
-            else:
-                parts = ["main"]
-            debug_text = f"\\[router: {'/'.join(parts)}]"
-            await conversation.mount(MessageWidget(MessageKind.OPERATION, debug_text, color="#BA55D3"))
 
         self._set_route_label(_label, color=_color)
         stage[0] = "harness"

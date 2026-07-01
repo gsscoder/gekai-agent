@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 from pathlib import Path
 
@@ -47,6 +48,27 @@ def _forbidden_token(command: str, working_dir: Path, rules: IgnoreRules) -> str
     return None
 
 
+def _venv_env(working_dir: Path) -> dict[str, str] | None:
+    """If `working_dir` has a `.venv`, return an env dict with its executables
+    directory prepended to PATH (and VIRTUAL_ENV set) — exactly what a venv
+    `activate` script does. Returns None (no-op) if there's no usable `.venv`,
+    so the subprocess inherits `os.environ` as-is.
+    """
+    venv_dir = working_dir / ".venv"
+    if not venv_dir.is_dir():
+        return None
+
+    bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+    if not bin_dir.is_dir():
+        return None
+
+    env = dict(os.environ)
+    existing_path = env.get("PATH", "")
+    env["PATH"] = str(bin_dir) + (os.pathsep + existing_path if existing_path else "")
+    env["VIRTUAL_ENV"] = str(venv_dir)
+    return env
+
+
 async def _run_command(
     command: str,
     *,
@@ -59,11 +81,13 @@ async def _run_command(
         return f"error: command references a restricted path: {hit}"
 
     spec = resolve_shell()
+    env = _venv_env(working_dir)
     try:
         proc = await asyncio.create_subprocess_exec(
             spec.path,
             *spec.build_args(command),
             cwd=working_dir,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

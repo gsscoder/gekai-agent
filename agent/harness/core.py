@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import AgentStopped, EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import AgentStopped, Event as LlmEvent, EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
@@ -20,11 +21,52 @@ from ..settings import Permissions
 from ..diff import build_diff
 from ..events import BudgetExhaustedEvent, DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
-from ..subagents import Subagent
+from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
+
+_MENTION_TRIGGER = r"(?:use|have|ask|let|delegate\s+to|call)"
+_NEGATION_CUES = re.compile(
+    r"\b(?:don't|do not|doesn't|does not|didn't|did not|never|avoid|shouldn't|should not|"
+    r"isn't|isn’t|without|no need to|not)\b",
+    re.IGNORECASE,
+)
+_NEGATION_LOOKBACK_CHARS = 20
+
+
+def detect_subagent_mentions(user_input: str) -> list[str]:
+    """Roster-order list of invocable subagent names the user explicitly asked
+    to be used (e.g. "use code-expert", "have test-fixer solve..."), skipping
+    matches preceded by a nearby negation cue ("don't use X"). Best-effort,
+    not airtight — a deliberately conservative trigger-verb + lookback-window
+    heuristic, not full NLP negation scope resolution.
+    """
+    roster = [s.name for s in SUBAGENTS if s.user_invocable]
+    found: list[str] = []
+    for name in roster:
+        pattern = re.compile(rf"\b{_MENTION_TRIGGER}\s+{re.escape(name)}\b", re.IGNORECASE)
+        match = pattern.search(user_input)
+        if match is None:
+            continue
+        window = user_input[max(0, match.start() - _NEGATION_LOOKBACK_CHARS):match.start()]
+        if _NEGATION_CUES.search(window):
+            continue
+        found.append(name)
+    return found
+
+
+def _subagents_request_block(names: list[str]) -> str:
+    roster = "\n".join(names)
+    return (
+        "\n<subagents_request>\n"
+        "the user explicitly named the following specialist(s) this turn — call `delegate` for "
+        "each one instead of doing their work yourself, even if you judge the task simple enough "
+        "to handle directly:\n"
+        f"{roster}\n"
+        "</subagents_request>"
+    )
 
 
 def _enrich_system_base(system_base: str, working_dir: Path) -> str:
@@ -186,6 +228,10 @@ class Harness:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
         system_base = _enrich_system_base(system_base, session.working_dir)
+        if subagent is None:
+            mentions = detect_subagent_mentions(user_input)
+            if mentions:
+                system_base += _subagents_request_block(mentions)
         effective_extra_params = self._extra_params if extra_params is None else extra_params
         agent = _build_agent(
             self._model, self._api_key, self._api_base, effective_extra_params,
@@ -204,57 +250,61 @@ class Harness:
         _SINGLE_PATH_TOOLS = ("write_file", "edit_file", "make_dir", "delete_file")
         _DUAL_PATH_TOOLS = ("move_file", "copy_file")
 
-        async def _consume_bus() -> None:
-            async for event in bus.stream():
-                if isinstance(event, ToolExecutionStarted):
-                    await queue.put(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
-                    if self._debug:
-                        append_debug(session, {"content": {"tool_call": _fmt_debug_tool_input(event.call)}})
-                elif isinstance(event, ToolExecutionCompleted):
-                    if event.call.name == "edit_file":
-                        inp = event.call.input or {}
-                        old_str = inp.get("old_str", "")
-                        new_str = inp.get("new_str", "")
-                        if old_str != new_str:
-                            diff_lines = build_diff(old_str, new_str)
-                            await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
-                    elif event.call.name == "write_file":
-                        inp = event.call.input or {}
-                        content = inp.get("content", "")
-                        if content:
-                            diff_lines = build_diff("", content)
-                            await queue.put(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
-                    if not event.result.is_error:
-                        inp = event.call.input or {}
-                        if event.call.name in _SINGLE_PATH_TOOLS:
-                            path = inp.get("path", "")
+        def _on_event(event: LlmEvent) -> None:
+            # Synchronous subscriber, not an asyncio task racing `agent_task`:
+            # a task-based consumer isn't guaranteed to be scheduled before a
+            # single-turn agent run completes and emits AgentStopped, which
+            # silently drops every event and hangs `queue.get()` forever.
+            if isinstance(event, ToolExecutionStarted):
+                queue.put_nowait(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
+                if self._debug:
+                    append_debug(session, {"content": {"tool_call": _fmt_debug_tool_input(event.call)}})
+            elif isinstance(event, ToolExecutionCompleted):
+                if event.call.name == "edit_file":
+                    inp = event.call.input or {}
+                    old_str = inp.get("old_str", "")
+                    new_str = inp.get("new_str", "")
+                    if old_str != new_str:
+                        diff_lines = build_diff(old_str, new_str)
+                        queue.put_nowait(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
+                elif event.call.name == "write_file":
+                    inp = event.call.input or {}
+                    content = inp.get("content", "")
+                    if content:
+                        diff_lines = build_diff("", content)
+                        queue.put_nowait(DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines))
+                if not event.result.is_error:
+                    inp = event.call.input or {}
+                    if event.call.name in _SINGLE_PATH_TOOLS:
+                        path = inp.get("path", "")
+                        if path and path not in files_touched:
+                            files_touched.append(path)
+                    elif event.call.name in _DUAL_PATH_TOOLS:
+                        for path in (inp.get("src", ""), inp.get("dst", "")):
                             if path and path not in files_touched:
                                 files_touched.append(path)
-                        elif event.call.name in _DUAL_PATH_TOOLS:
-                            for path in (inp.get("src", ""), inp.get("dst", "")):
-                                if path and path not in files_touched:
-                                    files_touched.append(path)
-                    if self._debug:
-                        append_debug(session, {
-                            "content": {
-                                "tool_result": {
-                                    "name": event.call.name,
-                                    "duration_s": round(event.duration_s, 3),
-                                    "is_error": event.result.is_error,
-                                    "result": _truncate_debug_text(event.result.content),
-                                }
+                if self._debug:
+                    append_debug(session, {
+                        "content": {
+                            "tool_result": {
+                                "name": event.call.name,
+                                "duration_s": round(event.duration_s, 3),
+                                "is_error": event.result.is_error,
+                                "result": _truncate_debug_text(event.result.content),
                             }
-                        })
-                elif isinstance(event, UsageUpdated) and event.delta:
-                    await queue.put(InferEndEvent(
-                        prompt_tokens=event.delta.get("input_tokens"),
-                        completion_tokens=event.delta.get("output_tokens"),
-                    ))
-                elif isinstance(event, ThinkingChunkReceived):
-                    await queue.put(ThinkingTokenEvent(text=event.text))
-                elif isinstance(event, AgentStopped) and event.budget_exhausted:
-                    await queue.put(BudgetExhaustedEvent())
-            await queue.put(None)
+                        }
+                    })
+            elif isinstance(event, UsageUpdated) and event.delta:
+                queue.put_nowait(InferEndEvent(
+                    prompt_tokens=event.delta.get("input_tokens"),
+                    completion_tokens=event.delta.get("output_tokens"),
+                ))
+            elif isinstance(event, ThinkingChunkReceived):
+                queue.put_nowait(ThinkingTokenEvent(text=event.text))
+            elif isinstance(event, AgentStopped):
+                if event.budget_exhausted:
+                    queue.put_nowait(BudgetExhaustedEvent())
+                queue.put_nowait(None)
 
         yield SubAgentStartEvent(
             name=subagent.name if subagent else "main",
@@ -264,8 +314,8 @@ class Harness:
 
         prior = [] if subagent else _recency_turns(session.messages, _RECENCY_N)
         prior.append(Message(role="user", content=user_input))
+        unsubscribe = bus.subscribe(_on_event)
         agent_task: asyncio.Task = asyncio.create_task(agent.run(prior))
-        bus_task: asyncio.Task = asyncio.create_task(_consume_bus())
 
         try:
             while True:
@@ -304,5 +354,4 @@ class Harness:
         finally:
             if not agent_task.done():
                 agent_task.cancel()
-            if not bus_task.done():
-                bus_task.cancel()
+            unsubscribe()

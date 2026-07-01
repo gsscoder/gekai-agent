@@ -10,7 +10,7 @@ import pytest
 
 from agent.shell import ShellSpec, resolve_shell
 from agent.tools import _run_command
-from agent.tools.shell import _forbidden_token
+from agent.tools.shell import _forbidden_token, _venv_env
 from agent.workspace.ignore import load as _load_ignore_rules
 
 
@@ -190,6 +190,24 @@ class TestForbiddenToken:
         (tmp_path / ".aiignore").write_text("secret.txt\n")
         rules = _load_ignore_rules(tmp_path)
         assert _forbidden_token("echo hello world", tmp_path, rules) is None
+
+
+class TestVenvEnv:
+    def test_no_venv_returns_none(self, tmp_path: Path) -> None:
+        assert _venv_env(tmp_path) is None
+
+    def test_venv_prepends_bin_dir_to_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        bin_name = "Scripts" if os.name == "nt" else "bin"
+        bin_dir = tmp_path / ".venv" / bin_name
+        bin_dir.mkdir(parents=True)
+        monkeypatch.setenv("PATH", r"C:\some\other\path" if os.name == "nt" else "/some/other/path")
+
+        env = _venv_env(tmp_path)
+
+        assert env is not None
+        assert env["PATH"].startswith(str(bin_dir) + os.pathsep)
+        assert env["PATH"].endswith(os.environ["PATH"])
+        assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
 
 
 class TestRunCommandRedZone:
