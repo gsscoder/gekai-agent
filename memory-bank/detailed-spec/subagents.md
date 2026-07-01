@@ -13,7 +13,7 @@ the TUI is an `AsyncIterator[AgentEvent | str]` generator following this shape:
 - Last yield must be `DoneEvent` — triggers progress bar removal and summary line mount
 - Intermediate yields: any `AgentEvent` subclass in any order
 
-`MainAgent.stream()` is the live example — see [MainAgent](#mainagent) below.
+`Harness.stream()` is the live example — see [Harness](#harness) below.
 
 ## Event Catalog
 All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
@@ -28,20 +28,28 @@ All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
 
 ## Existing Streamers
 
-### MainAgent — `agent/handlers/main_agent.py`
-- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
+### Harness — `agent/harness/core.py`
+- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None, extra_params: dict | None = None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
 - One method, two modes selected by the `subagent` param:
-  - **direct** (`subagent=None`): handles the **generalist default** — general or simple requests, reading/explaining/running code, and all general/glue/scaffolding work in a plan; system = `SYSTEM_PROMPT + "\n<tools>\n" + TOOL_INSTRUCTION`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input; `SubAgentStartEvent(name="Gekai", description="thinking", color="#4169E1")`
-  - **spawn** (`subagent=<Subagent>`): handles a subagent's specialty (e.g. `code-expert` for **substantial or specialized code work** — features, fixes, behavior-changing rewrites; owns its assigned step's implementation in full); system = `subagent.build_system()`; prior context = `[]` (cold — no recency, no inheritance, no async/resume); `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
+  - **direct** (`subagent=None`): handles the **generalist default** — general or simple requests, reading/explaining/running code, and all general/glue/scaffolding work; owns decomposition itself, calling the `delegate` tool as many times as it judges necessary; system = `SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input; `SubAgentStartEvent(name="main", description="thinking", color="#4169E1")`
+  - **spawn** (`subagent=<Subagent>`): handles a subagent's specialty (e.g. `code-expert` for **substantial or specialized code work** — features, fixes, behavior-changing rewrites; owns its assigned task's implementation in full); system = `subagent.build_system_base()` + `<tools>` appended by `_build_agent`; prior context = `[]` (cold — no recency, no inheritance, no async/resume); `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
 - Emits `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion when `old_str != new_str`), `InferEndEvent`, `ThinkingTokenEvent`, `MaxIterationsEvent` (iteration-limit path), and `DoneEvent`
 - After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. There is no live token-by-token text streaming; the final answer is assembled once from the completed history's `TextBlock`s
 - Uses `llmstitch` (`agent.llm.Agent`) `EventBus` to bridge tool-call events from the agent loop into the typed event stream
-- `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, and computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`)
+- `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`), and — direct mode only — registers the `delegate` tool (see `architecture.md → Delegate Tool`)
 
-> **Router routing model:** Default is a single token — a plan is emitted when the request spans two or more different owners. Each clause is tagged with its fittest owner (`main` for general/scaffolding/glue, a subagent for its specialty); adjacent same-owner clauses merge into one step; size and complexity never gate a split, only owner-change does. Example plan: "create a Python module that converts HTML to Markdown, scaffold a conventional structure with requirements files, add minimal test coverage" — three owners → main scaffolds, code-expert implements the converter, test-expert writes the suite.
+> **Decomposition model:** there is no more router-level plan. `Gate` only classifies intent
+> (`TRIVIAL`/`REJECTED`/`ACT` — see `architecture.md → Gate`); once a turn reaches `Harness` in
+> direct mode, the main agent decides for itself whether the request needs a specialist, and calls
+> `delegate(agent, task)` mid-turn, as many times as needed, in dependency order (scaffold → logic
+> → tests). Example: "create a Python module that converts HTML to Markdown, scaffold a
+> conventional structure with requirements files, add minimal test coverage" — main scaffolds
+> directly, then calls `delegate("code-expert", ...)` for the converter and `delegate("test-expert",
+> ...)` for the suite, sequencing the calls itself instead of a router pre-computing steps.
 
 > **Subagent vs harness-worker:** `Subagent` (and the streamers spawned for it) serve a
-> *user-turn* — selected by the router from user intent. `ws-manager` (`agent/subagents/worker/ws_manager.py`,
+> *user-turn* — selected via the `delegate` tool from the main agent's own judgment (or forced by a
+> `/`-slash command). `ws-manager` (`agent/subagents/worker/ws_manager.py`,
 > namespace `worker`) is a system-managed worker: `user_invocable=False`, never routed or surfaced
 > in the menu/palette. It is dispatched only via `run(task, ...)` (currently `onboard` →
 > `build_index`), a direct call that bypasses the LLM/spawn path — so its `description` exists only
@@ -56,7 +64,7 @@ start/done convention qualifies. To add one:
    - First yield: `SubAgentStartEvent(name=..., description=..., color=...)`
    - Last yield: `DoneEvent(...)`
    - Intermediate yields: any `AgentEvent` subclass, in any order
-2. Bridge tool/inference events into the typed stream via `EventBus` if the streamer runs an `Agent` tool loop — follow `MainAgent.stream()`'s `_consume_bus()` pattern
+2. Bridge tool/inference events into the typed stream via `EventBus` if the streamer runs an `Agent` tool loop — follow `Harness.stream()`'s `_consume_bus()` pattern
 3. Wire into `app.py`: iterate the generator in a worker, dispatch events to a `SubAgentRenderer` instance — follow the pattern in `_stream()`
 
 No registration mechanism — discovery is explicit at call sites.

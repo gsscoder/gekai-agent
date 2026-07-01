@@ -16,7 +16,7 @@ Catalog of caching mechanisms in gekai-agent. Each cache gets its own subsection
 
 `handle_db_upgrade(working_dir)` is a startup hook (called once from `GekaiAgent.__init__`, right after `working_dir` is set) that delegates to `ensure(working_dir).close()`, so an existing `workspace.db` from an older schema version gets rebuilt before the first per-turn cache access. It's intentionally a thin placeholder — the place to grow more elaborate upgrade/migration logic post-release if ever needed.
 
-**Write side — `save_findings(conn, working_dir, entries)`**: called from `GekaiAgent.process_stream` after the locator produces `entries: list[tuple[path, keywords]]`. For each `(path, keywords)`:
+**Write side — `save_findings(conn, working_dir, entries)`**: called from `ws_manager`'s onboarding walk (`agent/workspace/indexer.py`) with `entries: list[tuple[path, keywords]]` (see Wiring below for how this call site changed). For each `(path, keywords)`:
 - Stats the file and computes `_content_hash` (blake2b of file bytes, chunked via `_HASH_CHUNK_SIZE`), upserts the `files` row stamping `size`, `mtime_ns`, `content_hash`, `indexed_at` (epoch seconds).
 - `OSError` during stat/hash is non-fatal — stored as NULLs (row still usable as a hint, just immediately stale).
 - Keywords are lowercased/stripped and inserted into `file_keywords` (`INSERT OR IGNORE`, deduped via the UNIQUE constraint).
@@ -30,11 +30,18 @@ Catalog of caching mechanisms in gekai-agent. Each cache gets its own subsection
 
 **`mine_keywords(request: str) -> list[str]`**: local, no-LLM keyword extractor for turning a user request into lookup keywords for `find_candidates`. Tokenizes on `[A-Za-z0-9]+` runs, lowercases, then for each adjacent token pair adds both the concatenation (`promptbuilder`) and underscore-join (`prompt_builder`) — so "prompt builder" matches keywords mined from identifiers like `PromptBuilder`/`prompt_builder`. Deduplicates preserving order.
 
-**Wiring (hint mode, v1)**:
-- `GekaiAgent.locate(working_dir, text) -> tuple[entries, hint_paths]`: pre-step mines keywords from `text`, opens the cache, calls `find_candidates`, takes `[path for path, _ in candidates]` as `hint_paths`. The whole pre-step is wrapped in try/except — any failure (missing db, etc.) just yields `hint_paths=[]`, non-fatal.
-- `FileLocator.locate(working_dir, request, hint_paths=None)`: if `hint_paths` is non-empty, injects a `<hints>` section into its system prompt (`_format_hint_section`) listing the candidate paths and instructing the locator to verify each still exists/is relevant before listing it — the locator still runs and verifies every file every turn; this is bias only, not a bypass.
+**Wiring — write side alive, per-turn read side orphaned**: the dissolve-planner refactor (see
+`docs/architecture.md`) deleted `FileLocator` and `GekaiAgent.locate`/`.rewrite` along with the
+whole per-turn locate→rewrite pipeline stage, and with it the only call site for `find_hybrid`
+(the per-turn hint lookup). `save_findings` is still called — now from `ws_manager`'s onboarding
+walk (`agent/workspace/indexer.py`) rather than from a per-turn locate step — so the `files`/
+`file_keywords` tables still get populated on workspace onboarding/reindex. `find_candidates`,
+`find_hybrid`, and `mine_keywords` have no remaining callers: the main agent now decides which
+files to touch itself, via its own read tools, with no locate/hint stage in front of it. The
+hint-mode read path described below is currently dead code, pending either revival (e.g. as a hint
+fed into a `delegate` step) or removal.
 
-**Instrumentation**: the `locate` event (`agent.events`, see `logging.md`) carries `hints` (`len(hint_paths)`) and `overlap` (`|hint_paths ∩ final_entries| / |final_entries|`, rounded to 3 decimals, `0.0` if `final_entries` empty), in addition to `files` and `duration_ms`. This is the data needed to evaluate hit-rate before considering a future bypass mode.
+**Instrumentation (historical)**: the `locate` event (`agent.events`, see `logging.md`) used to carry `hints` (`len(hint_paths)`) and `overlap` (`|hint_paths ∩ final_entries| / |final_entries|`, rounded to 3 decimals, `0.0` if `final_entries` empty), in addition to `files` and `duration_ms`. That event source no longer fires — `locate` was emitted from the now-deleted TUI locate stage.
 
 **Non-goals (v1)**:
 - "Bypass mode" (skipping the locator entirely when cache coverage is high) — deferred pending overlap data.

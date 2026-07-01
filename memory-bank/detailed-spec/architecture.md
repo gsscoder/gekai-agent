@@ -4,143 +4,94 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 ## Package Layout
 `agent/` root: `agent.py` (`GekaiAgent` orchestration — owns `Harness` as `self._main`), `session.py` (`Session`),
 `persona.py` (`SYSTEM_PROMPT` + `_IDENTITY_MAIN`/`_IDENTITY_SUB`/`_SHARED_BODY` + `render_tool_instruction` —
-neutral module shared by `subagents`, `pipeline.router`, `harness`), `settings.py` (`Permissions`),
+neutral module shared by `subagents`, `pipeline`, `harness`), `settings.py` (`Permissions`),
 `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `events.py` (`AgentEvent` taxonomy),
 `diff.py` (diff rendering), `shell.py` (TUI shell helper)
 Subpackages:
-- `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`), `file_locator.py` (`FileLocator`)
-- `pipeline/` — `router.py` (`Route`, guard router), `rewriter.py` (prompt rewriter)
+- `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`)
+- `pipeline/` — `gate.py` (`Route`, `Gate` — pure intent classifier)
 - `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`) + one file per subagent + `_coding.py` shared directives
 - `tools/` — `__init__.py` (`make_tools`), `catalog.py` (tool-name groups: `READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`
-  — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`
+  — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`, `delegate.py` (`make_delegate_tool` — main-only tool, hands a task to a named specialist)
 - `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry), `workspace/` (workspace context)
 
 ## Session
-`Session` in `router.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`
+`Session` in `session.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`
 
 `messages` starts with two system entries: `SYSTEM_PROMPT` at `[0]` + workspace context at `[1]` (TOON-encoded)
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
-`GekaiAgent.process_stream(session, user_input, route, entries=None, original_input=None, permission_callback=None)` is the sole owner of session writes:
-`route: Route`; `entries: list[tuple[str, list[str]]] | None` — pre-computed locate results (None when no subagent selected); `original_input: str | None` — user's verbatim text when `user_input` has been rewritten (see Prompt Rewriter); `permission_callback: PermissionCallback | None`
-- appends `{"role": "user"}` once per turn before dispatching — persists `original_input` when set, else `user_input`
+`GekaiAgent.process_stream(session, user_input, route, permission_callback=None, turn_id=None, hidden_grant_callback=None, append_user=True)` is the sole owner of session writes:
+`route: Route`; `permission_callback: PermissionCallback | None`
+- appends `{"role": "user"}` once per turn before dispatching (when `append_user`)
 - appends `{"role": "assistant"}` once per turn after handler completes
 
-## Router
-`Router` is a pure **guard**, not an intent classifier — it makes one decision: does this turn
-stay with `Harness` directly, or does it match a specialist subagent?
+## Gate
+`Gate` is a pure **intent classifier**, not a router to specialists — it makes one decision per
+turn: does this need codebase access at all (`ACT`), is it answerable without one (`TRIVIAL`), or
+did the user name an agent that doesn't exist (`REJECTED <name>`)? Specialist selection no longer
+happens here — it is the main agent's own call, made mid-turn via the `delegate` tool.
 
-`Router.route(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
+`Gate.gate(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-`Route` dataclass: `subagent: Subagent | None = None`, `trivial: bool = False`,
-`explore: bool = False`, `plan: list[PlanStep] | None = None`, `rejected: bool = False`, `reason: str = ""`.
-No `namespace` property — callers read `route.subagent.namespace` directly when `route.subagent is not None`.
-`trivial`/`explore`/`subagent`/`plan`/`rejected` are mutually exclusive — exactly one of the token modes (or `plan`) is set.
-
-`PlanStep` dataclass (`agent/pipeline/router.py`): `subagent: Subagent | None` (`None` ⇒ step runs on `main`),
-`raw: str` (verbatim slice of the original prompt covering that step; never rewritten by the router itself).
+`Route` dataclass (`agent/pipeline/gate.py`): `subagent: Subagent | None = None`, `trivial: bool = False`,
+`rejected: bool = False`, `reason: str = ""`. `subagent` is always `None` on a `Gate` return — it is
+populated only by the `/`-slash forced-route path. `trivial`/`rejected` are mutually exclusive;
+an unrecognized token falls to `Route()` (`ACT`) rather than silently downgrading.
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Router prompt offers six kinds of output:
-- `main` — default; chat, inspection, workspace questions, general code changes, light edits — anything `Harness` handles directly. Bias: prefer `main` unless a specialist clearly fits
-- `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions, acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `main` when unsure (false `main` costs one extra near-empty `FileLocator` call; false `TRIVIAL` denies real codebase context)
-- `EXPLORE` — read-only investigation ending in an answer about files/structure ("list files", "where is X defined", "show project structure"); never chosen if the request also asks for an edit/fix/change — prefer `main` then; prefer `main` when unsure
-- `<subagent-name>` — one of the subagents in the menu (built from `SUBAGENTS` as `name — description`); only when the request clearly and specifically matches that subagent's specialty, or explicitly names it
-- `<plan>` — the request clearly needs multiple *different* specialists run in order (see below)
-- `REJECTED <name>` / `REJECTED` — user explicitly named a specific agent not in the menu (unknown, typo, or system-only); LLM does not substitute, does not choose `main`, does not guess; `<name>` is the literal name the user wrote; omitted (bare `REJECTED`) when no name identifiable
+Gate prompt offers three tokens:
+- `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions,
+  acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `ACT` when
+  unsure (false `ACT` costs only the main agent's time; false `TRIVIAL` denies real codebase context)
+- `REJECTED <name>` — user explicitly named a specific agent not in the roster (typo, unknown
+  name); echoes the literal name, never substitutes or falls back to main; never routes to any real agent
+- `ACT` — everything else: reading, analysing, creating, editing, or deleting in the workspace;
+  unknown/malformed token also falls here — fail to action, not silence
 
-Router output token → Route mapping:
-- `"main"` → `Route()`
-- `"trivial"` → `Route(trivial=True)`
-- `"explore"` → `Route(explore=True)`
-- `<subagent-name>` (matched) → `Route(subagent=p)`
-- `<plan>...` (parsed, 2+ steps) → `Route(plan=[PlanStep, ...])`
-- `"rejected"` / `"REJECTED <name>"` → `Route(rejected=True, reason=<name>)` (bare `REJECTED` → `reason=""`)
-- unknown token → warning log + host-retained `Route()` (same as `main`; distinct from explicit `REJECTED`)
+Gate output token → Route mapping:
+- `"TRIVIAL"` → `Route(trivial=True)`
+- `"REJECTED <name>"` / `"REJECTED"` → `Route(rejected=True, reason=<name>)` (bare `REJECTED` → `reason=""`)
+- `"ACT"` → `Route()`
+- unknown/malformed token → warning log + `Route()` (falls to `ACT`, never silent)
 
 Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
 
-### Multi-step plans
+## Delegate Tool
+`delegate(agent, task)` (`agent/tools/delegate.py`, `make_delegate_tool`) is a tool registered
+**only on the main agent** — the recursion guard is the `if subagent is None:` check in
+`Harness._build_agent`, so subagents never receive it and can never self-spawn. It replaces the
+old router-level plan/specialist dispatch: the main agent now owns decomposition and calls
+`delegate` as many times as it judges necessary, in whatever order it judges necessary.
 
-A `<plan>` block is emitted by the same router call (no extra round-trip) when the request needs
-multiple *different* specialists run in order; a single specialist phrased with multiple clauses
-stays a single token (bias hard toward single token — see prompt example for "create sqrt.py and
-code the Quake version of the function inside" → one `code-expert` token, not a 2-step plan).
+Execution flow:
+1. Resolve `agent` name against the roster (`SUBAGENTS` filtered to `user_invocable`); the tool's
+   `input_schema` constrains `agent` to an `"enum"` of those names.
+2. `_enrich_system_base(resolved.build_system_base(), working_dir)` — adds the workspace-root note.
+3. `_build_agent(..., subagent=resolved)` — spawn mode, cold context (`prior=[]`), no `delegate`
+   tool on the nested agent.
+4. `await nested.run(task)` — returns full message history; last assistant text block is extracted
+   and returned as a string.
+5. Any exception → `"[error] {agent} failed: {exc}"` (non-fatal to the main agent's turn).
 
-Grammar:
-```
-<plan>
-<agent-name>:
-  <raw extraction of the part of the request this step covers; may span lines>
-<agent-name>:
-  <raw extraction ...>
-```
-`<agent-name>` ∈ subagent menu names ∪ `main`. `_parse_plan` (`agent/pipeline/router.py`) splits on
-`^([\w-]+):\s*$` lines into ordered `(name, body)` blocks.
-
-Fallback (router never hard-fails a turn):
-- malformed `<plan>`, zero parsable blocks, an empty body, or an unknown agent name in any
-  block → `_parse_plan` returns `None` → router logs a warning and degrades to `Route()` (plain `main`)
-- exactly one parsed step → collapses to the equivalent single-token route (`Route(subagent=step.subagent)`),
-  no executor/plan path involved
-- 2+ parsed steps → `Route(plan=steps)`
-
-### Executor (plan dispatch)
-
-`agent/tui/app.py::_run_step(raw, subagent, ...)` is the single per-step pipeline — locate →
-rewrite → dispatch — extracted so both the single-token path (called once)
-and the plan path (called once per `PlanStep`, sequentially) share it. Plan loop lives in `_stream`'s
-`route.plan is not None` branch:
-- steps run **sequentially, fail-stop, no revert** — locate runs fresh per step (so it can pick up
-  files written by prior steps); subagent steps run cold (`prior=[]`); a step targeting `main` gets
-  normal recency (`_recency_turns`) and so can see prior steps' assistant text
-- a step's outcome is `"max_iterations"` with no answer
-  (budget exhausted with nothing salvaged) → plan stops immediately, no further steps run, completed
-  steps' work (files written, etc.) is left in place
-- on stop: one `MessageWidget(MessageKind.ERROR, ...)` reading
-  `"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`
-- on full success: one trailing `MessageWidget(MessageKind.OPERATION, "* {verb} for {duration} ({n} steps)")`
-- each step that produces an answer is mounted as its own separate `MessageWidget(ASSISTANT, ...)` —
-  N assistant widgets can appear in a row for one user turn
-- persistence: `process_stream(..., append_user=...)` — step 1 of a plan persists the user's turn
-  (`append_user=True`); steps 2..N pass `append_user=False`; all N assistant segments + the one user
-  turn share the same `turn_id`
-
-## File Location
-Locate runs on every **non-`TRIVIAL`** route (`main` and `<subagent>` alike).
+Ordering contract: the main agent is instructed never to fragment one artifact across multiple
+`delegate` calls, and to order calls by dependency (scaffold → logic → tests).
 
 Pipeline (in TUI `_stream`):
-1. `Router.route()` → `Route`
-2. `route.rejected`: mount `MessageWidget(MessageKind.ERROR, ...)`, `append_event(source="router")`, `outcome="rejected"`, early `return` — locate/rewrite/harness never invoked; `finally:` still runs (label reset, animation stop, `turn.end` emit)
-3. `route.trivial`: `entries = []`, skip locate + rewrite entirely
-4. else: `FileLocator.locate(working_dir, user_input)` → `entries: list[tuple[path, keywords]]`
-5. `entries` non-empty: `PromptRewriter.rewrite(user_input, entries)` → `(processed_input, ui_label)`; `original_input = user_input` (see Prompt Rewriter)
-
-`FileLocator` (`agent/harness/file_locator.py`) — agentic SUPP-model call (up to 5 iterations, read-only tools). Roams freely — reads any file type. Any exception propagates (fail-hard).
-
-## Prompt Rewriter
-`PromptRewriter` (`rewriter.py`) runs whenever `FileLocator` returned **non-empty `entries`** —
-for `main` and `<subagent>` routes alike. `TRIVIAL`
-routes, and any route with empty `entries`, skip it.
-
-`PromptRewriter.rewrite(request, entries) -> tuple[str, str]` — returns `(rewritten_request, ui_label)`. Single **CORE-model** call, temperature 0, **no thinking params** (constructed with no `extra_params`, so non-thinking even on a reasoning-capable core model). Not agentic, no tools — the locator already discovered/verified files, so this stage only *attributes* them.
-
-Behavior: weave each located path inline where it maps to a phrase in the request; leftover located files go in a trailing `<reference_files>` block; paths quoted verbatim from the list. `rewritten_request` becomes the live user turn.
-
-Fail-hard (`rewritten_request` only): any exception, including empty output (`ValueError`), propagates and blocks the turn — same contract as `FileLocator`. `ui_label` is fail-soft — missing/malformed degrades to `""`, cosmetic only.
-
-Original vs processed input: rewritten string → `process_stream`'s `user_input` (what `Harness` sees); user's verbatim text → `original_input` (what is persisted + displayed). Recency windows on later turns show the original phrasing. `--debug`: rewritten text written to `.debug.jsonl` as `{"content": {"rewritten": ...}}`.
+1. `Gate.gate()` → `Route`
+2. `route.rejected`: mount `MessageWidget(MessageKind.ERROR, ...)`, `append_event(source="gate")`, `outcome="rejected"`, early `return` — `Harness` never invoked; `finally:` still runs (label reset, animation stop, `turn.end` emit)
+3. else: `_run_step(user_input, route.subagent, ..., trivial=route.trivial)` dispatches straight to `Harness` — no locate/rewrite stage; the main agent calls `delegate` itself, mid-turn, if it decides a specialist step is needed
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `Harness`
-Env vars (CORE — used by `Harness`, `PromptRewriter`):
+Env vars (CORE — used by `Harness`, and by `delegate`'s nested agent):
 - `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
 
-Env vars (SUPP — used by `Router`, `FileLocator`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
+Env vars (SUPP — used by `Gate`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
 - `GEKAI_SUPPORT_MODEL_NAME`
 - `GEKAI_SUPPORT_MODEL_KEY`
 - `GEKAI_SUPPORT_MODEL_URL`
@@ -193,14 +144,14 @@ Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
 {ts, kind:"command", content:"/clear"}                        ← slash command typed by user
-{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: router, error, interrupted, farewell, max_iterations; rejected turn → `{source:"router", content:"'<name>' is not an available agent"}` (or `"no such agent"` when bare `REJECTED`)
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: gate, error, interrupted, farewell, max_iterations; rejected turn → `{source:"gate", content:"'<name>' is not an available agent"}` (or `"no such agent"` when bare `REJECTED`)
 ```
 
 Entries without `kind` (legacy files) default to `"turn"`.
 
 **Boundary — session vs debug:**
 `session.jsonl` = everything the user saw on screen (turns + commands + events). Litmus: *did the user see it?*
-`debug.jsonl` = internal plumbing (system prompts, route tokens, locate list, rewritten text) — written only with `--debug`, never for visual rebuild.
+`debug.jsonl` = internal plumbing (system prompts, route tokens) — written only with `--debug`, never for visual rebuild.
 
 **Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`.
 
@@ -226,6 +177,6 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/clear` — clears chat and starts a new session (resets session ID)
 
 ## CLI Flags
-- `--debug` — prints `[router: rejected]` (`route.rejected`, checked first), `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt; trivial turns also get a `{"route": "trivial", "skipped": ["locate", "rewrite"]}` debug entry
+- `--debug` — prints `[router: rejected]` (`route.rejected`, checked first), `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

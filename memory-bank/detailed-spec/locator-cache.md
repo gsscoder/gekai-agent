@@ -1,6 +1,13 @@
 # Locator Cache — v1 Plan
 
-Status: **planned, not implemented**. This document is the build spec for v1.
+Status: **implemented, then orphaned**. This document is the original build spec for v1; the plan
+below (steps 1–6, the write/read/keyword-miner helpers) landed as described. Step 7's wiring —
+`FileLocator.locate(..., hint_paths=)` and `GekaiAgent.locate`'s pre-step — was removed by the
+dissolve-planner refactor that deleted `FileLocator` entirely (see `docs/architecture.md`,
+`caching.md`). The read side (`find_candidates`, `find_hybrid`, `mine_keywords`) is now dead code;
+the write side (`save_findings`) survives, repointed at `ws_manager`'s onboarding walk instead of a
+per-turn locate step. Kept here as the historical design record — see `caching.md → Locator cache
+(workspace.db)` for current wiring reality.
 
 ## Goal
 

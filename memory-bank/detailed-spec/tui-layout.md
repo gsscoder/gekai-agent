@@ -98,12 +98,12 @@ Runs as exclusive Textual worker.
 - on complete: mount ASSISTANT widget + OPERATION widget `"* {verb[1]} for {duration}"` (appends `" ({n} tools)"` if `query_tool_count > 0`), scroll end
 - `finally`: `_stop_status_animation()`, `ws_renderer.stop_spinner()` if set, handle `_worker_cancelled` (mount INTERRUPTED widget), `_worker = None`, `_focus_prompt()`
 
-**Multi-step plan turns** (`route.plan is not None`): the same per-step widget sequence above
-(HEADER/log widgets via `SubAgentRenderer`, then ASSISTANT widget) repeats N times in a row for
-one user turn — no extra user input between repetitions, each step dispatched by `_run_step`. The
-whole sequence is capped by exactly one trailing widget: an OPERATION line
-(`"* {verb} for {duration} ({n} steps)"`) on full success, or one ERROR line
-(`"step {k} of {n} failed: {reason}; completed steps 1..{k-1}"`) on fail-stop.
+**Delegated specialist steps**: there is no more router-level plan or multi-step widget sequence —
+`_run_step` now dispatches a single `Gate` decision straight to `Harness` (`route.subagent` set only
+by a forced `/`-slash command). When the main agent itself decides mid-turn that a specialist step
+is needed, it calls the `delegate` tool (see `architecture.md → Delegate Tool`); that nested run is
+opaque to the TUI — it surfaces only as tool activity inside the main agent's own `SubAgentRenderer`
+block, not as a separate HEADER/widget sequence.
 
 ## SubAgentRenderer
 Helper class in `app.py`; one instance per subagent block within a turn.

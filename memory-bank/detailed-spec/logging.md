@@ -21,9 +21,9 @@ API:
 ## Join Key: `turn_id`
 `events.new_turn()` mints a turn id at the start of `_stream` (`tui/app.py`). Stamped as `turn=` on every per-turn event below, and passed through to `process_stream(..., turn_id=turn_id)` → `append_message(session, msg, turn=turn_id)`. This is the cross-reference between `events-*.jsonl` and the `turn` field on `session.jsonl` entries.
 
-For a multi-step plan, every per-step event (`locate`/`rewrite`/`harness`/`delegation`) also carries
-a `step` field (1-indexed position in `route.plan`) in addition to the shared `turn`/`turn_id` — one user
-turn, N steps, all joinable under the same `turn_id`.
+Multi-step plans no longer exist (dissolved into the `delegate` tool — see `architecture.md →
+Delegate Tool`); there is no `step` field any more. Any specialist work the main agent decides to
+run happens as `delegate` tool calls inside its own `harness` event, not as separate per-step events.
 
 ## Event Catalog
 Process-level (once per run):
@@ -38,12 +38,10 @@ Per-turn — all carry `session=`, `turn=`, emitted from `_stream` (`tui/app.py`
 | Event | Fields | Notes |
 |---|---|---|
 | `turn.start` | `input_len` | |
-| `route` | `decision` (`_route_decision(route)`), `duration_ms` | decision: `main` / `trivial` / `explore` / `<namespace>/<subagent>` / `plan(N)` (`N = len(route.plan)`) |
-| `locate` | `files`, `duration_ms`, `step` (plan only) | skipped for `route.trivial` (no locate stage) |
-| `rewrite` | `ok=True`, `duration_ms`, `step` (plan only) | only when `entries` non-empty |
-| `harness` | `outcome` (`ok`/`max_iterations`), `llm_calls`, `prompt_tokens`, `completion_tokens`, `thinking_chars`, `tools` (dict tool→count), `duration_ms`, `budget_exhausted`, `step` (plan only) | `outcome` here is a local `harness_outcome` variable computed in `tui/app.py::_run_step` — `"max_iterations"` iff the loop hit its cap *and* produced no answer text; it is independent of, and not renamed by, the `budget_exhausted` flag below |
-| `delegation` | `host`, `delegate`, `namespace`, `status` (`ok`/`failed`), `files`, `files_touched`, `summary_len`, `budget_exhausted`, `step` (plan only) | only when `subagent is not None`; mirrors `SubagentResult` |
-| `error` | `stage`, `error_type`, `message` | level=`warning`; `stage` is the pipeline stage executing when caught (`route`/`locate`/`rewrite`/`harness`) |
+| `route` | `decision` (`_route_decision(route)`), `duration_ms` | decision: `rejected` / `<namespace>/<subagent>` (forced `/`-slash route) / `trivial` / `act` |
+| `harness` | `outcome` (`ok`/`max_iterations`), `llm_calls`, `prompt_tokens`, `completion_tokens`, `thinking_chars`, `tools` (dict tool→count), `duration_ms`, `budget_exhausted` | `outcome` here is a local `harness_outcome` variable computed in `tui/app.py::_run_step` — `"max_iterations"` iff the loop hit its cap *and* produced no answer text; it is independent of, and not renamed by, the `budget_exhausted` flag below |
+| `delegation` | `host`, `delegate`, `namespace`, `status` (`ok`/`failed`), `files`, `files_touched`, `summary_len`, `budget_exhausted` | only when `subagent is not None` (forced `/`-slash route to a subagent); mirrors `SubagentResult`. The `delegate` *tool*'s own nested-agent calls (main agent choosing a specialist mid-turn) are not separately logged here — they surface inside the `harness` event's `tools` count as `delegate` calls |
+| `error` | `stage`, `error_type`, `message` | level=`warning`; `stage` is the pipeline stage executing when caught (`route`/`harness`) |
 | `turn.end` | `outcome`, `duration_ms` | emitted in `finally`, once per turn |
 
 `budget_exhausted` (new, on both `harness` and `delegation`) is a diagnostic signal, not a pass/fail
@@ -64,6 +62,6 @@ Starts `"ok"`, last write wins, evaluated in `finally`:
 This log is always-on, regardless of `--debug`. Three distinct streams:
 - `events-*.jsonl` (this doc) — per-run telemetry, `~/.gekai/logs/`
 - `session.jsonl` — visible chat history (`turn`/`command`/`event` entries), see `architecture.md → Session Persistence`
-- `debug.jsonl` — internal plumbing (system prompts, route tokens, locate list, rewritten text), `--debug` only
+- `debug.jsonl` — internal plumbing (system prompts, route tokens), `--debug` only
 
 Shared `turn_id` links a `session.jsonl` turn entry (`turn=` field via `append_message`) to its corresponding events in `events-*.jsonl`.
