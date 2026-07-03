@@ -70,6 +70,9 @@ class GekaiAgent:
             api_base=self._api_base,
             extra_params=self._extra_params,
             debug=self.debug,
+            supp_model=self._supp_model,
+            supp_api_key=self._supp_api_key,
+            supp_api_base=self._supp_api_base,
         )
         self.events = EventLogger()
         self.events.emit(

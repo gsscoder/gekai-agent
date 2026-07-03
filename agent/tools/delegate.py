@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from dataclasses import replace as _replace
 from pathlib import Path
 from typing import Any
 
-from ..llm.events import EventBus
+from ..llm.events import DelegationCompleted, DelegationStarted, EventBus
 from ..llm.tools import Tool, tool
 from ..llm.types import TextBlock
 from ..permissions import PermissionCallback
@@ -42,10 +43,16 @@ def make_delegate_tool(
             subagent=resolved,
             hidden_grant_callback=hidden_grant_callback,
         )
+        nested_run_id = uuid.uuid4().hex
+        if bus is not None:
+            bus.emit(DelegationStarted(agent=agent, task=task, run_id=nested_run_id))
         try:
-            history = await nested.run(task)
+            history = await nested.run(task, run_id=nested_run_id)
         except Exception as exc:
             return f"[error] {agent} failed: {exc}"
+        finally:
+            if bus is not None:
+                bus.emit(DelegationCompleted(agent=agent, run_id=nested_run_id))
 
         for msg in reversed(history):
             if msg.role == "assistant":
@@ -63,10 +70,12 @@ def make_delegate_tool(
         description=(
             f"Delegate a self-contained task to a specialist subagent. "
             f"Available agents — {roster_str}. "
+            "Prefer a specialist whenever the task matches one; handle work yourself only when no specialist covers it. "
             "Call once per specialist unit; never split one artifact across multiple calls; "
             "order by dependency (scaffold → logic → tests)."
         ),
         required_permission="none",
+        is_concurrency_safe=False,
     )
     schema = copy.deepcopy(t.input_schema)
     schema["properties"]["agent"]["enum"] = sorted(roster.keys())

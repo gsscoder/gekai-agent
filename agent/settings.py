@@ -5,6 +5,15 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Plan 26 mechanism #1 ("action budget wrap"): the cap on main's direct
+# edit_file/write_file calls per user request, applied when the Improvement 1
+# scope estimate (agent/pipeline/estimate.py) says the request is
+# implementation-sized, or when the user explicitly named a specialist, or
+# when no estimator is configured at all (pre-Improvement-1 flat behavior).
+# A trivial estimate or an estimate parse failure gets an unbounded budget
+# instead — fail open, per the plan's risk section.
+DEFAULT_EDIT_BUDGET: int = 5
+
 
 @dataclass
 class Permissions:

@@ -6,9 +6,8 @@ subagent = Subagent(
     short_description="write spec-driven test suites or coverage designs",
     namespace="testing",
     description=(
-        "design and implement spec-driven test suites: traceable assertions, systematic edge-case "
-        "coverage; also delivers a spec-only coverage design when a plan is wanted instead of code. "
-        "Not for: repairing tests broken by implementation changes"
+        "when new code needs a test suite built from its spec — traceable assertions, systematic "
+        "edge cases; or when you want a coverage plan/design instead of code."
     ),
     mandate=(
         "you act as a test specialist — design and write spec-driven suites, or deliver a spec-only "

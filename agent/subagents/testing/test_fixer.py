@@ -6,9 +6,8 @@ subagent = Subagent(
     short_description="realign failing tests to current implementation",
     namespace="testing",
     description=(
-        "realign existing tests broken by implementation changes — update references, signatures, and "
-        "assertions to match current code; no new test cases. Not for: writing tests for new "
-        "functionality or redesigning test strategy"
+        "when existing tests break after an implementation change and need realigning — references, "
+        "signatures, assertions updated to match current code."
     ),
     mandate=(
         "you act as a test-repair specialist — minimum viable realignment of failing tests to the "

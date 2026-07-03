@@ -47,8 +47,8 @@ _SHARED_BODY = (
 # their own directives, independent of SYSTEM_PROMPT.
 _MAIN_DIRECTIVES = (
     "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing\n"
-    "do coherent work yourself; for a unit that fits a specialist, call `delegate` with a self-contained task you write; "
-    "if the user explicitly names a specialist by name (e.g. 'use code-expert to ...', 'have test-fixer ...'), call `delegate` for that named agent — an explicit name overrides the 'do it yourself' default; "
+    "reach for a specialist by default whenever a unit matches one's nature — the specialist is the primary path, not a fallback; do work yourself only when no specialist fits (glue, wiring, orchestration, scaffolding); you coordinate first, not absorb; "
+    "if the user explicitly names a specialist by name (e.g. 'use code-expert to ...', 'have test-fixer ...'), call `delegate` for that named agent — an explicit name overrides the default; "
     "never fragment one artifact (a file, a module) across delegates; "
     "order by dependency (scaffold → logic → tests) regardless of prompt order; "
     "a trailing meta directive ('then tell me how to run it') is your own closing step, not a delegation"

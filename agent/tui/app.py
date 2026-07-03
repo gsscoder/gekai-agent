@@ -41,7 +41,7 @@ from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_context_limit, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import random_accent_color, random_operative_verb
-from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult
+from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult, DelegationStartEvent, DelegationDoneEvent
 
 from .palette import CommandPalette
 from .history import PromptHistory
@@ -1047,6 +1047,8 @@ class GekaiApp(App[None]):
         max_iter_hit = False
         budget_exhausted_hit = False
         ws_renderer: SubAgentRenderer | None = None
+        active_renderer: SubAgentRenderer | None = None
+        delegation_renderer: SubAgentRenderer | None = None
         query_tool_count: int = 0
         tool_counts: dict[str, int] = {}
         llm_calls = 0
@@ -1067,6 +1069,7 @@ class GekaiApp(App[None]):
             elif isinstance(item, AgentEvent):
                 if isinstance(item, SubAgentStartEvent):
                     ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
+                    active_renderer = ws_renderer
                     if subagent is not None:
                         # input-box label stays the bare namespace (set above);
                         # do not override it with item.name/item.color here
@@ -1088,9 +1091,25 @@ class GekaiApp(App[None]):
                     else:
                         self._set_route_label(item.name, color=item.color)
                         await ws_renderer.start(item.name)
-                elif ws_renderer:
+                elif isinstance(item, DelegationStartEvent):
+                    resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
+                    if resolved is not None:
+                        delegation_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
+                        await delegation_renderer.start(
+                            resolved.name,
+                            namespace=resolved.namespace,
+                            ui_label=_fallback_ui_label(item.task),
+                            bg_color=NAMESPACE_COLORS[resolved.namespace],
+                        )
+                        active_renderer = delegation_renderer
+                elif isinstance(item, DelegationDoneEvent):
+                    if delegation_renderer is not None:
+                        await delegation_renderer.done()
+                        delegation_renderer = None
+                    active_renderer = ws_renderer
+                elif active_renderer:
                     if isinstance(item, LogEvent):
-                        await ws_renderer.log(item.message, tool_name=item.tool_name)
+                        await active_renderer.log(item.message, tool_name=item.tool_name)
                         if item.tool_name:
                             query_tool_count += 1
                             tool_counts[item.tool_name] = tool_counts.get(item.tool_name, 0) + 1
@@ -1100,14 +1119,14 @@ class GekaiApp(App[None]):
                             append_diff(self._session, item.path, item.diff_lines, turn=turn_id)
                         conversation.scroll_end(animate=False)
                     elif isinstance(item, InferEndEvent):
-                        ws_renderer.accumulate_tokens(item)
+                        active_renderer.accumulate_tokens(item)
                         llm_calls += 1
                         prompt_tokens_total += item.prompt_tokens or 0
                         completion_tokens_total += item.completion_tokens or 0
                     elif isinstance(item, ThinkingTokenEvent):
-                        ws_renderer.thinking_chunk(item.text)
+                        active_renderer.thinking_chunk(item.text)
                     elif isinstance(item, StatusUpdateEvent):
-                        await ws_renderer.status_update(item)
+                        await active_renderer.status_update(item)
                     elif isinstance(item, DoneEvent):
                         done_summary = await ws_renderer.done(item.thinking_chars)
                         thinking_chars_total = item.thinking_chars

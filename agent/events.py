@@ -68,6 +68,22 @@ class SubagentResult:
 
 
 @dataclass
+class DelegationStartEvent(AgentEvent):
+    """A `delegate` tool call is starting a nested specialist run — the TUI
+    opens a distinct badge block for it, separate from the outer header."""
+    agent_name: str = ""
+    task: str = ""
+
+
+@dataclass
+class DelegationDoneEvent(AgentEvent):
+    """The nested run from a `DelegationStartEvent` has finished — the TUI
+    closes that badge block and resumes attributing events to the outer
+    (pre-delegation) renderer."""
+    agent_name: str = ""
+
+
+@dataclass
 class MaxIterationsEvent(AgentEvent):
     """Emitted instead of a text response when the agent hit its iteration limit."""
     pass

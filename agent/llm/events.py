@@ -97,6 +97,21 @@ class ThinkingChunkReceived:
     run_id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class DelegationStarted:
+    """A `delegate` tool call is starting a nested specialist run."""
+    agent: str
+    task: str
+    run_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationCompleted:
+    """The nested run started by a `DelegationStarted` has finished."""
+    agent: str
+    run_id: str = ""
+
+
 Event = (
     AgentStarted
     | TurnStarted
@@ -108,6 +123,8 @@ Event = (
     | RetryAttemptEvent
     | AgentStopped
     | ThinkingChunkReceived
+    | DelegationStarted
+    | DelegationCompleted
 )
 
 
@@ -170,6 +187,8 @@ class EventBus:
 __all__ = [
     "AgentStarted",
     "AgentStopped",
+    "DelegationCompleted",
+    "DelegationStarted",
     "Event",
     "EventBus",
     "ModelRequestSent",

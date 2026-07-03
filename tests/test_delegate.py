@@ -72,6 +72,16 @@ def test_delegate_description_lists_user_invocable_agents() -> None:
         assert name in t.description
 
 
+def test_no_user_invocable_description_contains_donts() -> None:
+    banned = ("not for", "that's main")
+    for s in SUBAGENTS:
+        if not s.user_invocable:
+            continue
+        lowered = s.description.lower()
+        for phrase in banned:
+            assert phrase not in lowered, f"{s.name} description contains {phrase!r}: {s.description}"
+
+
 def test_delegate_tool_is_async() -> None:
     t = _make_delegate()
     assert t.is_async is True
@@ -134,3 +144,59 @@ def test_delegate_call_returns_text_from_history() -> None:
         result = run(t.call(agent="code-expert", task="do it"))
 
     assert result == "done"
+
+
+def test_delegate_emits_delegation_started_then_completed_on_success() -> None:
+    """REQ: problem 2's TUI badge relies on `delegate()` emitting
+    `DelegationStarted` then `DelegationCompleted` (in that order) on the
+    shared bus around a successful nested run."""
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=fake_history)
+
+    mock_bus = MagicMock()
+    t = _make_delegate(bus=mock_bus)
+    with (
+        patch("agent.harness.core._build_agent", return_value=mock_agent),
+        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+    ):
+        result = run(t.call(agent="code-expert", task="do it"))
+
+    assert result == "done"
+    assert [call.args[0].__class__.__name__ for call in mock_bus.emit.call_args_list] == [
+        "DelegationStarted",
+        "DelegationCompleted",
+    ]
+    started, completed = (call.args[0] for call in mock_bus.emit.call_args_list)
+    assert started.agent == "code-expert"
+    assert started.task == "do it"
+    assert completed.agent == "code-expert"
+    # Same nested run_id correlates the pair.
+    assert started.run_id == completed.run_id
+    assert started.run_id
+
+
+def test_delegate_emits_delegation_completed_when_nested_run_raises() -> None:
+    """REQ: `DelegationCompleted` must still fire (via try/finally) even when
+    the nested run raises — otherwise a failed delegation would leave the TUI
+    showing an open specialist badge forever."""
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(side_effect=RuntimeError("boom"))
+
+    mock_bus = MagicMock()
+    t = _make_delegate(bus=mock_bus)
+    with (
+        patch("agent.harness.core._build_agent", return_value=mock_agent),
+        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+    ):
+        result = run(t.call(agent="code-expert", task="do it"))
+
+    assert result.startswith("[error]")
+    assert "boom" in result
+    assert [call.args[0].__class__.__name__ for call in mock_bus.emit.call_args_list] == [
+        "DelegationStarted",
+        "DelegationCompleted",
+    ]

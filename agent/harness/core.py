@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
+import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, replace
+from typing import Any
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import AgentStopped, Event as LlmEvent, EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import AgentStopped, DelegationCompleted, DelegationStarted, Event as LlmEvent, EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
@@ -16,13 +20,16 @@ from pathlib import Path
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
 from ..persona import SYSTEM_PROMPT, render_tool_instruction
+from ..pipeline.estimate import Estimator
 from ..session import Session
-from ..settings import Permissions
+from ..settings import DEFAULT_EDIT_BUDGET, Permissions
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
+from ..tools.catalog import EDIT_TOOLS
+from ..llm.tools import Tool
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
@@ -57,13 +64,28 @@ def detect_subagent_mentions(user_input: str) -> list[str]:
     return found
 
 
-def _subagents_request_block(names: list[str]) -> str:
+_SUBAGENTS_REQUEST_INTROS = {
+    "named": (
+        "the user explicitly named the following specialist(s) this turn — call `delegate` for "
+        "each one instead of doing their work yourself, even if you judge the task simple enough "
+        "to handle directly:"
+    ),
+    "implies": (
+        "the request implies the following specialist(s) — call `delegate` for each one instead "
+        "of doing their work yourself, even if you judge the task simple enough to handle "
+        "directly:"
+    ),
+}
+
+
+def _subagents_request_block(names: list[str], *, reason: str) -> str:
+    intro = _SUBAGENTS_REQUEST_INTROS.get(reason)
+    if intro is None:
+        raise ValueError(f"unknown reason: {reason!r}")
     roster = "\n".join(names)
     return (
         "\n<subagents_request>\n"
-        "the user explicitly named the following specialist(s) this turn — call `delegate` for "
-        "each one instead of doing their work yourself, even if you judge the task simple enough "
-        "to handle directly:\n"
+        f"{intro}\n"
         f"{roster}\n"
         "</subagents_request>"
     )
@@ -135,6 +157,53 @@ def _fmt_debug_tool_input(call: ToolUseBlock) -> dict:
     return {"name": call.name, "input": _truncate_debug_text(json.dumps(inp, default=str))}
 
 
+_EDIT_BUDGET_EXCEEDED_MSG = (
+    "[budget exceeded — this task is implementation-sized; "
+    "delegate the remainder to a specialist]"
+)
+
+
+@dataclass(slots=True)
+class EditBudget:
+    """Per-request cap on main's direct `EDIT_TOOLS` calls (plan 26 mechanism
+    #1 — "action budget wrap"). A fresh instance is built once per
+    `Harness.stream` call for the main agent only; it is never persisted on
+    `Harness`/`Session` (locked decision 5 — no cross-turn accumulation).
+    `remaining=math.inf` expresses "unbounded" (locked decision 9 — off =
+    threshold at infinity; no separate boolean flag).
+    """
+
+    remaining: float
+
+    def try_consume(self) -> bool:
+        """Attempt to spend one unit of budget.
+
+        Returns True (and decrements `remaining`) if budget was available;
+        returns False (leaving `remaining` unchanged) if already exhausted.
+        """
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+def _wrap_with_edit_budget(t: Tool, budget: EditBudget) -> Tool:
+    """Swap `t`'s callable for one that decrements `budget` on every attempt
+    and, once exhausted, short-circuits to the budget-exceeded error string
+    instead of running the real tool. Schema/name/permissions are untouched —
+    only `fn` changes, mirroring the `dataclasses.replace` pattern already
+    used in `agent/tools/delegate.py` to swap a different field.
+    """
+    original_fn = t.fn
+
+    async def wrapper(**kwargs: Any) -> str:
+        if not budget.try_consume():
+            return _EDIT_BUDGET_EXCEEDED_MSG
+        return await original_fn(**kwargs)
+
+    return replace(t, fn=wrapper)
+
+
 def _build_agent(
     model: str,
     api_key: str | None,
@@ -147,6 +216,7 @@ def _build_agent(
     bus: EventBus | None = None,
     subagent: Subagent | None = None,
     hidden_grant_callback: HiddenGrantCallback | None = None,
+    budget: EditBudget | None = None,
 ) -> Agent:
     if subagent and subagent.permissions is not None:
         effective = Permissions(
@@ -165,6 +235,12 @@ def _build_agent(
         if perm != "none" and not getattr(effective, perm, False) and permission_callback is None:
             continue
         selected.append(t)
+
+    if subagent is None and budget is not None:
+        selected = [
+            _wrap_with_edit_budget(t, budget) if t.name in EDIT_TOOLS else t
+            for t in selected
+        ]
 
     system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)}"
 
@@ -209,12 +285,23 @@ class Harness:
         api_base: str | None = None,
         extra_params: dict | None = None,
         debug: bool = False,
+        supp_model: str | None = None,
+        supp_api_key: str | None = None,
+        supp_api_base: str | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._api_base = api_base
         self._extra_params = extra_params or {}
         self._debug = debug
+        # Plan 26 Improvement 1 (scope-estimate pre-pass): only wired when a
+        # SUPP model is supplied. Omitting supp_model preserves the pre-
+        # Improvement-1 flat-budget behavior exactly (see `stream`).
+        self._estimator = (
+            Estimator(model=supp_model, api_key=supp_api_key, api_base=supp_api_base)
+            if supp_model
+            else None
+        )
 
     async def stream(
         self,
@@ -228,24 +315,40 @@ class Harness:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
         system_base = _enrich_system_base(system_base, session.working_dir)
+        budget: EditBudget | None = None
         if subagent is None:
+            # Fresh per-call counter (locked decision 5 — no cross-turn
+            # accumulation); never stored on Harness/Session.
             mentions = detect_subagent_mentions(user_input)
             if mentions:
-                system_base += _subagents_request_block(mentions)
+                system_base += _subagents_request_block(mentions, reason="named")
+                budget = EditBudget(remaining=float(DEFAULT_EDIT_BUDGET))
+            else:
+                estimate = await self._estimator.estimate(user_input) if self._estimator is not None else None
+                if estimate is not None and estimate.implementation_sized and estimate.specialists:
+                    system_base += _subagents_request_block(estimate.specialists, reason="implies")
+                    budget = EditBudget(remaining=float(DEFAULT_EDIT_BUDGET))
+                elif estimate is not None:
+                    budget = EditBudget(remaining=math.inf)  # trivial or parse-failure: fail open, no cap
+                else:
+                    budget = EditBudget(remaining=float(DEFAULT_EDIT_BUDGET))  # no estimator wired — pre-Improvement-1 flat behavior
         effective_extra_params = self._extra_params if extra_params is None else extra_params
         agent = _build_agent(
             self._model, self._api_key, self._api_base, effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
+            budget=budget,
         )
         if self._debug:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
 
         queue: asyncio.Queue[
-            LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | BudgetExhaustedEvent | None
+            LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | BudgetExhaustedEvent
+            | DelegationStartEvent | DelegationDoneEvent | None
         ] = asyncio.Queue()
         files_touched: list[str] = []
+        main_run_id = uuid.uuid4().hex
 
         _SINGLE_PATH_TOOLS = ("write_file", "edit_file", "make_dir", "delete_file")
         _DUAL_PATH_TOOLS = ("move_file", "copy_file")
@@ -301,7 +404,13 @@ class Harness:
                 ))
             elif isinstance(event, ThinkingChunkReceived):
                 queue.put_nowait(ThinkingTokenEvent(text=event.text))
+            elif isinstance(event, DelegationStarted):
+                queue.put_nowait(DelegationStartEvent(agent_name=event.agent, task=event.task))
+            elif isinstance(event, DelegationCompleted):
+                queue.put_nowait(DelegationDoneEvent(agent_name=event.agent))
             elif isinstance(event, AgentStopped):
+                if event.run_id != main_run_id:
+                    return  # a nested delegate()-invoked subagent's own completion — not ours
                 if event.budget_exhausted:
                     queue.put_nowait(BudgetExhaustedEvent())
                 queue.put_nowait(None)
@@ -315,7 +424,7 @@ class Harness:
         prior = [] if subagent else _recency_turns(session.messages, _RECENCY_N)
         prior.append(Message(role="user", content=user_input))
         unsubscribe = bus.subscribe(_on_event)
-        agent_task: asyncio.Task = asyncio.create_task(agent.run(prior))
+        agent_task: asyncio.Task = asyncio.create_task(agent.run(prior, run_id=main_run_id))
 
         try:
             while True:
