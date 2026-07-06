@@ -1,7 +1,10 @@
-"""Tests for the Gate classifier (plan 25 Improvement 1 — gate replaces router).
+"""Tests for the Gate classifier (plan 27 improvement 4 — REJECTED <name>
+dropped; the gate is a pure chit-chat/act binary. Rejection of an unknown
+agent is capability-based, at the command layer (`/agent-x`), never a
+model-side name check).
 
-The gate outputs exactly TRIVIAL | REJECTED <name> | ACT.
-An unrecognized token falls back to ACT (not to a silent read path).
+The gate outputs exactly TRIVIAL | ACT. An unrecognized token falls back to
+ACT (not to a silent read path).
 """
 
 from __future__ import annotations
@@ -38,8 +41,6 @@ def test_gate_trivial() -> None:
     g._client.chat.completions.create = AsyncMock(return_value=_mock_response("TRIVIAL"))
     route = run(g.gate("hi there"))
     assert route.trivial
-    assert route.subagent is None
-    assert not route.rejected
 
 
 def test_gate_act() -> None:
@@ -47,25 +48,6 @@ def test_gate_act() -> None:
     g._client.chat.completions.create = AsyncMock(return_value=_mock_response("ACT"))
     route = run(g.gate("create a module"))
     assert not route.trivial
-    assert not route.rejected
-    assert route.subagent is None
-
-
-def test_gate_rejected_with_name() -> None:
-    g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("REJECTED agent-xxx"))
-    route = run(g.gate("use agent-xxx to do this"))
-    assert route.rejected
-    assert route.reason == "agent-xxx"
-    assert not route.trivial
-
-
-def test_gate_rejected_bare() -> None:
-    g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("REJECTED"))
-    route = run(g.gate("use some agent"))
-    assert route.rejected
-    assert route.reason == ""
 
 
 def test_gate_unknown_token_falls_back_to_act() -> None:
@@ -73,7 +55,6 @@ def test_gate_unknown_token_falls_back_to_act() -> None:
     g._client.chat.completions.create = AsyncMock(return_value=_mock_response("QUERY"))
     route = run(g.gate("where is the router module?"))
     assert not route.trivial
-    assert not route.rejected
 
 
 def test_gate_strips_extra_whitespace() -> None:
@@ -88,7 +69,6 @@ def test_gate_nonsense_token_falls_back_to_act() -> None:
     g._client.chat.completions.create = AsyncMock(return_value=_mock_response("nonsense-token"))
     route = run(g.gate("do something"))
     assert not route.trivial
-    assert not route.rejected
 
 
 def test_gate_passes_history_to_model() -> None:
@@ -112,13 +92,12 @@ def test_route_default_trivial_is_false() -> None:
     assert Route().trivial is False
 
 
-def test_route_default_rejected_is_false() -> None:
-    assert Route().rejected is False
-
-
-def test_route_no_plan_or_query_fields() -> None:
-    # Route must not have plan/query/plan_requested — these were removed in plan 25 Improvement 1
+def test_route_no_rejected_plan_or_query_fields() -> None:
+    # Route must not have rejected/plan/query/plan_requested fields (plan 27 improvement 4
+    # drops REJECTED <name>; plan 25 improvement 1 already dropped plan/query)
     r = Route()
+    assert not hasattr(r, "rejected")
+    assert not hasattr(r, "reason")
     assert not hasattr(r, "plan")
     assert not hasattr(r, "query")
     assert not hasattr(r, "plan_requested")

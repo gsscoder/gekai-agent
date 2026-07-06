@@ -2,40 +2,65 @@
 
 ## Overview
 
-Every turn passes through a single-classifier front-end then the Harness:
-**Gate (classifier) → Harness dispatch**. `TRIVIAL` reaches the Harness with thinking disabled.
-`REJECTED` terminates immediately. `ACT` runs the main agent (direct mode), which may call the
-`delegate` tool to hand off specialist sub-tasks.
+**Plan 27 supersedes plans 25/26.** `delegate`-in-main (a tool main could elect to call) and NL
+agent-quoting ("use code-expert to…") are retired outright — no hybrid, no flag gate. Control
+flow for any workspace mutation now lives in engineered harness code, not in the core model's
+turn-by-turn judgement: **Gate (guard) → Estimator (guard) → Planner (CORE thinking, mutation
+path only) → fixed interpreter**. The only explicit way to summon a specific agent is `/agent-x`,
+which *seeds* the planner — it does not dispatch the whole turn to that agent directly.
 
 ```
 user input
     │
     ▼
-Gate                   [supp model, non-thinking] — one call per turn; pure intent classifier
-    │                  TRIVIAL | REJECTED <name> | ACT
+Gate                   [supp model, non-thinking] — one call per turn; chit-chat/act guard only
+    │                  TRIVIAL | ACT   (REJECTED <name> retired — rejection is now
+    │                                   capability-based, at the /agent-x command layer)
     │
-    ├── TRIVIAL ────────────────────────────────────────────────────────────────┐
-    │   greeting / identity / general knowledge —                               │
-    │   answerable with no codebase access                                      │
-    │                                                                           │
-    ├── REJECTED <name> ─────── error displayed; no execution                  │
-    │                                                                           │
-    └── ACT (unknown token also falls to ACT — never silent)                   │
-        any request that requires codebase access or workspace action           │
-                                                                               │
-    ┌──────────────────────────────────────────────────────────────────────────┘
+    ├── TRIVIAL ─────────────────────────────────────────────────────────────────┐
+    │   greeting / identity / general knowledge — answerable with no codebase    │
+    │   access                                                                   │
+    │                                                                            │
+    └── ACT (unknown token also falls to ACT — never silent)                    │
+        any request that requires codebase access or workspace action            │
+                                                                                 │
+    ┌────────────────────────────────────────────────────────────────────────────┘
     │
     ▼
-Harness                [core model]
-    direct mode — main agent with delegate tool + recency window (N=2 pairs)
-    trivial route → extra_params={} (no thinking budget)
+Estimator               [supp model, non-thinking] — trivial-vs-mutate guard (subagent=None only)
+    │                    TRIVIAL | MUTATE
     │
-    └── delegate(agent, task)   [tool, registered on main only — recursion guard]
-        │   self-contained task handed off to a named specialist
-        │
-        └── Harness spawn mode
-            subagent.build_system_base() + harness-assembled <tools>, cold
-            no context inheritance — fire-and-forget
+    ├── TRIVIAL ──────────────────────────────────────────┐  no ceremony — main solo,
+    │   a single small file, a few edits, a read/query     │  no planner, deliberately loose
+    │                                                       │
+    └── MUTATE ─────────────┐                              │
+        or an explicit      │                              │
+        /agent-x seed       │                              │
+                             ▼                              │
+                        Planner            [core model, CORE thinking — one call]
+                        decomposition (main/auto-assignable steps, dependency order)
+                        + measurement (preventive verify/repair placement by complexity)
+                             │
+                             ▼                              │
+                        Plan               data — flat list of {agent, task, verify, repair}
+                             │                              │
+                             ▼                              │
+                        Interpreter         fixed, engineered, knows no agent by name
+                        execute → verify → repair → re-verify → halt, per step;
+                        empty dispatch output is always a failure
+                             │                              │
+              ┌──────────────┴──────────────┐               │
+              │                              │               │
+        step.agent == "main"          step.agent == <subagent>
+        direct instruction,           run_subagent(...) — cold, fire-and-forget,
+        no spawn                      traced on main's session bus
+                                                                                 │
+    ┌────────────────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+main's session — every spawn and its outcome recorded; a halt reports which step
+failed and keeps completed work (no rollback); a mechanical recap is appended to
+session history so the next turn is not answered blind
 ```
 
 ---
@@ -221,10 +246,8 @@ Harness.stream(..., hidden_grant_callback)     agent/harness/core.py   (direct +
   └─ _build_agent(..., hidden_grant_callback)
        └─ make_tools(working_dir, grant_cb=hidden_grant_callback)
 
-GekaiAgent.process_stream(..., hidden_grant_callback)  agent/agent.py
-  ├─ route.rejected → mounts ERROR message (names route.reason), logs source="gate",
-  │                   outcome="rejected", returns — locate/rewrite/harness never reached
-  └─ main/subagent  → self._main.stream(..., hidden_grant_callback=hidden_grant_callback)
+GekaiAgent.process_stream(..., hidden_grant_callback, seed)  agent/agent.py
+  └─ self._main.stream(..., hidden_grant_callback=hidden_grant_callback, seed=seed)
 
 TUI._hidden_grant_callback(self, rel, mode) -> bool   agent/tui/app.py
   └─ passed as hidden_grant_callback into process_stream(...)
@@ -236,36 +259,28 @@ The TUI implementation pauses the status timer, asks `"Grant {mode} access to hi
 
 ## Gate
 
-`Gate` is a **pure intent classifier**. `Gate.gate(user_input, history=None)` makes
-**one LLM call** on the **support model (non-thinking)**, temperature 0, and returns a single `Route`.
+`Gate` is a **pure chit-chat/act guard** — plan 27 improvement 4 dropped the `REJECTED <name>`
+branch entirely. `Gate.gate(user_input, history=None)` makes **one LLM call** on the **support
+model (non-thinking)**, temperature 0, and returns a single `Route`.
 
 ```python
 @dataclass
 class Route:
-    subagent: Subagent | None = None
     trivial: bool = False
-    rejected: bool = False
-    reason: str = ""
 ```
 
-`subagent` is always `None` on a Gate return — it is populated only by the `/`-slash command path
-(forced routes). The flags are mutually exclusive in practice: `trivial` and `rejected` each
-resolve immediately; `reason` carries the echoed name on a `rejected` route, `""` otherwise.
 An unrecognized token falls to `Route()` (ACT) rather than silently downgrading — the gate never
 suppresses action.
 
 **History context:** last 6 user/assistant turns prepended before the user message.
 
-The gate prompt produces exactly one of three tokens:
+The gate prompt produces exactly one of two tokens:
 
 ```
 GATE_PROMPT
 ├── TRIVIAL          answerable with no codebase access — greetings, identity/capability
 │                    questions, acknowledgments, general knowledge unrelated to this
 │                    workspace; when unsure, NOT this
-├── REJECTED <name>  the user explicitly named a specific agent that is NOT in the roster
-│                    (typo, unknown name); echoes the literal name, never substitutes or
-│                    falls back to main; never routes to any real agent
 └── ACT              any request requiring codebase access or workspace action;
                      unknown/malformed token also falls here — fail to action, not silence
 ```
@@ -273,38 +288,72 @@ GATE_PROMPT
 `TRIVIAL` is deliberately conservative — a false `ACT` costs only the main agent's time, while a
 false `TRIVIAL` would deny a real codebase question any tool access.
 
+**No agent-quoting in prose.** "use code-expert to do X" is not a routing directive — the model
+reads it for intent (`do X`) and routes normally; the "use code-expert" mention is ignored, never
+name-checked. `detect_subagent_mentions` and the `<subagents_request>` injection (plan 26) are
+deleted outright. The only explicit way to summon a specific agent is `/agent-x` (a TUI command,
+not a Gate output) — an unknown `/agent-x` is rejected at the command layer, never by the model
+naming an agent that doesn't exist.
+
 ### Gate table
 
-| Output token         | Route                              | Notes                                        |
-|----------------------|------------------------------------|----------------------------------------------|
-| `TRIVIAL`            | `Route(trivial=True)`              | Harness non-thinking (`extra_params={}`)     |
-| `REJECTED <name>`    | `Route(rejected=True, reason=name)`| error displayed, no execution; bare `REJECTED` → `reason=""` |
-| `ACT`                | `Route()`                          | main agent runs with full thinking params    |
-| unexpected/malformed | `Route()`                          | warning logged; falls to ACT                 |
+| Output token         | Route                | Notes                                          |
+|-----------------------|----------------------|------------------------------------------------|
+| `TRIVIAL`             | `Route(trivial=True)`| Harness non-thinking (`extra_params={}`), no Estimator/Planner |
+| `ACT`                 | `Route()`             | falls through to the Estimator guard            |
+| unexpected/malformed  | `Route()`             | warning logged; falls to ACT                    |
 
 ---
 
-## Delegate Tool
+## Estimator
 
-`delegate(agent, task)` is a tool registered **only on the main agent** (recursion guard: subagents
-never receive it). It hands a self-contained task to a named specialist and returns its text output.
+`Estimator` is the second guard — a **trivial-vs-mutate binary**, run only when `Gate` returned
+`ACT` and the turn is not itself a subagent's own nested run. One LLM call, support model,
+non-thinking, temperature 0.
 
-`make_delegate_tool(...)` in `agent/tools/delegate.py` builds the tool as a closure capturing
-`model`, `api_key`, `working_dir`, `permissions`, `bus`, and related context. The `agent`
-parameter is constrained to an `"enum"` of known `user_invocable` subagent names via
-`dataclasses.replace` on the `Tool.input_schema`.
+```python
+@dataclass
+class ScopeEstimate:
+    mutate: bool = False
+```
 
-Execution flow:
-1. Resolve `agent` name against the roster (`SUBAGENTS` filtered to `user_invocable`).
-2. Call `_enrich_system_base(resolved.build_system_base(), working_dir)` to add workspace context.
-3. Build a nested agent via `_build_agent(subagent=resolved)` — spawn mode, cold context, no
-   `delegate` tool (recursion guard is the `if subagent is None:` check in `_build_agent`).
-4. `await nested.run(task)` — returns full message history.
-5. Extract the last assistant text block from history and return it as a string.
-6. Any exception → `"[error] {agent} failed: {exc}"` (non-fatal to the main agent's turn).
+| Output   | Meaning                                                        | Next stage         |
+|----------|-----------------------------------------------------------------|---------------------|
+| `TRIVIAL`| a single small file, a few small edits, or a read/query          | main solo, no planner (case 2 — deliberately loose) |
+| `MUTATE` | implementation-sized: multiple files/modules, a distinct unit    | Planner + interpreter (case 4) |
 
-**Ordering contract:** callers (the main agent) are instructed never to fragment one artifact
-across multiple `delegate` calls, and to order by dependency (scaffold → logic → tests).
+An explicit `/agent-x` seed (or a single-duty match — case 3) **bypasses the Estimator entirely**
+and always goes to the Planner, seeded with that agent's duty — one mutation path for both cases
+3 and 4 (plan 27 decision 4), no shortcut that skips verification.
+
+---
+
+## Planner + Interpreter
+
+Plan 27 replaces `delegate`-in-main with two engineered pieces:
+
+- **Planner** (`agent/pipeline/planner.py`) — CORE thinking, one call per mutation turn. Given the
+  request (and an optional `/agent-x` seed), returns a raw plan text the model itself decomposes
+  into ordered steps assigned to `main` or an **auto-assignable** subagent (`code-expert`,
+  `test-expert`), each carrying `verify`/`repair` when the model judges the step's complexity
+  warrants a preventive check (the complexity *metric* itself remains an open design point — see
+  `_agentfiles/27_plan_gate_and_data_plan.md`; today the model's own in-prompt judgment is the
+  mechanical placeholder). The raw output is parsed and validated by `agent/pipeline/plan.py`'s
+  `parse_plan` — schema, roster, and phase-eligibility checked, fail loud on any violation.
+- **Interpreter** (`agent/harness/interpreter.py`) — a **fixed**, engineered step-runner. Walks the
+  validated `Plan` with `execute → verify → repair → re-verify → halt`. It knows no agent by name
+  or role; `dispatch(agent, task)` is the only seam, supplied by the caller. An empty dispatch
+  output is always treated as a failure. A step failing verify once is repaired (the named
+  `repair` agent, or a re-dispatch of `step.agent` if none is named) and re-verified; a second
+  failure halts the whole plan in place — completed steps' work is kept, nothing rolls back.
+
+`agent/harness/core.py`'s `Harness._stream_plan` wires the two together for production: `dispatch`
+runs `main` steps as a direct instruction (no spawn) via the same `_build_agent` used elsewhere,
+and subagent steps via `run_subagent` (`agent/tools/delegate.py`) — a cold, fire-and-forget nested
+run whose start/outcome are traced on the same `EventBus` the single-agent path uses, so
+diff/log/delegation rendering is shared, not reimplemented. A plan run ends with a **mechanical**
+(no narrator LLM call) recap of every step's outcome, yielded as the turn's assistant text so it
+persists into session history for the next turn's continuity.
 
 ---
 
@@ -320,25 +369,31 @@ that owns the assembly of its own system prompt:
 class Subagent:
     name: str
     namespace: str
-    description: str       # delegate's selection signal — positive scope + "Not for…" boundary
+    description: str       # planner's selection signal — positive scope + "Not for…" boundary
     mandate: str = ""      # 1-2 line role-identity sentence: "you act as a …"
     directives: str = ""   # the *how* — operational specifics
     tools: list[str] | None = None        # allowlist; None = all tools
     permissions: Permissions | None = None # overlay, ANDed with session permissions
+    user_invocable: bool = True    # router menu + /agent-x eligibility; False = system-managed worker
+    auto_assignable: bool = False  # plan 27: phase-1 decomposition may assign it;
+                                    # False = post-planning-only (verify/repair agents, e.g. the
+                                    # coming fact-checker) — never assigned by prompt decomposition
 
     def build_system_base(self) -> str: ...  # _IDENTITY_SUB + mandate + _SHARED_BODY + <directives>
                                               # <tools> appended later by the Harness
 ```
 
-`description` appears in the `delegate` tool's roster string (`name: description`) and carries a "Not for…"
-boundary clause to sharpen the main agent's delegation decisions. `mandate` is the role-identity sentence fed
+`description` appears in the planner's roster string (`name: description`) and carries a "Not for…"
+boundary clause to sharpen decomposition decisions. `mandate` is the role-identity sentence fed
 into the agent's own context once spawned — "who you act as right now," distinct from
 `directives` ("how to do it"). `tools` is a name allowlist (mirrored against
 `agent/tools/catalog.py` to guard against drift); `permissions` lets a subagent further
-*restrict* — never escalate beyond — the session's grant. See
-[System Prompt Assembly](#system-prompt-assembly) for the full funnel and
-[Harness — Tool Loop](#harness--tool-loop) for how the allowlist and permissions jointly
-determine the *effective* tool set (and therefore the `<tools>` prompt content).
+*restrict* — never escalate beyond — the session's grant. `auto_assignable` is orthogonal to
+`user_invocable`: `code-expert`/`test-expert` are both (planner may assign them, `/agent-x` can
+seed them); a verify/repair agent is `user_invocable=True, auto_assignable=False` (slash-summonable,
+but never assigned by phase-1 decomposition). See [System Prompt Assembly](#system-prompt-assembly)
+for the full funnel and [Harness — Tool Loop](#harness--tool-loop) for how the allowlist and
+permissions jointly determine the *effective* tool set (and therefore the `<tools>` prompt content).
 
 Package layout: `__init__.py` exports `Subagent`, `SUBAGENTS`, `NAMESPACES`, `validate_registry`,
 and `_discover()` auto-discovery.
@@ -362,7 +417,9 @@ in the menu/palette. It is a system-managed worker dispatched only via `run()` (
 `validate_registry()` runs at startup — raises if any namespace in `NAMESPACES` has no badge
 color, a subagent has an unknown namespace, or names collide.
 
-Subagent selection is performed by the main agent via the `delegate` tool — see [Delegate Tool](#delegate-tool) above.
+Subagent selection is performed by the Planner (phase-1 decomposition, auto-assignable roster
+only) — see [Planner + Interpreter](#planner--interpreter) above — or explicitly via `/agent-x`
+(seeds the planner; unknown `/agent-x` rejected at the command layer).
 
 > **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
 > intent via routing. `ws-manager` (`worker` namespace) is the first built, user-invocable example
@@ -385,38 +442,43 @@ effective = Permissions(
 
 ### TUI status indicator
 
-`#input-area` container `border_title` always shows current routing state:
-
-| State                     | Label shown              | Border background color                        |
-|---------------------------|--------------------------|------------------------------------------------|
-| idle / between turns      | `default`                | `#3a3a3a`                                      |
-| `route.subagent is not None` | `<namespace>/<name>`  | `_NS_COLORS.get(namespace, _ACTION_COLOR)` — `#FFD700` for `coding`, `#4169E1` otherwise |
-| `route.subagent is None`  | `main` (incl. `TRIVIAL`) | `#3a3a3a` (`_DEFAULT_ROUTE_COLOR`)             |
-| finally (any exit)        | `default`                | `#3a3a3a`                                      |
-
-Debug label (`--debug`, shown as `[gate: ...]`): `[subagent.namespace, subagent.name]` joined
-by `/` when a subagent is selected; `["trivial"]` when `route.trivial`; `["rejected"]` when
-`route.rejected`; else `["main"]`. The
-status-indicator border title itself does not distinguish `TRIVIAL` from `main` — both show
-`main` / `#3a3a3a`; only the debug label surfaces the distinction.
+`#input-area` container `border_title` shows the current pipeline stage as it advances
+(`route` → `main`/planner-badge names as `SubAgentStartEvent`/`DelegationStartEvent` arrive), not
+a single per-turn label keyed on `route.subagent` (that field is gone — plan 27 improvement 4).
+A `/agent-x` seed no longer means "the whole turn runs as that subagent's identity"; it seeds the
+planner, so the top-level label stays `main`/`planner` and individual plan steps render their own
+specialist badges as the interpreter dispatches them.
 
 ---
 
 ## Harness — Tool Loop
 
-`Harness` (`agent/harness/core.py`, formerly `MainAgent` in `handlers/main_agent.py`) is the
-single, always-on session holder users always talk to. Every turn that doesn't spawn a subagent
-is handled directly by it — chat, inspection, and action all flow through one `Agent`-tool-loop.
-One method, two modes selected by a single parameter:
+`Harness` (`agent/harness/core.py`) is the single, always-on session holder users always talk to.
+`Harness.stream(...)` is the entry point for every turn; its shape now branches on the
+guard/estimate/seed outcome (see [Overview](#overview)) rather than on a bare `subagent` toggle:
 
 ```python
-async def stream(self, session, user_input, permission_callback=None, subagent: Subagent | None = None, extra_params: dict | None = None)
+async def stream(
+    self, session, user_input, permission_callback=None,
+    subagent: Subagent | None = None, extra_params: dict | None = None,
+    hidden_grant_callback=None, seed: str | None = None,
+)
 ```
+
+- `subagent=None, seed=None`, trivial estimate (or no estimator wired) → single-agent path (below).
+- `subagent=None`, mutate estimate **or** `seed` given → `_stream_plan`: Planner + interpreter
+  (see [Planner + Interpreter](#planner--interpreter)).
+- `subagent=<Subagent>` → single-agent path built *as* that subagent — used internally by
+  `run_subagent` for a nested dispatch, not a production top-level entry point any more (that role
+  moved to `seed`).
 
 `extra_params` overrides the Harness's own `self._extra_params` (set at construction from
 `resolve_thinking_params`) for this call only — `None` (the default) means "use the instance
 default"; an explicit `{}` means "no thinking params for this turn" (the `TRIVIAL`-route case —
 see [Gate](#gate)).
+
+No `delegate` tool is ever registered (plan 27 decision 11 — removed from main outright, no
+hybrid); the harness (planner + interpreter) owns all cross-agent control flow instead.
 
 `stream()` delegates prompt assembly to the module-level `_build_agent(...)`, which is the
 **single point** where the effective tool set — and therefore the final `<tools>` block — is
@@ -462,7 +524,8 @@ sequenceDiagram
     participant llmstitch
     participant CoreModel
 
-    TUI->>Harness: stream(session, user_input, subagent=route.subagent, extra_params={} if route.trivial else None)
+    TUI->>Harness: stream(session, user_input, extra_params={} if route.trivial else None, seed=forced_seed)
+    Note over Harness: single-agent path (trivial estimate, or no mutate/seed) — the<br/>mutate/seeded path instead runs Planner + interpreter (_stream_plan)
     Harness->>Harness: _build_agent(...) — filter tools, render <tools>, construct Agent
     Harness->>llmstitch: agent.run(prior_messages)
     loop tool-calling

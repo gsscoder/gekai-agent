@@ -26,12 +26,9 @@ from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
 from agent.persistence import (
     append_command,
-    append_debug,
     append_diff,
     append_event,
     append_operation,
-    append_subagent_done,
-    append_subagent_start,
     _normalize_path,
 )
 from agent.pipeline import Route
@@ -41,7 +38,7 @@ from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_context_limit, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import random_accent_color, random_operative_verb
-from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult, DelegationStartEvent, DelegationDoneEvent
+from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, EstimateEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult, DelegationStartEvent, DelegationDoneEvent, PlanStartedEvent, PlanHaltedEvent
 
 from .palette import CommandPalette
 from .history import PromptHistory
@@ -49,7 +46,6 @@ from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind
 
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
 _PIPELINE_COLOR = "#ffffff"  # pure-white bg marks active pre-harness pipeline step
-_DELEGATION_FILES_CAP = 20
 
 
 class ConversationContainer(ScrollableContainer):
@@ -264,10 +260,6 @@ def _ms(seconds: float) -> int:
 
 
 def _route_decision(route: Route) -> str:
-    if route.rejected:
-        return "rejected"
-    if route.subagent is not None:
-        return f"{route.subagent.namespace}/{route.subagent.name}"
     if route.trivial:
         return "trivial"
     return "act"
@@ -982,7 +974,7 @@ class GekaiApp(App[None]):
                     return
                 await conversation.mount(MessageWidget(MessageKind.USER, _user_prompt))
                 self._worker = self.run_worker(
-                    self._stream(_resolve_at_refs(_user_prompt), forced_route=Route(subagent=_subagent)),
+                    self._stream(_resolve_at_refs(_user_prompt), forced_seed=_subagent.name),
                     exclusive=True,
                 )
                 return
@@ -1022,26 +1014,22 @@ class GekaiApp(App[None]):
         )
 
     async def _run_step(
-        self, raw: str, subagent: Subagent | None, *,
+        self, raw: str, seed: str | None, *,
         turn_id: str, session_id: str, conversation: ScrollableContainer,
         stage: list[str], trivial: bool = False,
         append_user: bool = True,
     ) -> _StepResult:
-        """Run dispatch for `raw` against `subagent` (None => main).
+        """Run dispatch for `raw`. `seed` (case 3 — an explicit `/agent-x` or a
+        single-duty match) names the specialist the planner is seeded with;
+        it no longer means "run the whole turn as that subagent's identity"
+        (plan 27 — the planner+interpreter own every spawn, main stays main).
         `stage` is a 1-element mutable holder the caller's except-block reads to attribute
         which sub-stage failed."""
         events = self._agent.events
 
-        if subagent is not None:
-            _label, _color = subagent.namespace, NAMESPACE_COLORS[subagent.namespace]
-        else:
-            _label, _color = "main", _DEFAULT_ROUTE_COLOR
-
-        ui_label = _fallback_ui_label(raw) if subagent is not None else ""
-
-        self._set_route_label(_label, color=_color)
+        self._set_route_label("main", color=_DEFAULT_ROUTE_COLOR)
         stage[0] = "harness"
-        step_route = Route(subagent=subagent, trivial=trivial)
+        step_route = Route(trivial=trivial)
         harness_start = time.monotonic()
         answer_chunks: list[str] = []
         max_iter_hit = False
@@ -1063,34 +1051,34 @@ class GekaiApp(App[None]):
             hidden_grant_callback=self._hidden_grant_callback,
             turn_id=turn_id,
             append_user=append_user,
+            seed=seed,
         ):
             if isinstance(item, str):
                 answer_chunks.append(item)
             elif isinstance(item, AgentEvent):
-                if isinstance(item, SubAgentStartEvent):
+                if isinstance(item, EstimateEvent):
+                    events.emit(
+                        "estimate", session=session_id, turn=turn_id,
+                        decision=item.decision, specialists=item.specialists,
+                        duration_ms=item.duration_ms,
+                    )
+                elif isinstance(item, PlanStartedEvent):
+                    events.emit(
+                        "plan", session=session_id, turn=turn_id,
+                        step_count=item.step_count, agents=item.agents,
+                        verify_placements=item.verify_placements,
+                    )
+                elif isinstance(item, PlanHaltedEvent):
+                    await conversation.mount(MessageWidget(
+                        MessageKind.ERROR,
+                        f"plan halted at step {item.step_index + 1} ({item.agent}): {item.reason} "
+                        "— prior steps' work is kept, nothing rolled back",
+                    ))
+                elif isinstance(item, SubAgentStartEvent):
                     ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
                     active_renderer = ws_renderer
-                    if subagent is not None:
-                        # input-box label stays the bare namespace (set above);
-                        # do not override it with item.name/item.color here
-                        await ws_renderer.start(
-                            item.name,
-                            namespace=subagent.namespace,
-                            ui_label=ui_label,
-                            bg_color=NAMESPACE_COLORS[subagent.namespace],
-                        )
-                        if self._session is not None:
-                            append_subagent_start(
-                                self._session,
-                                namespace=subagent.namespace,
-                                name=item.name,
-                                bg_color=NAMESPACE_COLORS[subagent.namespace],
-                                ui_label=ui_label,
-                                turn=turn_id,
-                            )
-                    else:
-                        self._set_route_label(item.name, color=item.color)
-                        await ws_renderer.start(item.name)
+                    self._set_route_label(item.name, color=item.color)
+                    await ws_renderer.start(item.name)
                 elif isinstance(item, DelegationStartEvent):
                     resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
                     if resolved is not None:
@@ -1128,14 +1116,10 @@ class GekaiApp(App[None]):
                     elif isinstance(item, StatusUpdateEvent):
                         await active_renderer.status_update(item)
                     elif isinstance(item, DoneEvent):
-                        done_summary = await ws_renderer.done(item.thinking_chars)
+                        if ws_renderer is not None:
+                            await ws_renderer.done(item.thinking_chars)
                         thinking_chars_total = item.thinking_chars
                         files_touched_total = item.files_touched
-                        if subagent is not None and self._session is not None:
-                            append_subagent_done(
-                                self._session, done_summary,
-                                bg_color=NAMESPACE_COLORS[subagent.namespace], turn=turn_id,
-                            )
                     elif isinstance(item, MaxIterationsEvent):
                         max_iter_hit = True
                     elif isinstance(item, BudgetExhaustedEvent):
@@ -1155,26 +1139,16 @@ class GekaiApp(App[None]):
             status="failed" if harness_outcome == "max_iterations" else "ok",
             budget_exhausted=budget_exhausted_hit,
         )
-        if subagent is not None:
-            events.emit(
-                "delegation", session=session_id, turn=turn_id,
-                host="main", delegate=subagent.name, namespace=subagent.namespace,
-                status=subagent_result.status, files=len(subagent_result.files_touched),
-                files_touched=subagent_result.files_touched[:_DELEGATION_FILES_CAP],
-                summary_len=len(subagent_result.summary),
-                budget_exhausted=subagent_result.budget_exhausted,
-            )
 
         return _StepResult(
             outcome=harness_outcome,
             answer=subagent_result.summary,
             max_iter_hit=max_iter_hit,
             query_tool_count=query_tool_count,
-            ui_label=ui_label,
             ws_renderer=ws_renderer,
         )
 
-    async def _stream(self, user_input: str, forced_route: Route | None = None) -> None:
+    async def _stream(self, user_input: str, forced_seed: str | None = None) -> None:
         start = time.monotonic()
         events = self._agent.events
         turn_id = events.new_turn()
@@ -1189,24 +1163,17 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(verb[0], color)
-            if forced_route is not None:
-                route = forced_route
-                events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=0)
+            if forced_seed is not None:
+                route = Route(trivial=False)
+                events.emit("route", session=session_id, turn=turn_id, decision=f"seed/{forced_seed}", duration_ms=0)
             else:
                 self._set_route_label("route", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
                 route = await self._agent.gate(user_input, history=self._session.messages)
                 events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
 
-            if route.rejected:
-                error_msg = f"'{route.reason}' is not an available agent" if route.reason else "no such agent"
-                await conversation.mount(MessageWidget(MessageKind.ERROR, error_msg))
-                append_event(self._session, error_msg, source="gate")
-                outcome = "rejected"
-                return
-
             step_result = await self._run_step(
-                user_input, route.subagent,
+                user_input, forced_seed,
                 turn_id=turn_id, session_id=session_id, conversation=conversation,
                 stage=stage, trivial=route.trivial,
             )

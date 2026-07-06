@@ -13,7 +13,6 @@ from . import __version__
 from .llm.model_caps import resolve_thinking_params
 from .harness import Harness, HiddenGrantCallback
 from .permissions import PermissionCallback
-from .subagents import Subagent
 from .pipeline import Gate, Route
 from .session import Session
 from .settings import Permissions
@@ -115,6 +114,7 @@ class GekaiAgent:
         turn_id: str | None = None,
         hidden_grant_callback: HiddenGrantCallback | None = None,
         append_user: bool = True,
+        seed: str | None = None,
     ) -> AsyncIterator[str | AgentEvent]:
         if append_user:
             session.messages.append({"role": "user", "content": user_input})
@@ -126,9 +126,9 @@ class GekaiAgent:
         stream_iter = self._main.stream(
             session, user_input,
             permission_callback=permission_callback,
-            subagent=route.subagent,
             extra_params={} if route.trivial else None,
             hidden_grant_callback=hidden_grant_callback,
+            seed=seed,
         )
         try:
             async for item in stream_iter:

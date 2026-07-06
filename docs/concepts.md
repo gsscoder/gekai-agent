@@ -18,11 +18,15 @@ position: scope size is not the safety property that matters. A one-line edit in
 place is worse than a mechanical rename across fifty files. What makes an intervention surgical
 is whether it's *correct*, not whether it's *small*.
 
-The precision mechanism is meant to be **verification of the change itself** — a check that
-runs on what was actually created or modified, not on how many files were touched before
-anything happened. This is the direction, not yet a settled design: a non-invocable subagent
-that reviews a create/update once it's non-trivial, as a second pass after the work is done.
-Undecided still: whether it blocks/reverts on failure or only reports into the human checkpoint.
+The precision mechanism is **verification of the change itself** — a check that runs on what was
+actually created or modified, not on how many files were touched before anything happened. Plan 27
+gives this a concrete home: a post-planning-only verify agent (a future `fact-checker`, or a
+mechanical check until one exists) is attached to a plan step when its estimated complexity clears
+a threshold — never assigned by prompt decomposition, only inserted afterward as a preventive
+gate. On failure it triggers one repair-and-reverify pass; a second failure halts the plan in
+place and reports which step failed — completed steps' work stays, nothing rolls back. The
+complexity *metric* itself (what "clears the threshold" means, precisely) is still an open design
+point.
 
 ## Checkpoint-oriented, not autonomous-run-oriented
 
@@ -32,8 +36,8 @@ everything downstream: subagents run cold with no carried context (fire-and-forg
 by design), and diff/event output exists specifically to give the human something concrete to
 check at each step.
 
-The router can decompose one request into a multi-step plan — several different specialists run
-in order, each on its own locate/rewrite/dispatch pass — but this is still transparent,
+The planner can decompose one request into a multi-step plan — several different specialists run
+in order, each dispatched in turn by the fixed interpreter — but this is still transparent,
 auto-run, single-turn machinery, not autonomous multi-turn operation: there is no interactive
 plan-mode approval gate, no revert-on-failure, and no resume of a stopped plan. A failing step
 stops the whole plan in place (completed steps' work stays, nothing rolls back) and reports which
@@ -43,11 +47,26 @@ for "watch it work in small verifiable increments," even when those increments a
 
 ## Routing is a guard, not a classifier
 
-`Router` makes exactly one decision per turn: does this stay with the main agent,
-get answered without touching the codebase, or get handed to a specialist. It does not attempt
-to understand intent beyond that single fork. Keeping the router's job this narrow keeps it
-cheap, fast, and predictable to reason about — it is infrastructure for dispatch, not a second
-opinion on what the user wants.
+Two cheap guards, not one classifier trying to do everything: `Gate` decides chit-chat vs. act;
+`Estimator` decides — for an act turn with no specific agent named — trivial vs. mutate. Neither
+attempts to understand intent beyond its single fork, and neither ever names or reasons about a
+specific specialist. That reasoning is reserved for the one place expensive enough to afford it:
+the **planner**, which runs only on the mutation path (plan 27). Keeping the guards this narrow
+keeps the common cases (chit-chat, a small read/edit) cheap, fast, and predictable — infrastructure
+for dispatch, not a second opinion on what the user wants.
+
+This supersedes plans 25 and 26. `delegate`-in-main — a tool the core model could elect to call
+mid-turn — put the orchestration loop's control flow inside the model's own turn-by-turn
+judgement, which is exactly the model-dependent variable the harness thesis exists to remove
+(see [The harness is the multiplier](#the-harness-is-the-multiplier)): switching to a stronger
+model would only mask the problem, not prove the harness. Plan 27's fix is to compile the
+step-policy — execute, verify, repair-then-reverify, halt-on-second-failure — once, into a fixed,
+engineered interpreter that knows no agent by name or role. Only the planner, which *does* know
+the roster and their interactions, produces the data (a flat list of steps with optional
+verify/repair agents) that the interpreter walks. Prose can no longer name a specialist either:
+"use code-expert to do X" is read for its intent, not as a routing directive — a subagent is
+summoned explicitly only via `/agent-x`, rejected at the command layer (never by the model
+name-checking prose) if unknown.
 
 ## One persistent agent, many borrowed roles
 

@@ -1,9 +1,10 @@
-"""Tests for the Estimator scope classifier (plan 26 Improvement 1 — the
-scope-estimate pre-pass, mechanism #3).
+"""Tests for the Estimator scope classifier (plan 27 improvement 5 —
+repurposed to the trivial-vs-mutate binary; decomposition/specialist
+assignment is now the planner's job, not the estimator's).
 
-The estimator outputs exactly TRIVIAL | IMPLEMENTATION <names>. Any parse
-failure or exception falls back to a trivial (all-default) ScopeEstimate —
-fail open, mirroring the gate's unrecognized-token -> ACT fallback.
+The estimator outputs exactly TRIVIAL | MUTATE. Any parse failure or
+exception falls back to a trivial (all-default) ScopeEstimate — fail open,
+mirroring the gate's unrecognized-token -> ACT fallback.
 """
 
 from __future__ import annotations
@@ -34,28 +35,14 @@ def test_estimate_trivial() -> None:
     e._client.chat.completions.create = AsyncMock(return_value=_mock_response("TRIVIAL"))
     result = run(e.estimate("write a small script"))
     assert result == ScopeEstimate()
-    assert result.implementation_sized is False
-    assert result.specialists == []
+    assert result.mutate is False
 
 
-def test_estimate_implementation_with_valid_names() -> None:
+def test_estimate_mutate() -> None:
     e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(
-        return_value=_mock_response("IMPLEMENTATION code-expert, test-expert")
-    )
+    e._client.chat.completions.create = AsyncMock(return_value=_mock_response("MUTATE"))
     result = run(e.estimate("build a module and its test suite"))
-    assert result.implementation_sized is True
-    assert result.specialists == ["code-expert", "test-expert"]
-
-
-def test_estimate_filters_unknown_names() -> None:
-    e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(
-        return_value=_mock_response("IMPLEMENTATION code-expert, made-up-agent")
-    )
-    result = run(e.estimate("build a module"))
-    assert result.implementation_sized is True
-    assert result.specialists == ["code-expert"]
+    assert result.mutate is True
 
 
 def test_estimate_parse_failure_falls_back_to_trivial() -> None:

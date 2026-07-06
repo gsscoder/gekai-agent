@@ -115,7 +115,7 @@ class OpenAIAdapter(ProviderAdapter):
             if text_parts:
                 entry["content"] = "\n".join(text_parts)
             else:
-                entry["content"] = None
+                entry["content"] = ""
             if tool_uses:
                 entry["tool_calls"] = [
                     {

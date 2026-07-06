@@ -93,3 +93,28 @@ class MaxIterationsEvent(AgentEvent):
 class BudgetExhaustedEvent(AgentEvent):
     """Emitted when the agent exhausted its iteration budget but a salvage turn (with tools suppressed) was attempted."""
     pass
+
+
+@dataclass
+class EstimateEvent(AgentEvent):
+    """Result of the trivial-vs-mutate scope estimate (plan 27 improvement 5)."""
+    decision: str = ""  # "trivial" | "mutate" | "seeded" | "skipped"
+    specialists: list[str] = field(default_factory=list)
+    duration_ms: int = 0
+
+
+@dataclass
+class PlanStartedEvent(AgentEvent):
+    """Telemetry: the planner produced a validated plan (plan 27 improvement 6)."""
+    step_count: int = 0
+    agents: list[str] = field(default_factory=list)
+    verify_placements: int = 0
+
+
+@dataclass
+class PlanHaltedEvent(AgentEvent):
+    """A plan step failed verification twice (or dispatched empty output);
+    the interpreter halted in place — completed steps' work is kept, no rollback."""
+    step_index: int = 0
+    agent: str = ""
+    reason: str = ""

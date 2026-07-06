@@ -32,4 +32,5 @@ subagent = Subagent(
         "requirements and any test resting on an unbacked assumption"
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + SHELL_TOOLS),
+    auto_assignable=True,
 )

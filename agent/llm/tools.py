@@ -10,7 +10,7 @@ import time
 import types as _pytypes
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Any, Literal, Union, cast, get_args, get_origin, get_type_hints
 
 from .types import ToolDefinition, ToolResultBlock, ToolUseBlock
 
@@ -18,6 +18,14 @@ if __import__("typing").TYPE_CHECKING:
     from agent.permissions import PermissionGate
 
 ToolFunc = Callable[..., Any]
+
+
+class _Unset:
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+_UNSET: Any = _Unset()
 
 _PRIMITIVE_SCHEMA: dict[type, dict[str, Any]] = {
     str: {"type": "string"},
@@ -139,6 +147,7 @@ class Tool:
     required_permission: str = "read"
     hidden_params: frozenset[str] = frozenset()
     bound_params: frozenset[str] = frozenset()
+    timeout: float | None | _Unset = _UNSET
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -180,6 +189,7 @@ def tool(
     is_concurrency_safe: bool = True,
     required_permission: str = "read",
     hidden_params: set[str] | None = None,
+    timeout: float | None | _Unset = _UNSET,
 ) -> Any:
     """Decorator that turns a function into a `Tool`."""
     hp = frozenset(hidden_params or ())
@@ -206,6 +216,7 @@ def tool(
             is_concurrency_safe=is_concurrency_safe,
             required_permission=required_permission,
             hidden_params=hp,
+            timeout=timeout,
         )
 
     if fn is None:
@@ -282,17 +293,20 @@ class ToolRegistry:
                     is_error=True,
                 )
             else:
+                effective_timeout: float | None = (
+                    timeout if tool_obj.timeout is _UNSET else cast("float | None", tool_obj.timeout)
+                )
                 try:
                     coro: Awaitable[Any] = tool_obj.call(**use.input)
-                    if timeout is not None:
-                        value = await asyncio.wait_for(coro, timeout=timeout)
+                    if effective_timeout is not None:
+                        value = await asyncio.wait_for(coro, timeout=effective_timeout)
                     else:
                         value = await coro
                     result = ToolResultBlock(tool_use_id=use.id, content=_stringify(value))
                 except asyncio.TimeoutError:
                     result = ToolResultBlock(
                         tool_use_id=use.id,
-                        content=f"Tool '{use.name}' timed out after {timeout}s",
+                        content=f"Tool '{use.name}' timed out after {effective_timeout}s",
                         is_error=True,
                     )
                 except Exception as exc:  # noqa: BLE001

@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from agent.pipeline.planner import Planner
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def _make_planner() -> Planner:
+    with patch("openai.AsyncOpenAI"):
+        return Planner(model="test-model", api_key="key")
+
+
+def _fake_response(raw_text: str) -> SimpleNamespace:
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw_text))])
+
+
+def test_phase1_yields_code_then_test_expert_in_order() -> None:
+    planner = _make_planner()
+    raw = json.dumps([
+        {"agent": "code-expert", "task": "write the library", "verify": "mechanical"},
+        {"agent": "test-expert", "task": "test {{step_1}}", "verify": "mechanical"},
+    ])
+    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
+
+    plan = run(planner.plan("build a library with tests"))
+
+    assert [s.agent for s in plan] == ["code-expert", "test-expert"]
+    assert all(s.verify for s in plan)
+
+
+def test_trivial_single_duty_yields_one_step_no_verify() -> None:
+    planner = _make_planner()
+    raw = json.dumps([{"agent": "test-expert", "task": "add coverage to calcexpr", "verify": None}])
+    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
+
+    plan = run(planner.plan("add minimal test coverage"))
+
+    assert len(plan) == 1
+    assert plan[0].verify is None
+
+
+def test_agent_x_seed_assigns_primary_step_to_seed_agent() -> None:
+    planner = _make_planner()
+    raw = json.dumps([{"agent": "test-expert", "task": "add coverage", "verify": None}])
+    mock_create = AsyncMock(return_value=_fake_response(raw))
+    planner._client.chat.completions.create = mock_create
+
+    plan = run(planner.plan("add coverage", seed="test-expert"))
+
+    # the seed must reach the outbound prompt (mechanism)...
+    sent_user_message = mock_create.call_args.kwargs["messages"][1]["content"]
+    assert "test-expert" in sent_user_message
+    # ...and the parsed plan's primary (first) step must actually carry it (outcome).
+    assert plan[0].agent == "test-expert"
+
+
+def test_post_planning_only_agent_in_phase1_raises() -> None:
+    import pytest
+
+    planner = _make_planner()
+    raw = json.dumps([{"agent": "code-refactorer", "task": "review the change", "verify": None}])
+    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
+
+    with pytest.raises(ValueError, match="code-refactorer"):
+        run(planner.plan("review this"))
+
+
+def test_no_json_array_in_output_raises() -> None:
+    import pytest
+
+    planner = _make_planner()
+    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response("not json at all"))
+
+    with pytest.raises(ValueError, match="no JSON array"):
+        run(planner.plan("do something"))

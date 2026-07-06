@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from agent.llm.providers.openai import OpenAIAdapter
-from agent.llm.types import StreamDone, TextBlock
+from agent.llm.types import Message, StreamDone, TextBlock, ThinkingBlock
 
 LEAKED_MARKUP = (
     "<｜｜DSML｜｜tool_calls>\n"
@@ -54,6 +54,18 @@ def test_parse_response_plain_text_unaffected() -> None:
     text_blocks = [b for b in result.content if isinstance(b, TextBlock)]
     assert len(text_blocks) == 1
     assert text_blocks[0].text == "Just a normal answer, no markup here."
+
+
+def test_translate_messages_thinking_only_assistant_message_sets_empty_content() -> None:
+    message = Message(role="assistant", content=[ThinkingBlock(text="some reasoning")])
+
+    result = OpenAIAdapter.translate_messages([message])
+
+    assert len(result) == 1
+    entry = result[0]
+    assert entry["content"] == ""
+    assert entry["reasoning_content"] == "some reasoning"
+    assert "tool_calls" not in entry
 
 
 def _make_adapter() -> OpenAIAdapter:

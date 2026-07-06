@@ -31,6 +31,7 @@ class Subagent:
     tools: list[str] | None = None  # tool-name allowlist; None = all tools
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
+    auto_assignable: bool = False  # phase-1 decomposition may assign it; False = post-planning-only (verify/repair)
 
     def build_system_base(self) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body
