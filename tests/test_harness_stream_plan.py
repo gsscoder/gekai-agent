@@ -18,7 +18,7 @@ from agent.harness.core import Harness
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.types import CompletionResponse, StreamDone, TextBlock
 from agent.pipeline.estimate import ScopeEstimate
-from agent.pipeline.plan import PlanStep
+from agent.pipeline.plan import Plan, PlanStep
 from agent.session import Session
 from agent.settings import Permissions
 
@@ -85,10 +85,13 @@ def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_pat
 def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
-    plan = [
-        PlanStep(agent="code-expert", task="write the library"),
-        PlanStep(agent="test-expert", task="write tests"),
-    ]
+    plan = Plan(
+        summary="build a library with tests",
+        steps=[
+            PlanStep(agent="code-expert", task="write the library", mission="write the library"),
+            PlanStep(agent="test-expert", task="write tests", mission="write tests"),
+        ],
+    )
     harness._planner.plan = AsyncMock(return_value=plan)
 
     async def fake_run_subagent(agent, task, **kwargs):
@@ -113,7 +116,7 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
 ) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
-    plan = [PlanStep(agent="test-expert", task="add coverage")]
+    plan = Plan(summary="add coverage", steps=[PlanStep(agent="test-expert", task="add coverage", mission="add coverage")])
     harness._planner.plan = AsyncMock(return_value=plan)
 
     async def fake_run_subagent(agent, task, **kwargs):
@@ -133,7 +136,7 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
 def test_plan_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
-    plan = [PlanStep(agent="code-expert", task="write it")]
+    plan = Plan(summary="build something", steps=[PlanStep(agent="code-expert", task="write it", mission="write it")])
     harness._planner.plan = AsyncMock(return_value=plan)
 
     async def failing_run_subagent(agent, task, **kwargs):

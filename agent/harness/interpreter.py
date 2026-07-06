@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from ..pipeline.plan import Plan, PlanStep
 
-DispatchFn = Callable[[str, str], Awaitable[str]]
+DispatchFn = Callable[[str, str, str], Awaitable[str]]
 VerifyFn = Callable[[PlanStep, str], Awaitable[bool]]
 # Structured pass/fail is a placeholder here (hard problem 3, open point 2 —
 # the verdict contract is not yet designed); a bool is enough to drive the
@@ -47,6 +47,40 @@ def _repair_task(step: PlanStep, out: str) -> str:
     return f"{step.task}\n\nthe previous attempt failed verification. its output was:\n{out}"
 
 
+_SIBLING_TASK_LIMIT = 60
+
+
+def _truncate(text: str, limit: int = _SIBLING_TASK_LIMIT) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _inject_request_summary(plan: Plan, index: int, task: str) -> str:
+    """Prepend a mechanical <request_summary> framing block to a step's task:
+    the overall ask (planner-produced `summary`) plus this step's own
+    boundary against sibling steps — so a subagent that runs cold, with no
+    awareness of the plan around it, doesn't redo or collide with work
+    another step already owns (e.g. writing its own throwaway tests when a
+    dedicated test step exists)."""
+    total = len(plan)
+    lines = [
+        "<request_summary>",
+        f"user wants: {plan.summary}",
+        f"your step ({index + 1}/{total}): {plan[index].task}",
+    ]
+    if total > 1:
+        others = ", ".join(
+            f"step {i + 1} {s.agent} ({_truncate(s.task)})"
+            for i, s in enumerate(plan)
+            if i != index
+        )
+        lines.append(f"handled elsewhere — do not do: {others}")
+    lines.append("</request_summary>")
+    return "\n".join(lines) + "\n\n" + task
+
+
 async def run_plan(
     plan: Plan,
     dispatch: DispatchFn,
@@ -65,7 +99,8 @@ async def run_plan(
         if on_event:
             on_event("start", index, step)
         task = resolve_refs(step.task, prior_outputs)
-        out = await dispatch(step.agent, task)
+        task = _inject_request_summary(plan, index, task)
+        out = await dispatch(step.agent, task, step.mission)
         if not out:
             if on_event:
                 on_event("halt", index, step)
@@ -77,7 +112,7 @@ async def run_plan(
             if not await verify_agent(step, out):
                 if on_event:
                     on_event("repair", index, step)
-                out = await dispatch(step.repair or step.agent, _repair_task(step, out))
+                out = await dispatch(step.repair or step.agent, _repair_task(step, out), step.mission)
                 if on_event:
                     on_event("verify", index, step)
                 if not await verify_agent(step, out):

@@ -15,6 +15,7 @@ async def run_subagent(
     agent: str,
     task: str,
     *,
+    mission: str = "",
     model: str,
     api_key: str | None,
     api_base: str | None,
@@ -47,7 +48,7 @@ async def run_subagent(
     )
     nested_run_id = uuid.uuid4().hex
     if bus is not None:
-        bus.emit(DelegationStarted(agent=agent, task=task, run_id=nested_run_id))
+        bus.emit(DelegationStarted(agent=agent, task=task, mission=mission, run_id=nested_run_id))
     try:
         history = await nested.run(task, run_id=nested_run_id)
     except Exception as exc:

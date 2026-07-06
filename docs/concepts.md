@@ -34,7 +34,10 @@ Gekai is built around keeping a human in the loop, not long unsupervised executi
 expected to produce something a human looks at before the next one starts. This shapes
 everything downstream: subagents run cold with no carried context (fire-and-forget per turn,
 by design), and diff/event output exists specifically to give the human something concrete to
-check at each step.
+check at each step. Each step's task does carry a mechanical `<request_summary>` block — the
+plan's overall gist plus that step's boundary against its siblings — but this is request-level
+framing derived from the current plan, not accumulated cross-turn state, so the "no carried
+context" principle still holds turn to turn.
 
 The planner can decompose one request into a multi-step plan — several different specialists run
 in order, each dispatched in turn by the fixed interpreter — but this is still transparent,

@@ -103,6 +103,7 @@ class DelegationStarted:
     agent: str
     task: str
     run_id: str = ""
+    mission: str = ""
 
 
 @dataclass(frozen=True, slots=True)

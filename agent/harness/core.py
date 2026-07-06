@@ -326,7 +326,7 @@ class Harness:
             verify_placements=sum(1 for s in plan if s.verify),
         )
 
-        async def dispatch(agent_name: str, task: str) -> str:
+        async def dispatch(agent_name: str, task: str, mission: str = "") -> str:
             if agent_name == "main":
                 main_system = _enrich_system_base(SYSTEM_PROMPT, working_dir)
                 agent_obj = _build_agent(
@@ -335,7 +335,7 @@ class Harness:
                     subagent=None, hidden_grant_callback=hidden_grant_callback,
                 )
                 run_id = uuid.uuid4().hex
-                bus.emit(DelegationStarted(agent="main", task=task, run_id=run_id))
+                bus.emit(DelegationStarted(agent="main", task=task, mission=mission, run_id=run_id))
                 try:
                     history = await agent_obj.run(task, run_id=run_id)
                 finally:
@@ -343,6 +343,7 @@ class Harness:
                 return _last_assistant_text(history)
             return await run_subagent(
                 agent_name, task,
+                mission=mission,
                 model=self._model, api_key=self._api_key, api_base=self._api_base,
                 extra_params=self._extra_params, working_dir=working_dir,
                 permissions=permissions, permission_callback=permission_callback,
@@ -406,14 +407,14 @@ def _recap(plan: Plan, *, halted: PlanHalted | None) -> str:
     is both the yielded assistant text (so it persists into session history
     for next-turn continuity, plan 27 hard problem 4) and the rendered
     checkpoint artifact (decision 15)."""
-    lines = [f"plan ({len(plan)} step{'s' if len(plan) != 1 else ''}):"]
+    lines = [plan.summary]
     for i, step in enumerate(plan):
         if halted is not None and i > halted.index:
-            lines.append(f"  {i + 1}. {step.agent}: {step.task} — not run (plan halted earlier)")
+            lines.append(f"  {i + 1}. {step.agent} — not run")
         elif halted is not None and i == halted.index:
-            lines.append(f"  {i + 1}. {step.agent}: {step.task} — HALTED ({halted.reason})")
+            lines.append(f"  {i + 1}. {step.agent} — HALTED ({halted.reason})")
         else:
-            lines.append(f"  {i + 1}. {step.agent}: {step.task} — ok")
+            lines.append(f"  {i + 1}. {step.agent} — ok")
     if halted is not None:
         lines.append("prior steps' work is kept; nothing was rolled back.")
     return "\n".join(lines)
@@ -480,7 +481,7 @@ def _bridge_llm_event(
     elif isinstance(event, ThinkingChunkReceived):
         queue.put_nowait(ThinkingTokenEvent(text=event.text))
     elif isinstance(event, DelegationStarted):
-        queue.put_nowait(DelegationStartEvent(agent_name=event.agent, task=event.task))
+        queue.put_nowait(DelegationStartEvent(agent_name=event.agent, task=event.task, mission=event.mission))
     elif isinstance(event, DelegationCompleted):
         queue.put_nowait(DelegationDoneEvent(agent_name=event.agent))
     elif isinstance(event, AgentStopped) and run_id is not None:

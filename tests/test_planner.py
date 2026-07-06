@@ -23,21 +23,28 @@ def _fake_response(raw_text: str) -> SimpleNamespace:
 
 def test_phase1_yields_code_then_test_expert_in_order() -> None:
     planner = _make_planner()
-    raw = json.dumps([
-        {"agent": "code-expert", "task": "write the library", "verify": "mechanical"},
-        {"agent": "test-expert", "task": "test {{step_1}}", "verify": "mechanical"},
-    ])
+    raw = json.dumps({
+        "summary": "build a library with tests",
+        "steps": [
+            {"agent": "code-expert", "task": "write the library", "mission": "write the library", "verify": "mechanical"},
+            {"agent": "test-expert", "task": "test {{step_1}}", "mission": "test the library", "verify": "mechanical"},
+        ],
+    })
     planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
 
     plan = run(planner.plan("build a library with tests"))
 
+    assert plan.summary == "build a library with tests"
     assert [s.agent for s in plan] == ["code-expert", "test-expert"]
     assert all(s.verify for s in plan)
 
 
 def test_trivial_single_duty_yields_one_step_no_verify() -> None:
     planner = _make_planner()
-    raw = json.dumps([{"agent": "test-expert", "task": "add coverage to calcexpr", "verify": None}])
+    raw = json.dumps({
+        "summary": "add minimal test coverage",
+        "steps": [{"agent": "test-expert", "task": "add coverage to calcexpr", "mission": "add coverage", "verify": None}],
+    })
     planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
 
     plan = run(planner.plan("add minimal test coverage"))
@@ -48,7 +55,10 @@ def test_trivial_single_duty_yields_one_step_no_verify() -> None:
 
 def test_agent_x_seed_assigns_primary_step_to_seed_agent() -> None:
     planner = _make_planner()
-    raw = json.dumps([{"agent": "test-expert", "task": "add coverage", "verify": None}])
+    raw = json.dumps({
+        "summary": "add coverage",
+        "steps": [{"agent": "test-expert", "task": "add coverage", "mission": "add coverage", "verify": None}],
+    })
     mock_create = AsyncMock(return_value=_fake_response(raw))
     planner._client.chat.completions.create = mock_create
 
@@ -65,18 +75,21 @@ def test_post_planning_only_agent_in_phase1_raises() -> None:
     import pytest
 
     planner = _make_planner()
-    raw = json.dumps([{"agent": "code-refactorer", "task": "review the change", "verify": None}])
+    raw = json.dumps({
+        "summary": "review this",
+        "steps": [{"agent": "code-refactorer", "task": "review the change", "mission": "review the change", "verify": None}],
+    })
     planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
 
     with pytest.raises(ValueError, match="code-refactorer"):
         run(planner.plan("review this"))
 
 
-def test_no_json_array_in_output_raises() -> None:
+def test_no_json_object_in_output_raises() -> None:
     import pytest
 
     planner = _make_planner()
     planner._client.chat.completions.create = AsyncMock(return_value=_fake_response("not json at all"))
 
-    with pytest.raises(ValueError, match="no JSON array"):
+    with pytest.raises(ValueError, match="no JSON object"):
         run(planner.plan("do something"))

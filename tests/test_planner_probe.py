@@ -33,14 +33,18 @@ from agent.llm.providers.openai import OpenAIAdapter
 
 _PLANNER_SYSTEM = (
     "You are a planning stage in a coding harness. Decompose the user's request into "
-    "a JSON array of steps, each an object with keys:\n"
-    '  "agent": "main", "code-expert", or "test-expert"\n'
-    '  "task": a self-contained instruction string for that agent\n'
-    '  "verify": true or false — true if this step\'s change is complex enough to '
+    "a JSON object with keys:\n"
+    '  "summary": a short 1-2 sentence gist of what the user wants\n'
+    '  "steps": a JSON array of steps, each an object with keys:\n'
+    '    "agent": "main", "code-expert", or "test-expert"\n'
+    '    "task": a self-contained instruction string for that agent\n'
+    '    "verify": true or false — true if this step\'s change is complex enough to '
     "warrant a preventive check before moving on\n"
     "Order steps by dependency (scaffolding/logic before tests), regardless of the "
     "order mentioned in the prompt. Never fragment one artifact across steps. "
-    "Respond with ONLY the JSON array, no prose, no markdown fences."
+    "If building a library/package from scratch, use conventional layout for the "
+    "language (e.g. for Python: a package directory, a tests/ directory — not flat). "
+    "Respond with ONLY the JSON object, no prose, no markdown fences."
 )
 
 _CANONICAL_PROMPT = (
@@ -56,10 +60,10 @@ _TRIALS = 3
 _REQUIRED_PASSES = 2
 
 
-def _extract_json_array(text: str) -> list[dict]:
-    match = re.search(r"\[.*\]", text, re.DOTALL)
+def _extract_json_object(text: str) -> dict:
+    match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
-        raise ValueError(f"no JSON array found in model output: {text!r}")
+        raise ValueError(f"no JSON object found in model output: {text!r}")
     return json.loads(match.group(0))
 
 
@@ -80,7 +84,8 @@ async def _run_one_trial(model_name: str, api_key: str, base_url: str | None) ->
     text = "".join(
         b.text for b in messages[-1].content if hasattr(b, "text")
     ) if not isinstance(messages[-1].content, str) else messages[-1].content
-    return _extract_json_array(text)
+    raw = _extract_json_object(text)
+    return raw["steps"]
 
 
 def _check_plan(steps: list[dict]) -> str | None:

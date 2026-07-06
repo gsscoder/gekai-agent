@@ -21,27 +21,59 @@ MAIN_AGENT = "main"
 class PlanStep:
     agent: str  # "main" or an auto-assignable subagent name
     task: str
+    mission: str  # short human-readable phrase (~8-10 words) describing the step's job
     verify: str | None = None  # post-planning-only agent name, or a mechanical check command
     repair: str | None = None  # post-planning-only agent name, or a mechanical check command
 
 
-Plan = list[PlanStep]
+@dataclass(frozen=True, eq=False)
+class Plan:
+    """Validated plan: the model's own gist of the request (`summary`) plus the
+    ordered steps. List-like (`len`, iteration, indexing) so existing callers
+    that treat a plan as a sequence of PlanStep keep working unchanged."""
+
+    summary: str
+    steps: list[PlanStep]
+
+    def __len__(self) -> int:
+        return len(self.steps)
+
+    def __iter__(self):
+        return iter(self.steps)
+
+    def __getitem__(self, index):
+        return self.steps[index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Plan):
+            return self.summary == other.summary and self.steps == other.steps
+        return self.steps == other  # allow comparing against a bare list of steps in tests
 
 
-def parse_plan(raw: list[dict], roster: list[Subagent]) -> Plan:
+def parse_plan(raw: dict, roster: list[Subagent]) -> Plan:
     """Schema-check, roster-validate, and phase-eligibility-check a raw plan.
 
+    `raw` is the model's parsed JSON object: {"summary": str, "steps": [...]}.
     Raises ValueError on any violation — the whole plan is rejected, never a
     silently dropped step (fail loud).
     """
-    if not raw:
+    if not isinstance(raw, dict):
+        raise ValueError(f"plan must be a JSON object with 'summary' and 'steps', got {raw!r}")
+
+    summary = raw.get("summary")
+    if not summary or not isinstance(summary, str):
+        raise ValueError(f"plan must contain a non-empty 'summary' string, got {summary!r}")
+
+    step_list = raw.get("steps")
+    if not isinstance(step_list, list) or not step_list:
         raise ValueError("plan must contain at least one step")
 
     by_name = {s.name: s for s in roster}
     steps: list[PlanStep] = []
-    for i, item in enumerate(raw):
+    for i, item in enumerate(step_list):
         agent = item.get("agent")
         task = item.get("task")
+        mission = item.get("mission")
         verify = item.get("verify")
         repair = item.get("repair")
 
@@ -51,13 +83,15 @@ def parse_plan(raw: list[dict], roster: list[Subagent]) -> Plan:
             )
         if not task or not isinstance(task, str):
             raise ValueError(f"step {i}: task must be a non-empty string, got {task!r}")
+        if not mission or not isinstance(mission, str):
+            raise ValueError(f"step {i}: mission must be a non-empty string, got {mission!r}")
         _check_post_planning_field(i, "verify", verify, by_name)
         _check_post_planning_field(i, "repair", repair, by_name)
         _check_refs(i, task, len(steps))
 
-        steps.append(PlanStep(agent=agent, task=task, verify=verify, repair=repair))
+        steps.append(PlanStep(agent=agent, task=task, mission=mission, verify=verify, repair=repair))
 
-    return steps
+    return Plan(summary=summary, steps=steps)
 
 
 def _check_post_planning_field(

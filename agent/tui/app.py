@@ -228,10 +228,16 @@ def _subagent_header_markup(name: str, bg_color: str, ui_label: str) -> str:
     return markup
 
 
+_REQUEST_SUMMARY_BLOCK = re.compile(r"<request_summary>.*?</request_summary>\s*", re.DOTALL)
+
+
 def _fallback_ui_label(text: str, max_words: int = 12) -> str:
     """Cheap stand-in for the rewriter's <ui_label> when rewriting is skipped
     (no located entries) or the label comes back empty — strips backtick-quoted
-    paths so file names don't leak into the badge, then takes the leading words."""
+    paths so file names don't leak into the badge, then takes the leading words.
+    Also strips a leading <request_summary> framing block (plan-step tasks are
+    prefixed with one before dispatch) so it never leaks into the badge."""
+    text = _REQUEST_SUMMARY_BLOCK.sub("", text, count=1)
     stripped = re.sub(r"`[^`]*`", "", text)
     words = stripped.split()
     return " ".join(words[:max_words])
@@ -1086,7 +1092,7 @@ class GekaiApp(App[None]):
                         await delegation_renderer.start(
                             resolved.name,
                             namespace=resolved.namespace,
-                            ui_label=_fallback_ui_label(item.task),
+                            ui_label=item.mission or _fallback_ui_label(item.task),
                             bg_color=NAMESPACE_COLORS[resolved.namespace],
                         )
                         active_renderer = delegation_renderer

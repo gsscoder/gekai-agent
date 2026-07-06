@@ -20,19 +20,32 @@ from openai import AsyncOpenAI
 from ..subagents import SUBAGENTS, Subagent
 from .plan import MAIN_AGENT, Plan, parse_plan
 
-_JSON_ARRAY = re.compile(r"\[.*\]", re.DOTALL)
+_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 _PLANNER_PROMPT = (
     "you are the planning stage of a coding harness. decompose the user's request into a "
-    "JSON array of steps, each an object with keys:\n"
-    '  "agent": "{main}" or one of the auto-assignable specialists below\n'
-    '  "task": a self-contained instruction string for that agent\n'
-    '  "verify": null, or the string "mechanical" if this step\'s change is complex enough to '
+    "JSON object with keys:\n"
+    '  "summary": a short 1-2 sentence gist of what the user wants, in your own words\n'
+    '  "steps": a JSON array of steps, each an object with keys:\n'
+    '    "agent": "{main}" or one of the auto-assignable specialists below\n'
+    '    "task": a self-contained instruction string for that agent\n'
+    '    "mission": a short human-readable phrase (~8-10 words) naming this step\'s job, '
+    "distinct from the full task instruction\n"
+    '    "verify": null, or the string "mechanical" if this step\'s change is complex enough to '
     "warrant a preventive check before moving on (no dedicated verify agent exists yet — "
     '"mechanical" is the placeholder check)\n'
     "order steps by dependency (scaffolding/logic before tests), regardless of the order "
     "mentioned in the request. never fragment one artifact across steps. "
-    "respond with ONLY the JSON array — no prose, no markdown fences.\n"
+    "when the request builds something new from scratch (greenfield, not editing an existing "
+    "tree), the plan MUST structure the workspace by the established conventions of every "
+    "ecosystem it touches — the canonical directory layout, entry points, and project/manifest "
+    "files a practitioner of that stack expects to find. this is mandatory, not stylistic: a "
+    "serious project is never a loose pile of files at the workspace root. a repository may span "
+    "several ecosystems at once (e.g. a backend and a frontend in different languages); each "
+    "component is laid out by its own stack's conventions independently. do not infer the stack "
+    "narrowly — honor whatever conventions the requested languages, frameworks, and project kind "
+    "imply. "
+    "respond with ONLY the JSON object — no prose, no markdown fences\n"
     "<auto-assignable-specialists>\n"
     "{roster}\n"
     "</auto-assignable-specialists>"
@@ -77,9 +90,9 @@ class Planner:
             **self._extra_params,
         )
         raw_text: str = response.choices[0].message.content or ""
-        match = _JSON_ARRAY.search(raw_text)
+        match = _JSON_OBJECT.search(raw_text)
         if not match:
-            raise ValueError(f"planner returned no JSON array: {raw_text!r}")
+            raise ValueError(f"planner returned no JSON object: {raw_text!r}")
         raw = json.loads(match.group(0))
         return parse_plan(raw, self._full_roster)
 

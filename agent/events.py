@@ -73,6 +73,7 @@ class DelegationStartEvent(AgentEvent):
     opens a distinct badge block for it, separate from the outer header."""
     agent_name: str = ""
     task: str = ""
+    mission: str = ""
 
 
 @dataclass
