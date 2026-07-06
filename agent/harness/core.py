@@ -407,17 +407,13 @@ def _recap(plan: Plan, *, halted: PlanHalted | None) -> str:
     is both the yielded assistant text (so it persists into session history
     for next-turn continuity, plan 27 hard problem 4) and the rendered
     checkpoint artifact (decision 15)."""
-    lines = [plan.summary]
-    for i, step in enumerate(plan):
-        if halted is not None and i > halted.index:
-            lines.append(f"  {i + 1}. {step.agent} — not run")
-        elif halted is not None and i == halted.index:
-            lines.append(f"  {i + 1}. {step.agent} — HALTED ({halted.reason})")
-        else:
-            lines.append(f"  {i + 1}. {step.agent} — ok")
-    if halted is not None:
-        lines.append("prior steps' work is kept; nothing was rolled back.")
-    return "\n".join(lines)
+    if halted is None:
+        return plan.summary
+    return (
+        f"{plan.summary}\n"
+        f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
+        "prior steps' work is kept; nothing was rolled back."
+    )
 
 
 def _bridge_llm_event(

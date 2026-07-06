@@ -107,8 +107,7 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
     assert started[0].step_count == 2
     assert started[0].agents == ["code-expert", "test-expert"]
     assert any(isinstance(e, DoneEvent) for e in collected)
-    assert "code-expert" in collected[-1]
-    assert "test-expert" in collected[-1]
+    assert collected[-1] == "build a library with tests"
 
 
 def test_seed_routes_through_planner_even_without_mutate_estimate(
