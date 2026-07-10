@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import pyfiglet
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
@@ -20,7 +19,6 @@ from textual.strip import Strip
 from textual.widgets import ProgressBar, Static, TextArea
 from textual.worker import Worker
 
-from agent import __version_core__, __version_label__
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
@@ -37,7 +35,7 @@ from agent.subagents import NAMESPACE_COLORS, SUBAGENTS, Subagent
 from agent.subagents.worker import ws_manager
 from agent.settings import PERMISSION_CHOICES, load_context_limit, resolve_permissions, save_permissions
 from agent.workspace import db as workspace_db, list_files, list_dirs
-from agent.tui.styles import random_accent_color, random_operative_verb
+from agent.tui.styles import OPERATIVE_COLOR, random_accent_color, random_operative_verb
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, EstimateEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult, DelegationStartEvent, DelegationDoneEvent, PlanStartedEvent, PlanHaltedEvent
 
 from .palette import CommandPalette
@@ -552,13 +550,6 @@ class GekaiApp(App[None]):
         padding: 0 0 0 2;
     }
 
-    #version-bar {
-        height: 1;
-        background: ansi_default;
-        text-align: right;
-        padding: 0 2 0 0;
-    }
-
     #scroll-hint-wrap {
         height: 1;
         align-horizontal: center;
@@ -619,7 +610,6 @@ class GekaiApp(App[None]):
         self._status_stop: asyncio.Event | None = None
         self._status_frame: int = 0
         self._status_verb: str = ""
-        self._route_color: str = _DEFAULT_ROUTE_COLOR
         self._status_start: float = 0.0
         self._esc_pending: bool = False
         self._pending_choice: asyncio.Future[str | None] | None = None
@@ -659,7 +649,6 @@ class GekaiApp(App[None]):
                 yield PromptTextArea(id="prompt", show_line_numbers=False, compact=True, highlight_cursor_line=False)
                 yield Static("❯", id="prompt-marker")
             yield Static("", id="context-bar")
-            yield Static(f"[dim]{__version_core__}[/dim] [bold white]{__version_label__}[/bold white]", id="version-bar")
 
     async def on_mount(self) -> None:
         # Disable terminal mouse tracking so native text selection works.
@@ -680,8 +669,6 @@ class GekaiApp(App[None]):
     async def _init_session(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
 
-        banner_text = pyfiglet.figlet_format("gekAI", font="small_slant").rstrip()
-        await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
         self._session = self._agent.start_session(
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
@@ -749,7 +736,6 @@ class GekaiApp(App[None]):
                     await conversation.mount(MessageWidget(MessageKind.ASSISTANT, content))
             self.call_after_refresh(conversation.scroll_end)
 
-        self._set_route_label("waiting")
         self._focus_prompt()
         self.call_after_refresh(self._focus_prompt)
 
@@ -798,8 +784,6 @@ class GekaiApp(App[None]):
             _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
         self._assistant_widget = None
-        banner_text = pyfiglet.figlet_format("gekAI", font="small_slant").rstrip()
-        await conversation.mount(MessageWidget(MessageKind.BANNER, banner_text))
         if command_text is not None:
             append_command(self._session, command_text)
             await conversation.mount(MessageWidget(MessageKind.USER, command_text))
@@ -1008,17 +992,6 @@ class GekaiApp(App[None]):
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
 
-    def _set_route_label(self, label: str, color: str | None = None) -> None:
-        if color is not None:
-            self._route_color = color
-        # Inline markup: colored label block + a 2-char border-line segment so the
-        # right-aligned title sits spaced off the corner. The colored span and the
-        # transparent dash tail must be styled per-cell, which a single
-        # border_title_background style can't express.
-        self.query_one("#input-area", Container).border_title = (
-            f"[bold #000000 on {self._route_color}] {label.lower()} [/][#3a3a3a]─[/]"
-        )
-
     async def _run_step(
         self, raw: str, seed: str | None, *,
         turn_id: str, session_id: str, conversation: ScrollableContainer,
@@ -1033,7 +1006,6 @@ class GekaiApp(App[None]):
         which sub-stage failed."""
         events = self._agent.events
 
-        self._set_route_label("main", color=_DEFAULT_ROUTE_COLOR)
         stage[0] = "harness"
         step_route = Route(trivial=trivial)
         harness_start = time.monotonic()
@@ -1083,7 +1055,6 @@ class GekaiApp(App[None]):
                 elif isinstance(item, SubAgentStartEvent):
                     ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
                     active_renderer = ws_renderer
-                    self._set_route_label(item.name, color=item.color)
                     await ws_renderer.start(item.name)
                 elif isinstance(item, DelegationStartEvent):
                     resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
@@ -1163,7 +1134,7 @@ class GekaiApp(App[None]):
         outcome = "ok"
         stage = ["route"]
         verb = random_operative_verb()
-        color = random_accent_color()
+        color = OPERATIVE_COLOR
         conversation = self.query_one("#conversation", ScrollableContainer)
         ws_renderer: SubAgentRenderer | None = None
 
@@ -1173,7 +1144,6 @@ class GekaiApp(App[None]):
                 route = Route(trivial=False)
                 events.emit("route", session=session_id, turn=turn_id, decision=f"seed/{forced_seed}", duration_ms=0)
             else:
-                self._set_route_label("route", color=_PIPELINE_COLOR)
                 t0 = time.monotonic()
                 route = await self._agent.gate(user_input, history=self._session.messages)
                 events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
@@ -1212,7 +1182,6 @@ class GekaiApp(App[None]):
             outcome = "error"
             conversation.scroll_end(animate=False)
         finally:
-            self._set_route_label("waiting", color=_DEFAULT_ROUTE_COLOR)
             await self._stop_status_animation()
             if ws_renderer is not None:
                 ws_renderer.stop_spinner()

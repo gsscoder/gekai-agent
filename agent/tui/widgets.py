@@ -10,6 +10,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
+from agent import __version_core__, __version_label__
 from agent.diff import DiffLine, render_diff
 
 
@@ -446,7 +447,7 @@ class DiffWidget(Widget):
 
 
 _WB_W = 56
-_WB_TITLE = "Gekai ready to operate · Input prompt or command"
+_WB_TITLE = "Ready to operate · Input prompt or command"
 _wbt_pad = (_WB_W - len(_WB_TITLE)) // 2
 _WB_TITLE_LINE = " " * _wbt_pad + _WB_TITLE + " " * (_WB_W - len(_WB_TITLE) - _wbt_pad)
 _WB_L1, _WB_S1 = "Insert a new line in the input box", "ctrl+J"
@@ -477,6 +478,7 @@ class WelcomeOverlay(Widget):
         height: 10;
         background: ansi_default;
         border: round #4a4a4a;
+        border-title-align: center;
         padding: 1 2;
     }
     #welcome-box {
@@ -488,3 +490,6 @@ class WelcomeOverlay(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static(_WELCOME_CONTENT, id="welcome-box")
+
+    def on_mount(self) -> None:
+        self.border_title = f"[bold white]gekAI[/bold white] [#4a4a4a]| {__version_core__} {__version_label__}[/#4a4a4a]"
