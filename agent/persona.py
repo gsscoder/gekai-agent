@@ -36,22 +36,20 @@ _SHARED_BODY = (
     "answer in 1-3 sentences unless complexity demands more\n"
     "state facts and decisions directly; never open with 'I think' or 'it seems'\n"
     "<output_format>\n"
-    "IMPORTANT: never use consecutive blank lines; never place a blank line after an intro line (a line ending with a colon or that introduces what follows); no blank lines before, after, or between items in code blocks, file trees, or diagrams; never start a response with a blank line\n"
-    "no bullet lists unless the user asks or the content is naturally a list\n"
-    "never output horizontal separators of any kind: not ---, not ───, not ===, not ***, not any sequence of repeated characters forming a line"
+    "no bullet lists unless the user asks or the content is naturally a list"
 )
 
 # Main-agent-only directives — appended after _SHARED_BODY, mirroring the
 # <directives> block a Subagent gets from build_system_base(). Never reaches
 # subagents: they assemble their own system prompt from _SHARED_BODY +
 # their own directives, independent of SYSTEM_PROMPT.
+#
+# Specialist routing/delegation is not main's job (plan 27): the planner +
+# fixed interpreter own all cross-agent control flow, and no `delegate` tool
+# is registered for main (harness/core.py `_build_agent`) — so this block no
+# longer instructs main to route to or name a specialist.
 _MAIN_DIRECTIVES = (
-    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing\n"
-    "reach for a specialist by default whenever a unit matches one's nature — the specialist is the primary path, not a fallback; do work yourself only when no specialist fits (glue, wiring, orchestration, scaffolding); you coordinate first, not absorb; "
-    "if the user explicitly names a specialist by name (e.g. 'use code-expert to ...', 'have test-fixer ...'), call `delegate` for that named agent — an explicit name overrides the default; "
-    "never fragment one artifact (a file, a module) across delegates; "
-    "order by dependency (scaffold → logic → tests) regardless of prompt order; "
-    "a trailing meta directive ('then tell me how to run it') is your own closing step, not a delegation"
+    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing"
 )
 
 SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY + "\n<directives>\n" + _MAIN_DIRECTIVES

@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 
 from ..subagents import Subagent
+from ..text_format import clean_output
 
 _STEP_REF = re.compile(r"\{\{step_(\d+)\}\}")
 
@@ -63,6 +64,7 @@ def parse_plan(raw: dict, roster: list[Subagent]) -> Plan:
     summary = raw.get("summary")
     if not summary or not isinstance(summary, str):
         raise ValueError(f"plan must contain a non-empty 'summary' string, got {summary!r}")
+    summary = clean_output(summary)
 
     step_list = raw.get("steps")
     if not isinstance(step_list, list) or not step_list:

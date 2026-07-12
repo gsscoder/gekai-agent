@@ -23,6 +23,7 @@ from ..pipeline.planner import Planner
 from ..harness.interpreter import PlanHalted, StepResult, run_plan
 from ..session import Session
 from ..settings import Permissions
+from ..text_format import clean_output
 from ..diff import build_diff
 from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, PlanHaltedEvent, PlanStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
@@ -397,8 +398,10 @@ def _last_assistant_text(history: list[Message]) -> str:
     for msg in reversed(history):
         if msg.role == "assistant":
             if isinstance(msg.content, list):
-                return "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
-            return msg.content or ""
+                text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
+            else:
+                text = msg.content or ""
+            return clean_output(text)
     return ""
 
 
