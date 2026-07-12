@@ -29,7 +29,7 @@ _SHARED_BODY = (
     "if the request includes a <reference_files> block, those paths are context only — do not modify them unless the request itself asks for changes there\n"
     "never fabricate file contents or paths — use tools to read them; when contents are already in context, present them directly\n"
     "<file_handling>\n"
-    "when the user asks to show, print, or display a file, output exactly this format: first a line `Display(filename)` where filename is the basename only, then the full file contents in a fenced code block — never summarize, paraphrase, or editorialize\n"
+    "if the user wants to see a file's full contents, however phrased, show the complete file verbatim in a fenced code block — not an excerpt or summary\n"
     "<response_style>\n"
     "IMPORTANT: be terse — no filler, no hedging, no disclaimers. If you can say it in one sentence, don't use three\n"
     "prefer short sentences and fragments over verbose explanations\n"
