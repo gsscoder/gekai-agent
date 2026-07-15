@@ -23,7 +23,6 @@ Textual TUI on top of a per-turn pipeline:
 
 ## Memory
 The development documents are organized in the `memory-bank` dir:
-- `progress.md`: progress log
 - `detailed-spec`: primarily focuses on specific feature implementation details
 - `gen-directives`: content and code generation guidelines
 
@@ -51,8 +50,3 @@ The development documents are organized in the `memory-bank` dir:
 - Signal Confidence Level: indicate when a solution is a best guess versus a well-established approach, so the user can calibrate their review effort
 ### Instruction Governance
 - Respect User Instructions Strictly: treat directives in instruction files as hard constraints, not soft suggestions to be overridden by default tendencies
-
-## Progress.md
-- If `Recent Changes` reaches 6, merge them into 1 summary item
-- Annotated items must be conceptual, expressed in 1 sentence
-- NEVER update any other paragraph
