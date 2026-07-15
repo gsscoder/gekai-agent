@@ -1,8 +1,10 @@
-"""Plan data schema + validator (plan 27, improvement 1).
+"""TaskGraph data schema + validator (plan 27 origin; renamed under plan 28).
 
-The plan is data, not generated code: a flat list of PlanStep carrying
-verify/repair attributes. Nesting/branching is the fixed interpreter's job,
-not encoded here (plan 27 decision 2).
+v1 is data, not generated code: a flat list of Task nodes carrying
+verify/repair attributes, edges implicit-sequential. Conditional branching
+is a deliberately deferred capability (plan 28) — until built, nesting/
+branching stays the fixed interpreter's job, not encoded here (plan 27
+decision 2, preserved).
 """
 
 from __future__ import annotations
@@ -19,22 +21,22 @@ MAIN_AGENT = "main"
 
 
 @dataclass(frozen=True)
-class PlanStep:
+class Task:
     agent: str  # "main" or an auto-assignable subagent name
-    task: str
+    instruction: str
     mission: str  # short human-readable phrase (~8-10 words) describing the step's job
     verify: str | None = None  # post-planning-only agent name, or a mechanical check command
     repair: str | None = None  # post-planning-only agent name, or a mechanical check command
 
 
 @dataclass(frozen=True, eq=False)
-class Plan:
-    """Validated plan: the model's own gist of the request (`summary`) plus the
+class TaskGraph:
+    """Validated task graph: the model's own gist of the request (`summary`) plus the
     ordered steps. List-like (`len`, iteration, indexing) so existing callers
-    that treat a plan as a sequence of PlanStep keep working unchanged."""
+    that treat a graph as a sequence of Task keep working unchanged."""
 
     summary: str
-    steps: list[PlanStep]
+    steps: list[Task]
 
     def __len__(self) -> int:
         return len(self.steps)
@@ -46,35 +48,35 @@ class Plan:
         return self.steps[index]
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, Plan):
+        if isinstance(other, TaskGraph):
             return self.summary == other.summary and self.steps == other.steps
         return self.steps == other  # allow comparing against a bare list of steps in tests
 
 
-def parse_plan(raw: dict, roster: list[Subagent]) -> Plan:
-    """Schema-check, roster-validate, and phase-eligibility-check a raw plan.
+def parse_task_graph(raw: dict, roster: list[Subagent]) -> TaskGraph:
+    """Schema-check, roster-validate, and phase-eligibility-check a raw task graph.
 
     `raw` is the model's parsed JSON object: {"summary": str, "steps": [...]}.
-    Raises ValueError on any violation — the whole plan is rejected, never a
+    Raises ValueError on any violation — the whole graph is rejected, never a
     silently dropped step (fail loud).
     """
     if not isinstance(raw, dict):
-        raise ValueError(f"plan must be a JSON object with 'summary' and 'steps', got {raw!r}")
+        raise ValueError(f"task graph must be a JSON object with 'summary' and 'steps', got {raw!r}")
 
     summary = raw.get("summary")
     if not summary or not isinstance(summary, str):
-        raise ValueError(f"plan must contain a non-empty 'summary' string, got {summary!r}")
+        raise ValueError(f"task graph must contain a non-empty 'summary' string, got {summary!r}")
     summary = clean_output(summary)
 
     step_list = raw.get("steps")
     if not isinstance(step_list, list) or not step_list:
-        raise ValueError("plan must contain at least one step")
+        raise ValueError("task graph must contain at least one step")
 
     by_name = {s.name: s for s in roster}
-    steps: list[PlanStep] = []
+    steps: list[Task] = []
     for i, item in enumerate(step_list):
         agent = item.get("agent")
-        task = item.get("task")
+        instruction = item.get("instruction")
         mission = item.get("mission")
         verify = item.get("verify")
         repair = item.get("repair")
@@ -83,17 +85,17 @@ def parse_plan(raw: dict, roster: list[Subagent]) -> Plan:
             raise ValueError(
                 f"step {i}: agent {agent!r} is not {MAIN_AGENT!r} or an auto-assignable subagent"
             )
-        if not task or not isinstance(task, str):
-            raise ValueError(f"step {i}: task must be a non-empty string, got {task!r}")
+        if not instruction or not isinstance(instruction, str):
+            raise ValueError(f"step {i}: instruction must be a non-empty string, got {instruction!r}")
         if not mission or not isinstance(mission, str):
             raise ValueError(f"step {i}: mission must be a non-empty string, got {mission!r}")
         _check_post_planning_field(i, "verify", verify, by_name)
         _check_post_planning_field(i, "repair", repair, by_name)
-        _check_refs(i, task, len(steps))
+        _check_refs(i, instruction, len(steps))
 
-        steps.append(PlanStep(agent=agent, task=task, mission=mission, verify=verify, repair=repair))
+        steps.append(Task(agent=agent, instruction=instruction, mission=mission, verify=verify, repair=repair))
 
-    return Plan(summary=summary, steps=steps)
+    return TaskGraph(summary=summary, steps=steps)
 
 
 def _check_post_planning_field(
@@ -110,8 +112,8 @@ def _check_post_planning_field(
         )
 
 
-def _check_refs(index: int, task: str, prior_step_count: int) -> None:
-    for match in _STEP_REF.finditer(task):
+def _check_refs(index: int, instruction: str, prior_step_count: int) -> None:
+    for match in _STEP_REF.finditer(instruction):
         ref = int(match.group(1))
         if ref < 1 or ref > prior_step_count:
             raise ValueError(
@@ -119,4 +121,4 @@ def _check_refs(index: int, task: str, prior_step_count: int) -> None:
             )
 
 
-__all__ = ["PlanStep", "Plan", "parse_plan", "MAIN_AGENT"]
+__all__ = ["Task", "TaskGraph", "parse_task_graph", "MAIN_AGENT"]

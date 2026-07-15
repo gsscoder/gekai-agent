@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.pipeline.plan import PlanStep, parse_plan
+from agent.pipeline.plan import Task, parse_task_graph
 from agent.subagents import Subagent
 
 _ROSTER = [
@@ -12,64 +12,64 @@ _ROSTER = [
 ]
 
 
-def test_well_formed_plan_parses() -> None:
+def test_well_formed_graph_parses() -> None:
     raw = {
         "summary": "build a library with tests",
         "steps": [
-            {"agent": "main", "task": "scaffold repo", "mission": "scaffold the repo"},
-            {"agent": "code-expert", "task": "write code", "mission": "write the code", "verify": "fact-checker"},
-            {"agent": "test-expert", "task": "write tests for {{step_2}}", "mission": "write tests", "repair": "fact-checker"},
+            {"agent": "main", "instruction": "scaffold repo", "mission": "scaffold the repo"},
+            {"agent": "code-expert", "instruction": "write code", "mission": "write the code", "verify": "fact-checker"},
+            {"agent": "test-expert", "instruction": "write tests for {{step_2}}", "mission": "write tests", "repair": "fact-checker"},
         ],
     }
-    plan = parse_plan(raw, _ROSTER)
-    assert plan.summary == "build a library with tests"
-    assert plan == [
-        PlanStep(agent="main", task="scaffold repo", mission="scaffold the repo"),
-        PlanStep(agent="code-expert", task="write code", mission="write the code", verify="fact-checker"),
-        PlanStep(agent="test-expert", task="write tests for {{step_2}}", mission="write tests", repair="fact-checker"),
+    graph = parse_task_graph(raw, _ROSTER)
+    assert graph.summary == "build a library with tests"
+    assert graph == [
+        Task(agent="main", instruction="scaffold repo", mission="scaffold the repo"),
+        Task(agent="code-expert", instruction="write code", mission="write the code", verify="fact-checker"),
+        Task(agent="test-expert", instruction="write tests for {{step_2}}", mission="write tests", repair="fact-checker"),
     ]
 
 
-def test_unknown_agent_rejects_whole_plan() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "nonexistent-agent", "task": "do something"}]}
+def test_unknown_agent_rejects_whole_graph() -> None:
+    raw = {"summary": "s", "steps": [{"agent": "nonexistent-agent", "instruction": "do something"}]}
     with pytest.raises(ValueError, match="nonexistent-agent"):
-        parse_plan(raw, _ROSTER)
+        parse_task_graph(raw, _ROSTER)
 
 
-def test_empty_task_rejects_whole_plan() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "main", "task": ""}]}
-    with pytest.raises(ValueError, match="task"):
-        parse_plan(raw, _ROSTER)
+def test_empty_instruction_rejects_whole_graph() -> None:
+    raw = {"summary": "s", "steps": [{"agent": "main", "instruction": ""}]}
+    with pytest.raises(ValueError, match="instruction"):
+        parse_task_graph(raw, _ROSTER)
 
 
-def test_dangling_ref_rejects_whole_plan() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "main", "task": "use {{step_5}}", "mission": "use it"}]}
+def test_dangling_ref_rejects_whole_graph() -> None:
+    raw = {"summary": "s", "steps": [{"agent": "main", "instruction": "use {{step_5}}", "mission": "use it"}]}
     with pytest.raises(ValueError, match="dangling ref"):
-        parse_plan(raw, _ROSTER)
+        parse_task_graph(raw, _ROSTER)
 
 
 def test_post_planning_only_agent_in_phase1_agent_field_rejects() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "fact-checker", "task": "review the change"}]}
+    raw = {"summary": "s", "steps": [{"agent": "fact-checker", "instruction": "review the change"}]}
     with pytest.raises(ValueError, match="fact-checker"):
-        parse_plan(raw, _ROSTER)
+        parse_task_graph(raw, _ROSTER)
 
 
 def test_auto_assignable_agent_in_verify_field_rejects() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "main", "task": "scaffold", "mission": "scaffold it", "verify": "code-expert"}]}
+    raw = {"summary": "s", "steps": [{"agent": "main", "instruction": "scaffold", "mission": "scaffold it", "verify": "code-expert"}]}
     with pytest.raises(ValueError, match="code-expert"):
-        parse_plan(raw, _ROSTER)
+        parse_task_graph(raw, _ROSTER)
 
 
-def test_empty_plan_rejects() -> None:
+def test_empty_graph_rejects() -> None:
     with pytest.raises(ValueError, match="at least one step"):
-        parse_plan({"summary": "s", "steps": []}, _ROSTER)
+        parse_task_graph({"summary": "s", "steps": []}, _ROSTER)
 
 
 def test_missing_summary_rejects() -> None:
     with pytest.raises(ValueError, match="summary"):
-        parse_plan({"steps": [{"agent": "main", "task": "do it"}]}, _ROSTER)
+        parse_task_graph({"steps": [{"agent": "main", "instruction": "do it"}]}, _ROSTER)
 
 
 def test_bare_array_input_rejects() -> None:
     with pytest.raises(ValueError, match="JSON object"):
-        parse_plan([{"agent": "main", "task": "do it"}], _ROSTER)
+        parse_task_graph([{"agent": "main", "instruction": "do it"}], _ROSTER)

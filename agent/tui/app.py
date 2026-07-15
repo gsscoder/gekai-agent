@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.color import Color
@@ -19,9 +19,12 @@ from textual.strip import Strip
 from textual.widgets import ProgressBar, Static, TextArea
 from textual.worker import Worker
 
+from agent import credentials
 from agent.agent import GekaiAgent
+from agent.harness import turn as harness_turn
 from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
+from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName, validate_binding
 from agent.persistence import (
     append_command,
     append_diff,
@@ -33,14 +36,23 @@ from agent.pipeline import Route
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS, SUBAGENTS, Subagent
 from agent.subagents.worker import ws_manager
-from agent.settings import PERMISSION_CHOICES, load_context_limit, resolve_permissions, save_permissions
+from agent.settings import (
+    PERMISSION_CHOICES,
+    load_context_limit,
+    load_model_catalog,
+    load_tier_bindings,
+    resolve_permissions,
+    save_permissions,
+    save_tier_binding,
+    tiers_configured,
+)
 from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import OPERATIVE_COLOR, random_accent_color, random_operative_verb
-from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, EstimateEvent, MaxIterationsEvent, BudgetExhaustedEvent, StatusUpdateEvent, ThinkingTokenEvent, SubagentResult, DelegationStartEvent, DelegationDoneEvent, PlanStartedEvent, PlanHaltedEvent
+from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
 
 from .palette import CommandPalette
 from .history import PromptHistory
-from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, WelcomeOverlay
+from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, TierRowView, TiersPanel, WelcomeOverlay
 
 _DEFAULT_ROUTE_COLOR = "#3a3a3a"
 _PIPELINE_COLOR = "#ffffff"  # pure-white bg marks active pre-harness pipeline step
@@ -233,7 +245,7 @@ def _fallback_ui_label(text: str, max_words: int = 12) -> str:
     """Cheap stand-in for the rewriter's <ui_label> when rewriting is skipped
     (no located entries) or the label comes back empty — strips backtick-quoted
     paths so file names don't leak into the badge, then takes the leading words.
-    Also strips a leading <request_summary> framing block (plan-step tasks are
+    Also strips a leading <request_summary> framing block (task graph steps are
     prefixed with one before dispatch) so it never leaks into the badge."""
     text = _REQUEST_SUMMARY_BLOCK.sub("", text, count=1)
     stripped = re.sub(r"`[^`]*`", "", text)
@@ -267,6 +279,80 @@ def _route_decision(route: Route) -> str:
     if route.trivial:
         return "trivial"
     return "act"
+
+
+def _mask_key(key: str) -> str:
+    """Display form of a real key value: first 2 + last 3 characters kept,
+    the middle replaced 1-for-1 with '*' so the mask hints at true length.
+    Keys of 5 characters or fewer are too short for head/tail to mean
+    anything distinct, so they're masked in full."""
+    if len(key) <= 5:
+        return "*" * len(key)
+    return key[:2] + "*" * (len(key) - 5) + key[-3:]
+
+
+def _tiers_display_key(model: str, key_input: dict[str, str]) -> str:
+    """Non-editing display for the key cell: an in-progress edit for this
+    model (`key_input`, including an explicit clear stored as "") always
+    wins over whatever's actually in the keyring — mirrors how the model/
+    effort/thinking columns show the pending edit, not the saved value."""
+    if model in key_input:
+        value = key_input[model]
+        return _mask_key(value) if value else "no key"
+    if credentials.has_api_key(model):
+        return _mask_key(credentials.get_api_key(model))
+    return "no key"
+
+
+def _tiers_key_present(model: str, key_input: dict[str, str]) -> bool:
+    """Whether `model` currently has a usable key once this edit lands —
+    an in-progress edit (including an explicit clear) wins over the real
+    stored credential, same precedence as `_tiers_display_key`."""
+    if model in key_input:
+        return bool(key_input[model])
+    return credentials.has_api_key(model)
+
+
+def _pending_row_status(
+    tier: TierName,
+    model: str | None,
+    thinking: bool,
+    catalog: dict[str, ModelCatalogEntry],
+    key_input: dict[str, str],
+) -> str:
+    """Pure status-cell formatter for one `/tiers` grid row — reflects the
+    in-progress edit (`GekaiApp._tiers_edit`), not what's saved on disk, so
+    it deliberately does not reuse `agent/llm/resolve.py::tier_status()`
+    (that answers "is what's saved resolvable", which is the wrong question
+    while a key has just been typed/cleared but not yet committed)."""
+    if model is None:
+        return "not configured"
+    entry = catalog.get(model)
+    if entry is None:
+        return "stale — model missing from catalog"
+    if not _tiers_key_present(model, key_input):
+        return "no key"
+    verdict = entry.suitability.verdict(tier, thinking)
+    if verdict in ("warning", "deprecated"):
+        return verdict
+    return "✓ ready"
+
+
+def _cycle_choice(options: list[str] | tuple[str, ...], current: str | None) -> str:
+    """Shared wrap-around-cycle rule for the `/tiers` grid's model and effort
+    columns: land on `options[0]` if nothing (or something stale/unlisted) is
+    currently selected, otherwise advance to the next option, wrapping."""
+    if current is None or current not in options:
+        return options[0]
+    return options[(list(options).index(current) + 1) % len(options)]
+
+
+def _tier_edit_complete(model: str | None, key_present: bool) -> bool:
+    """Whether one tier's in-progress edit has everything `[ok]` requires:
+    a model selected and a usable key (effort is guaranteed non-None
+    whenever `model` is set — see the model-change auto-reset in
+    `_handle_tiers_enter` — so it needs no separate check here)."""
+    return model is not None and key_present
 
 
 def _fmt_duration(elapsed: float) -> str:
@@ -327,12 +413,15 @@ def _fmt_context_pct(prompt_tokens: int, limit: int) -> str:
     return f"{pct}% context"
 
 
-def _fmt_status_bar(model: str, working_dir: str, branch: str | None, prompt_tokens: int, limit: int) -> str:
+def _fmt_status_bar(
+    model: str, effort: str | None, working_dir: str, branch: str | None, prompt_tokens: int, limit: int,
+) -> str:
     pct = _fmt_context_pct(prompt_tokens, limit)
     location = f"📁 {working_dir}"
     if branch:
         location += f" [⎇ {branch}]"
-    return f"\\[{model}] | {location} | {pct}"
+    model_label = f"{model} ({effort})" if effort else model
+    return f"\\[{model_label}] | {location} | {pct}"
 
 
 def _estimate_session_tokens(session: Session) -> int:
@@ -372,6 +461,23 @@ class _StepResult:
     query_tool_count: int = 0
     ui_label: str = ""
     ws_renderer: SubAgentRenderer | None = None
+
+
+@dataclass
+class _TiersEdit:
+    """Mutable staging area for an in-progress `/tiers` edit. Mutated
+    synchronously by the existing key-event action cascade (`action_navigate_*`,
+    `action_confirm_or_submit`, `action_cancel_stream`) — no worker, no
+    future-based primitive. Nothing here reaches disk/keyring until `[ok]`
+    (see `GekaiApp._commit_tiers_edit`)."""
+    catalog: dict[str, ModelCatalogEntry]
+    model: dict[TierName, str | None]
+    effort: dict[TierName, str | None]
+    thinking: dict[TierName, bool]
+    key_input: dict[str, str]  # model name -> new value staged this session ("" means explicit clear); NOT yet written to keyring
+    original_bindings: dict[TierName, TierBinding | None] = field(default_factory=dict)  # what was on disk when the panel opened, for the "kept actual tiers" no-op check
+    key_editing: bool = False  # the currently-selected key cell is in free-text edit mode
+    key_edit_buffer: str = ""  # raw text typed/pasted so far while key_editing — always starts empty
 
 
 class PromptTextArea(TextArea):
@@ -576,6 +682,8 @@ class GekaiApp(App[None]):
         Binding("pagedown", "scroll_page_down", "Scroll page down", priority=True),
         Binding("up", "navigate_up", show=False, priority=True),
         Binding("down", "navigate_down", show=False, priority=True),
+        Binding("left", "navigate_left", show=False, priority=True),
+        Binding("right", "navigate_right", show=False, priority=True),
         Binding("ctrl+r", "toggle_history", "History", priority=True),
         Binding("enter", "confirm_or_submit", "Confirm", priority=True, show=False),
     ]
@@ -617,6 +725,7 @@ class GekaiApp(App[None]):
         self._history: PromptHistory | None = None
         self._file_paths: list[str] | None = None
         self._file_at_pos: int = -1
+        self._tiers_edit: _TiersEdit | None = None
         self._worker_cancelled: bool = False
         self._permission_denied_msg: str | None = None
         self._status_paused: bool = False
@@ -644,6 +753,7 @@ class GekaiApp(App[None]):
                 yield Static("Scroll to bottom (ctrl+B) ↓", id="scroll-hint")
             yield FilePanel(id="file-panel")
             yield HistoryPanel(id="history-panel")
+            yield TiersPanel(id="tiers-panel")
             yield Static("", id="copy-notice")
             with Container(id="input-area"):
                 yield PromptTextArea(id="prompt", show_line_numbers=False, compact=True, highlight_cursor_line=False)
@@ -664,6 +774,7 @@ class GekaiApp(App[None]):
                 pass
 
         asyncio.create_task(self._poll_clipboard())
+        asyncio.create_task(self._poll_prompt_lock())
         self.run_worker(self._init_session(), exclusive=True)
 
     async def _init_session(self) -> None:
@@ -684,7 +795,7 @@ class GekaiApp(App[None]):
         override = load_context_limit(self._working_dir)
         self._context_limit = override if override is not None else _context_limit(self._agent.model)
         self.query_one("#context-bar", Static).update(
-            _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
+            _fmt_status_bar(self._agent.model, self._agent.effort, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
 
         if self._restored_timeline:
@@ -772,8 +883,25 @@ class GekaiApp(App[None]):
             duration_ms=index_stats.duration_ms,
         )
 
+        await self._maybe_warn_tiers_unconfigured(conversation)
+
         if self._restored_id is None:
             await self.mount(WelcomeOverlay(id="welcome-overlay"))
+
+    async def _maybe_warn_tiers_unconfigured(self, conversation: ScrollableContainer) -> None:
+        """Nudge, not a gate: `GekaiAgent` tolerates unconfigured tiers at
+        construction time (so `/tiers` itself stays reachable — see
+        `agent/agent.py`'s `_tier_error` deferral) but every touchpoint raises
+        the moment it's actually used. This just keeps surfacing that /tiers
+        hasn't been set up yet, both at startup and on every prompt submitted
+        while it stays unset."""
+        if tiers_configured():
+            return
+        await conversation.mount(MessageWidget(
+            MessageKind.WARNING,
+            "model tiers are not configured — run /tiers to configure FAST/SUPP/CORE",
+        ))
+        conversation.scroll_end(animate=False)
 
     async def _clear_session(self, command_text: str | None = None) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
@@ -781,7 +909,7 @@ class GekaiApp(App[None]):
         self._session = self._agent.start_session()
         self._agent.events.emit("session.start", session=self._session.id, resumed=False)
         self.query_one("#context-bar", Static).update(
-            _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
+            _fmt_status_bar(self._agent.model, self._agent.effort, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
         )
         self._assistant_widget = None
         if command_text is not None:
@@ -851,24 +979,63 @@ class GekaiApp(App[None]):
             self._clear_hint()
 
     def on_key(self, event: events.Key) -> None:
-        choice_bar = self.query_one(ChoiceBar)
-        if choice_bar.display and event.key in ("left", "right"):
-            if event.key == "left":
-                choice_bar.move_left()
-            else:
-                choice_bar.move_right()
-            event.stop()
-            return
-
+        # ChoiceBar's left/right cursor movement used to be special-cased
+        # here, but `action_navigate_left`/`action_navigate_right` (new
+        # `priority=True` App bindings) now claim "left"/"right" before this
+        # handler would ever see them — see those actions' own comment.
         if self._esc_pending and event.key != "escape":
             self._clear_hint()
+
+        # `/tiers`' key column, while in edit mode (see `_handle_tiers_enter`):
+        # "p" is the *only* way to fill the buffer — it reads the OS
+        # clipboard directly (ctypes, same as `_read_clipboard_text`
+        # elsewhere — no reliance on "ctrl+v"/the terminal's bracketed-paste
+        # support, which doesn't reach this app) and replaces the buffer
+        # outright (not appended — there is no manual typing to append to).
+        # "backspace" discards the pasted buffer back to empty. Must be
+        # checked before the auto-focus-and-type fallback below, which would
+        # otherwise route these keystrokes into the chat prompt instead.
+        edit = self._tiers_edit
+        if edit is not None and edit.key_editing:
+            if event.key == "backspace":
+                edit.key_edit_buffer = ""
+                self._render_tiers_panel()
+                event.stop()
+                return
+            if event.key == "p":
+                clipboard_text = self._read_clipboard_text()
+                # Multiple lines aren't rejected — just take the first one,
+                # since a key is never legitimately multi-line and this is
+                # by far the more common paste artifact (trailing newline,
+                # a whole file's worth of clipboard, etc.) than an actual
+                # mistake worth blocking on.
+                first_line = clipboard_text.splitlines()[0] if clipboard_text else ""
+                if not first_line:
+                    self._show_hint("clipboard is empty — copy a key first")
+                    self.set_timer(2.0, self._clear_hint)
+                    event.stop()
+                    return
+                edit.key_edit_buffer = first_line
+                self._render_tiers_panel()
+                event.stop()
+                return
+            # Any other key (manual typing, no longer supported) falls
+            # through: `_any_panel_active()` below already keeps it from
+            # reaching the chat prompt, and letting it bubble un-stopped
+            # means "escape" (not a priority binding, unlike enter/arrows)
+            # still reaches `action_cancel_stream` to back out of the edit.
 
         prompt = self.query_one("#prompt", TextArea)
         if event.key == "ctrl+j" and prompt.has_focus:
             prompt.insert("\n")
             event.stop()
             return
-        if prompt.has_focus or not event.is_printable:
+        # `.focus()`/`.insert()` are programmatic API calls that work even
+        # while `read_only=True` (Textual only blocks the widget's own
+        # keyboard-driven edit actions) — so this auto-focus-and-type
+        # fallback must check panel state itself, not just `has_focus`,
+        # or a panel being open wouldn't actually keep the prompt inert.
+        if prompt.has_focus or not event.is_printable or self._any_panel_active():
             return
         prompt.focus(scroll_visible=False)
         prompt.insert(event.character)
@@ -968,6 +1135,12 @@ class GekaiApp(App[None]):
                     exclusive=True,
                 )
                 return
+            if _slash_name == "tiers":
+                await conversation.mount(MessageWidget(MessageKind.USER, stripped))
+                conversation.scroll_end(animate=False)
+                await self._open_tiers_panel(conversation)
+                self._focus_prompt()
+                return
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
             conversation.scroll_end(animate=False)
             had_prior = self.session_has_interactions
@@ -992,136 +1165,312 @@ class GekaiApp(App[None]):
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
 
+    async def _open_tiers_panel(self, conversation: ScrollableContainer) -> None:
+        """`/tiers`'s real implementation: no worker, no async "flow" — just
+        seeds `self._tiers_edit` from what's currently saved and renders the
+        grid. Every further edit is driven synchronously by the ordinary
+        key-event action cascade (`action_navigate_*`, `action_confirm_or_submit`,
+        `action_cancel_stream`), the same way `FilePanel`/`HistoryPanel` are
+        already driven in this file."""
+        catalog = load_model_catalog()
+        if not catalog:
+            await conversation.mount(MessageWidget(
+                MessageKind.ERROR,
+                "the model catalog is empty — nothing to configure (check ~/.gekai/settings.json)",
+            ))
+            conversation.scroll_end(animate=False)
+            return
+
+        bindings = load_tier_bindings()
+        model: dict[TierName, str | None] = {}
+        effort: dict[TierName, str | None] = {}
+        thinking: dict[TierName, bool] = {}
+        for tier in TierName:
+            binding = bindings.get(tier)
+            if binding is not None:
+                # Seeded even if `binding.model` is stale/missing from the
+                # catalog — show what's actually saved, don't silently drop it.
+                model[tier] = binding.model
+                effort[tier] = binding.default_effort
+                thinking[tier] = binding.thinking
+            else:
+                model[tier] = None
+                effort[tier] = None
+                thinking[tier] = False
+
+        self._tiers_edit = _TiersEdit(
+            catalog=catalog, model=model, effort=effort, thinking=thinking,
+            key_input={}, original_bindings={tier: bindings.get(tier) for tier in TierName},
+        )
+        self._render_tiers_panel()
+
+    def _render_tiers_panel(self) -> None:
+        """Rebuild the 3 `TierRowView`s from `self._tiers_edit` and re-show
+        the panel — called after every edit (model cycle, effort cycle,
+        thinking toggle, key set via clipboard), mirroring the old flow's
+        own "mutate then re-render" shape for its messages."""
+        edit = self._tiers_edit
+        if edit is None:
+            return
+        panel = self.query_one(TiersPanel)
+        sel_row, sel_column = panel.selected_cell
+        rows: list[TierRowView] = []
+        for i, tier in enumerate(TierName):
+            model = edit.model[tier]
+            entry = edit.catalog.get(model) if model is not None else None
+            thinking_supported = tier is TierName.CORE and entry is not None and entry.thinking
+            if edit.key_editing and i == sel_row and sel_column == "key":
+                key_display = edit.key_edit_buffer or "press p to paste"
+            elif model is not None:
+                key_display = _tiers_display_key(model, edit.key_input)
+            else:
+                key_display = "no key"
+            rows.append(TierRowView(
+                tier_label=tier.value.upper(),
+                model=model if model is not None else "…",
+                effort=edit.effort[tier] if edit.effort[tier] is not None else "…",
+                thinking=("yes" if edit.thinking[tier] else "no") if thinking_supported else "n/a",
+                key=key_display,
+                status=_pending_row_status(tier, model, edit.thinking[tier], edit.catalog, edit.key_input),
+            ))
+        panel.show(rows)
+
+    async def _handle_tiers_enter(self, panel: TiersPanel) -> None:
+        edit = self._tiers_edit
+        if edit is None:
+            return
+        row, column = panel.selected_cell
+        conversation = self.query_one("#conversation", ScrollableContainer)
+
+        if row == 3:
+            if column == "cancel":
+                await self._cancel_tiers_edit(conversation)
+            elif column == "ok":
+                await self._commit_tiers_edit(conversation)
+            return
+
+        tier = list(TierName)[row]
+
+        if column == "model":
+            catalog_keys = list(edit.catalog.keys())
+            next_model = _cycle_choice(catalog_keys, edit.model[tier])
+            edit.model[tier] = next_model
+            # A new model invalidates whatever effort/thinking was chosen
+            # for the old one.
+            edit.effort[tier] = edit.catalog[next_model].efforts[0]
+            edit.thinking[tier] = False
+            self._render_tiers_panel()
+            return
+
+        if column == "effort":
+            model = edit.model[tier]
+            if model is None:
+                return
+            entry = edit.catalog.get(model)
+            if entry is None:
+                return
+            edit.effort[tier] = _cycle_choice(entry.efforts, edit.effort[tier])
+            self._render_tiers_panel()
+            return
+
+        if column == "thinking":
+            model = edit.model[tier]
+            if model is None:
+                return
+            entry = edit.catalog.get(model)
+            if entry is None or tier is not TierName.CORE or not entry.thinking:
+                return
+            edit.thinking[tier] = not edit.thinking[tier]
+            self._render_tiers_panel()
+            return
+
+        if column == "key":
+            model = edit.model[tier]
+            if model is None:
+                return
+            if edit.key_editing:
+                # Confirm: an empty buffer is an explicit clear, stored as
+                # "" (see `_tiers_display_key`/`_tiers_key_present`) rather
+                # than leaving `key_input` untouched, which would mean "no
+                # change — keep whatever's in the keyring".
+                edit.key_input[model] = edit.key_edit_buffer
+                edit.key_editing = False
+                edit.key_edit_buffer = ""
+            else:
+                # Always starts blank — never pre-filled with the existing
+                # masked value, per the locked design.
+                edit.key_editing = True
+                edit.key_edit_buffer = ""
+            self._render_tiers_panel()
+            return
+
+    async def _cancel_tiers_edit(self, conversation: ScrollableContainer) -> None:
+        self._tiers_edit = None
+        self.query_one(TiersPanel).hide()
+        await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "cancelled"))
+        conversation.scroll_end(animate=False)
+
+    async def _commit_tiers_edit(self, conversation: ScrollableContainer) -> None:
+        edit = self._tiers_edit
+        if edit is None:
+            return
+
+        def _tier_complete(tier: TierName) -> bool:
+            model = edit.model.get(tier)
+            present = model is not None and _tiers_key_present(model, edit.key_input)
+            return _tier_edit_complete(model, present)
+
+        if not all(_tier_complete(tier) for tier in TierName):
+            await conversation.mount(MessageWidget(
+                MessageKind.WARNING,
+                "tier configuration is incomplete — fill in every field, or [cancel] to abort",
+            ))
+            conversation.scroll_end(animate=False)
+            return
+
+        # Validate all three bindings *before* writing anything — the fail-
+        # loud backstop below is unreachable given the UI only ever offers
+        # valid combinations, but if it ever did trigger, a save-as-you-go
+        # loop would leave a partial write (some tiers saved, some not);
+        # validating up front keeps this an all-or-nothing commit.
+        bindings: dict[TierName, TierBinding] = {}
+        for tier in TierName:
+            model = edit.model[tier]
+            effort = edit.effort[tier]
+            assert model is not None and effort is not None  # guaranteed by _tier_complete + the model-change auto-reset
+            binding = TierBinding(model=model, default_effort=effort, thinking=edit.thinking[tier])
+            try:
+                validate_binding(tier, binding, edit.catalog)
+            except ValueError as exc:
+                await conversation.mount(MessageWidget(MessageKind.ERROR, str(exc)))
+                conversation.scroll_end(animate=False)
+                return
+            bindings[tier] = binding
+
+        # No key was touched and every binding is exactly what was already
+        # on disk when the panel opened — nothing to write, say so plainly
+        # instead of "saving" a no-op.
+        unchanged = not edit.key_input and all(
+            bindings[tier] == edit.original_bindings.get(tier) for tier in TierName
+        )
+        if unchanged:
+            self.query_one(TiersPanel).hide()
+            self._tiers_edit = None
+            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "kept actual tiers"))
+            conversation.scroll_end(animate=False)
+            return
+
+        # Batched at commit, not as each key is typed/pasted — the ONLY
+        # place `set_api_key`/`delete_api_key` are called, per the locked
+        # design. "" means an explicit clear (see `_handle_tiers_enter`'s
+        # confirm step); a non-empty value is a real key to store.
+        for model, value in edit.key_input.items():
+            if value:
+                credentials.set_api_key(model, value)
+            else:
+                credentials.delete_api_key(model)
+
+        summaries: list[str] = []
+        for tier in TierName:
+            binding = bindings[tier]
+            save_tier_binding(tier, binding)
+            summaries.append(f"{tier.value.upper()}: {binding.model} (effort={binding.default_effort}, thinking={binding.thinking})")
+
+        self.query_one(TiersPanel).hide()
+        self._tiers_edit = None
+        # First line sits right next to the "⎿" MessageWidget already
+        # prepends (see agent/tui/widgets.py::MessageWidget._as_markup);
+        # continuation lines are indented 2 spaces to land in that same
+        # column, mirroring the tool-log "⎿"/"   " alignment convention
+        # used elsewhere in this file.
+        result_text = summaries[0] + "".join(f"\n  {line}" for line in summaries[1:])
+        await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, result_text))
+        conversation.scroll_end(animate=False)
+
     async def _run_step(
         self, raw: str, seed: str | None, *,
         turn_id: str, session_id: str, conversation: ScrollableContainer,
         stage: list[str], trivial: bool = False,
         append_user: bool = True,
     ) -> _StepResult:
-        """Run dispatch for `raw`. `seed` (case 3 — an explicit `/agent-x` or a
+        """Render dispatch for `raw`. `seed` (case 3 — an explicit `/agent-x` or a
         single-duty match) names the specialist the planner is seeded with;
         it no longer means "run the whole turn as that subagent's identity"
         (plan 27 — the planner+interpreter own every spawn, main stays main).
         `stage` is a 1-element mutable holder the caller's except-block reads to attribute
-        which sub-stage failed."""
-        events = self._agent.events
+        which sub-stage failed.
 
+        Bookkeeping (token/tool counts, outcome, telemetry) lives in
+        `agent.harness.turn.run_step` (plan 28 Phase 0 extraction) — this
+        method only renders what that stream reports, via `_on_event`.
+        """
         stage[0] = "harness"
-        step_route = Route(trivial=trivial)
-        harness_start = time.monotonic()
-        answer_chunks: list[str] = []
-        max_iter_hit = False
-        budget_exhausted_hit = False
         ws_renderer: SubAgentRenderer | None = None
         active_renderer: SubAgentRenderer | None = None
         delegation_renderer: SubAgentRenderer | None = None
-        query_tool_count: int = 0
-        tool_counts: dict[str, int] = {}
-        llm_calls = 0
-        prompt_tokens_total = 0
-        completion_tokens_total = 0
-        thinking_chars_total = 0
-        files_touched_total: list[str] = []
 
-        async for item in self._agent.process_stream(
-            self._session, raw, step_route,
+        async def _on_event(item: AgentEvent | str) -> None:
+            nonlocal ws_renderer, active_renderer, delegation_renderer
+            if isinstance(item, str):
+                return
+            if isinstance(item, TaskGraphHaltedEvent):
+                await conversation.mount(MessageWidget(
+                    MessageKind.ERROR,
+                    f"task graph halted at step {item.step_index + 1} ({item.agent}): {item.reason} "
+                    "— prior steps' work is kept, nothing rolled back",
+                ))
+            elif isinstance(item, SubAgentStartEvent):
+                ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
+                active_renderer = ws_renderer
+                await ws_renderer.start(item.name)
+            elif isinstance(item, DelegationStartEvent):
+                resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
+                if resolved is not None:
+                    delegation_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
+                    await delegation_renderer.start(
+                        resolved.name,
+                        namespace=resolved.namespace,
+                        ui_label=item.mission or _fallback_ui_label(item.task),
+                        bg_color=NAMESPACE_COLORS[resolved.namespace],
+                    )
+                    active_renderer = delegation_renderer
+            elif isinstance(item, DelegationDoneEvent):
+                if delegation_renderer is not None:
+                    await delegation_renderer.done()
+                    delegation_renderer = None
+                active_renderer = ws_renderer
+            elif active_renderer:
+                if isinstance(item, LogEvent):
+                    await active_renderer.log(item.message, tool_name=item.tool_name)
+                elif isinstance(item, DiffEvent):
+                    await conversation.mount(DiffWidget(item.path, item.diff_lines))
+                    if self._session is not None:
+                        append_diff(self._session, item.path, item.diff_lines, turn=turn_id)
+                    conversation.scroll_end(animate=False)
+                elif isinstance(item, InferEndEvent):
+                    active_renderer.accumulate_tokens(item)
+                elif isinstance(item, ThinkingTokenEvent):
+                    active_renderer.thinking_chunk(item.text)
+                elif isinstance(item, StatusUpdateEvent):
+                    await active_renderer.status_update(item)
+                elif isinstance(item, DoneEvent):
+                    if ws_renderer is not None:
+                        await ws_renderer.done(item.thinking_chars)
+
+        turn_result = await harness_turn.run_step(
+            self._agent, self._session, raw, seed,
+            turn_id=turn_id, session_id=session_id, trivial=trivial,
             permission_callback=self._permission_callback,
             hidden_grant_callback=self._hidden_grant_callback,
-            turn_id=turn_id,
             append_user=append_user,
-            seed=seed,
-        ):
-            if isinstance(item, str):
-                answer_chunks.append(item)
-            elif isinstance(item, AgentEvent):
-                if isinstance(item, EstimateEvent):
-                    events.emit(
-                        "estimate", session=session_id, turn=turn_id,
-                        decision=item.decision, specialists=item.specialists,
-                        duration_ms=item.duration_ms,
-                    )
-                elif isinstance(item, PlanStartedEvent):
-                    events.emit(
-                        "plan", session=session_id, turn=turn_id,
-                        step_count=item.step_count, agents=item.agents,
-                        verify_placements=item.verify_placements,
-                    )
-                elif isinstance(item, PlanHaltedEvent):
-                    await conversation.mount(MessageWidget(
-                        MessageKind.ERROR,
-                        f"plan halted at step {item.step_index + 1} ({item.agent}): {item.reason} "
-                        "— prior steps' work is kept, nothing rolled back",
-                    ))
-                elif isinstance(item, SubAgentStartEvent):
-                    ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
-                    active_renderer = ws_renderer
-                    await ws_renderer.start(item.name)
-                elif isinstance(item, DelegationStartEvent):
-                    resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
-                    if resolved is not None:
-                        delegation_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
-                        await delegation_renderer.start(
-                            resolved.name,
-                            namespace=resolved.namespace,
-                            ui_label=item.mission or _fallback_ui_label(item.task),
-                            bg_color=NAMESPACE_COLORS[resolved.namespace],
-                        )
-                        active_renderer = delegation_renderer
-                elif isinstance(item, DelegationDoneEvent):
-                    if delegation_renderer is not None:
-                        await delegation_renderer.done()
-                        delegation_renderer = None
-                    active_renderer = ws_renderer
-                elif active_renderer:
-                    if isinstance(item, LogEvent):
-                        await active_renderer.log(item.message, tool_name=item.tool_name)
-                        if item.tool_name:
-                            query_tool_count += 1
-                            tool_counts[item.tool_name] = tool_counts.get(item.tool_name, 0) + 1
-                    elif isinstance(item, DiffEvent):
-                        await conversation.mount(DiffWidget(item.path, item.diff_lines))
-                        if self._session is not None:
-                            append_diff(self._session, item.path, item.diff_lines, turn=turn_id)
-                        conversation.scroll_end(animate=False)
-                    elif isinstance(item, InferEndEvent):
-                        active_renderer.accumulate_tokens(item)
-                        llm_calls += 1
-                        prompt_tokens_total += item.prompt_tokens or 0
-                        completion_tokens_total += item.completion_tokens or 0
-                    elif isinstance(item, ThinkingTokenEvent):
-                        active_renderer.thinking_chunk(item.text)
-                    elif isinstance(item, StatusUpdateEvent):
-                        await active_renderer.status_update(item)
-                    elif isinstance(item, DoneEvent):
-                        if ws_renderer is not None:
-                            await ws_renderer.done(item.thinking_chars)
-                        thinking_chars_total = item.thinking_chars
-                        files_touched_total = item.files_touched
-                    elif isinstance(item, MaxIterationsEvent):
-                        max_iter_hit = True
-                    elif isinstance(item, BudgetExhaustedEvent):
-                        budget_exhausted_hit = True
-
-        harness_outcome = "max_iterations" if (max_iter_hit and not answer_chunks) or (not answer_chunks and not files_touched_total) else "ok"
-        events.emit(
-            "harness", session=session_id, turn=turn_id, outcome=harness_outcome,
-            llm_calls=llm_calls, prompt_tokens=prompt_tokens_total,
-            completion_tokens=completion_tokens_total, thinking_chars=thinking_chars_total,
-            tools=tool_counts, duration_ms=_ms(time.monotonic() - harness_start),
-            budget_exhausted=budget_exhausted_hit,
-        )
-        subagent_result = SubagentResult(
-            summary="".join(answer_chunks).rstrip(),
-            files_touched=files_touched_total,
-            status="failed" if harness_outcome == "max_iterations" else "ok",
-            budget_exhausted=budget_exhausted_hit,
+            on_event=_on_event,
         )
 
         return _StepResult(
-            outcome=harness_outcome,
-            answer=subagent_result.summary,
-            max_iter_hit=max_iter_hit,
-            query_tool_count=query_tool_count,
+            outcome=turn_result.outcome,
+            answer=turn_result.answer,
+            max_iter_hit=turn_result.max_iter_hit,
+            query_tool_count=turn_result.query_tool_count,
             ws_renderer=ws_renderer,
         )
 
@@ -1137,6 +1486,8 @@ class GekaiApp(App[None]):
         color = OPERATIVE_COLOR
         conversation = self.query_one("#conversation", ScrollableContainer)
         ws_renderer: SubAgentRenderer | None = None
+
+        await self._maybe_warn_tiers_unconfigured(conversation)
 
         try:
             await self._start_status_animation(verb[0], color)
@@ -1160,7 +1511,7 @@ class GekaiApp(App[None]):
 
             if self._session is not None:
                 self.query_one("#context-bar", Static).update(
-                    _fmt_status_bar(self._agent.model, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
+                    _fmt_status_bar(self._agent.model, self._agent.effort, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
                 )
             if step_result.max_iter_hit and not step_result.answer:
                 await conversation.mount(MessageWidget(MessageKind.ERROR, "agent hit iteration limit without producing a response"))
@@ -1282,7 +1633,7 @@ class GekaiApp(App[None]):
     def action_quit(self) -> None:
         self._quit()
 
-    def action_cancel_stream(self) -> None:
+    async def action_cancel_stream(self) -> None:
         file_panel = self.query_one("#file-panel", FilePanel)
         if file_panel.display:
             file_panel.hide()
@@ -1301,6 +1652,23 @@ class GekaiApp(App[None]):
             future = self._pending_choice
             self._pending_choice = None
             future.set_result(None)
+            return
+
+        tiers_panel = self.query_one(TiersPanel)
+        if tiers_panel.display:
+            edit = self._tiers_edit
+            if edit is not None and edit.key_editing:
+                # Discard the in-progress buffer only — not the whole
+                # `/tiers` edit — mirroring how navigating away from the key
+                # cell also discards it (see `_exit_tiers_key_edit`).
+                edit.key_editing = False
+                edit.key_edit_buffer = ""
+                self._render_tiers_panel()
+                return
+            # Same helper as the `[cancel]` cell (step 7/8 of the design) —
+            # Esc and `[cancel]` behave identically, not "hide silently".
+            await self._cancel_tiers_edit(self.query_one("#conversation", ScrollableContainer))
+            self._focus_prompt()
             return
 
         palette = self.query_one(CommandPalette)
@@ -1347,6 +1715,12 @@ class GekaiApp(App[None]):
             self._pending_choice = None
             future.set_result(key)
             self._focus_prompt()
+            return
+
+
+        tiers_panel = self.query_one(TiersPanel)
+        if tiers_panel.display:
+            await self._handle_tiers_enter(tiers_panel)
             return
 
         file_panel = self.query_one("#file-panel", FilePanel)
@@ -1411,6 +1785,52 @@ class GekaiApp(App[None]):
         except Exception:
             return 0
 
+    @staticmethod
+    def _read_clipboard_text() -> str | None:
+        """Best-effort read of the OS clipboard's text content (Windows only,
+        same ctypes-only approach as `_clipboard_sequence` — no new
+        dependency). Returns None on any failure: non-Windows, empty
+        clipboard, or non-text content.
+
+        `GetClipboardData`/`GlobalLock` return pointer-sized handles; ctypes
+        defaults an undeclared `restype` to a 32-bit `c_int`, which silently
+        truncates those handles on 64-bit Windows whenever the real address
+        is above 4GB (routine on a 64-bit process) — the truncated address
+        is garbage, `wstring_at` on it raises, and the broad `except`
+        below turns that into a false "clipboard is empty". `restype`/
+        `argtypes` must be declared explicitly to keep the full pointer.
+        """
+        try:
+            import ctypes
+
+            CF_UNICODETEXT = 13
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+            user32.GetClipboardData.argtypes = [ctypes.c_uint]
+            user32.GetClipboardData.restype = ctypes.c_void_p
+            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalLock.restype = ctypes.c_void_p
+            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+
+            if not user32.OpenClipboard(None):
+                return None
+            try:
+                handle = user32.GetClipboardData(CF_UNICODETEXT)
+                if not handle:
+                    return None
+                locked = kernel32.GlobalLock(handle)
+                if not locked:
+                    return None
+                try:
+                    return ctypes.wstring_at(locked)
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        except Exception:
+            return None
+
     async def _poll_clipboard(self) -> None:
         last = self._clipboard_sequence()
         while True:
@@ -1432,6 +1852,39 @@ class GekaiApp(App[None]):
         except Exception:
             pass
 
+    def _any_panel_active(self) -> bool:
+        return (
+            self.query_one("#file-panel", FilePanel).display
+            or self.query_one("#history-panel", HistoryPanel).display
+            or self.query_one(ChoiceBar).display
+            or self.query_one(CommandPalette).display
+            or self.query_one(TiersPanel).display
+        )
+
+    def _sync_prompt_lock(self) -> None:
+        """The prompt must be visibly inert — no cursor, no blink, no typed
+        input landing in it — whenever a panel (FilePanel/HistoryPanel/
+        ChoiceBar/CommandPalette/TiersPanel) is showing; typing/pasting only
+        makes sense once a panel closes and the prompt is the active surface
+        again. `read_only` blocks keyboard edits, `show_cursor=False` (its
+        Textual-documented pairing) hides the caret entirely rather than
+        just freezing it mid-blink."""
+        prompt = self.query_one("#prompt", TextArea)
+        active = self._any_panel_active()
+        if active == prompt.read_only:
+            return
+        prompt.read_only = active
+        prompt.show_cursor = not active
+        if active:
+            prompt.blur()
+        else:
+            self._focus_prompt()
+
+    async def _poll_prompt_lock(self) -> None:
+        while True:
+            await asyncio.sleep(0.15)
+            self._sync_prompt_lock()
+
     def action_scroll_to_top(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_home(animate=False)
 
@@ -1444,9 +1897,24 @@ class GekaiApp(App[None]):
     def action_scroll_page_down(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_page_down(animate=False)
 
+    def _exit_tiers_key_edit(self) -> None:
+        """Navigating away from an in-progress key edit (arrows, or landing
+        on a different cell) discards the typed/pasted buffer — per the
+        locked design, the only way text reaches `key_input` is confirming
+        it in place with Enter (see `_handle_tiers_enter`)."""
+        edit = self._tiers_edit
+        if edit is not None and edit.key_editing:
+            edit.key_editing = False
+            edit.key_edit_buffer = ""
+            self._render_tiers_panel()
+
     def action_navigate_up(self) -> None:
         if self.query_one("#file-panel", FilePanel).display:
             self.query_one("#file-panel", FilePanel).move_up()
+            return
+        if self.query_one(TiersPanel).display:
+            self._exit_tiers_key_edit()
+            self.query_one(TiersPanel).move_up()
             return
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
@@ -1470,6 +1938,10 @@ class GekaiApp(App[None]):
         if self.query_one("#file-panel", FilePanel).display:
             self.query_one("#file-panel", FilePanel).move_down()
             return
+        if self.query_one(TiersPanel).display:
+            self._exit_tiers_key_edit()
+            self.query_one(TiersPanel).move_down()
+            return
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
             panel.move_down()
@@ -1487,6 +1959,39 @@ class GekaiApp(App[None]):
             prompt.action_cursor_down()
             return
         self.query_one("#conversation", ConversationContainer).scroll_down(animate=False)
+
+    def action_navigate_left(self) -> None:
+        # `left`/`right` have no existing App-level binding (unlike up/down),
+        # so this — and `action_navigate_right` — are new. Both `TiersPanel`
+        # and `ChoiceBar` previously relied on `on_key`'s left/right special
+        # case (see `on_key` above) to move their cursor; since these are
+        # `priority=True` bindings, that `on_key` path can no longer fire for
+        # left/right (a priority binding always claims the key before it is
+        # forwarded to the focused widget — see `action_navigate_up`'s own
+        # comment/precedent for the same problem on up/down), so both panels'
+        # left/right handling is reproduced here instead of left to `on_key`.
+        if self.query_one(TiersPanel).display:
+            self._exit_tiers_key_edit()
+            self.query_one(TiersPanel).move_left()
+            return
+        if self.query_one(ChoiceBar).display:
+            self.query_one(ChoiceBar).move_left()
+            return
+        prompt = self.query_one("#prompt", TextArea)
+        if prompt.has_focus:
+            prompt.action_cursor_left()
+
+    def action_navigate_right(self) -> None:
+        if self.query_one(TiersPanel).display:
+            self._exit_tiers_key_edit()
+            self.query_one(TiersPanel).move_right()
+            return
+        if self.query_one(ChoiceBar).display:
+            self.query_one(ChoiceBar).move_right()
+            return
+        prompt = self.query_one("#prompt", TextArea)
+        if prompt.has_focus:
+            prompt.action_cursor_right()
 
     async def action_select_command(self, name: str) -> None:
         palette = self.query_one(CommandPalette)

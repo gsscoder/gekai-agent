@@ -1,4 +1,4 @@
-"""Planner stage (plan 27, improvement 3): decomposition + measurement.
+"""Planner stage (plan 27, improvement 3; renamed under plan 28): decomposition + measurement.
 
 CORE thinking, one call per mutation turn. Phase 1 (decomposition) assigns
 each unit of work to `main` or an auto-assignable subagent, in dependency
@@ -18,7 +18,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from ..subagents import SUBAGENTS, Subagent
-from .plan import MAIN_AGENT, Plan, parse_plan
+from .plan import MAIN_AGENT, TaskGraph, parse_task_graph
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -28,16 +28,16 @@ _PLANNER_PROMPT = (
     '  "summary": a short 1-2 sentence gist of what the user wants, in your own words\n'
     '  "steps": a JSON array of steps, each an object with keys:\n'
     '    "agent": "{main}" or one of the auto-assignable specialists below\n'
-    '    "task": a self-contained instruction string for that agent\n'
+    '    "instruction": a self-contained instruction string for that agent\n'
     '    "mission": a short human-readable phrase (~8-10 words) naming this step\'s job, '
-    "distinct from the full task instruction\n"
+    "distinct from the full instruction\n"
     '    "verify": null, or the string "mechanical" if this step\'s change is complex enough to '
     "warrant a preventive check before moving on (no dedicated verify agent exists yet — "
     '"mechanical" is the placeholder check)\n'
     "order steps by dependency (scaffolding/logic before tests), regardless of the order "
     "mentioned in the request. never fragment one artifact across steps. "
     "when the request builds something new from scratch (greenfield, not editing an existing "
-    "tree), the plan MUST structure the workspace by the established conventions of every "
+    "tree), the task graph MUST structure the workspace by the established conventions of every "
     "ecosystem it touches — the canonical directory layout, entry points, and project/manifest "
     "files a practitioner of that stack expects to find. this is mandatory, not stylistic: a "
     "serious project is never a loose pile of files at the workspace root. a repository may span "
@@ -76,8 +76,8 @@ class Planner:
         self._full_roster = list(SUBAGENTS)
         self._prompt = _build_prompt(self._roster)
 
-    async def plan(self, user_input: str, *, seed: str | None = None) -> Plan:
-        """Returns a validated Plan. Raises ValueError if the model's output
+    async def plan(self, user_input: str, *, seed: str | None = None) -> TaskGraph:
+        """Returns a validated TaskGraph. Raises ValueError if the model's output
         fails schema/roster/phase validation (fail loud — plan 27 decision 6).
         """
         prompt = user_input if seed is None else f"primary specialist: {seed}\n\n{user_input}"
@@ -94,7 +94,7 @@ class Planner:
         if not match:
             raise ValueError(f"planner returned no JSON object: {raw_text!r}")
         raw = json.loads(match.group(0))
-        return parse_plan(raw, self._full_roster)
+        return parse_task_graph(raw, self._full_roster)
 
 
 __all__ = ["Planner"]

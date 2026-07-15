@@ -46,6 +46,7 @@ from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.events import AgentStopped, EventBus
 from agent.llm.providers.base import ProviderAdapter
+from agent.llm.resolve import ResolvedTier
 from agent.llm.tools import Tool
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
 from agent.session import Session
@@ -97,6 +98,15 @@ def _make_session(tmp_path: Path) -> Session:
     )
 
 
+def _make_harness() -> Harness:
+    """No estimator wired — `Harness.stream(subagent=None)` takes the
+    "trivial (no estimator)" branch straight to the single-agent path,
+    exactly as the pre-plan-27 flat behavior these tests were written
+    against (see module docstring)."""
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    return Harness(sequencer=tier, main_dispatch=tier, subagent_dispatch=tier)
+
+
 async def _drain(harness: Harness, session: Session, prompt: str) -> list[AgentEvent | str]:
     collected: list[AgentEvent | str] = []
     async for item in harness.stream(session, prompt):
@@ -115,7 +125,7 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_finds_text(
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
-    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    harness = _make_harness()
     collected = run(_drain(harness, session, "do something"))
 
     budget_events = [e for e in collected if isinstance(e, BudgetExhaustedEvent)]
@@ -133,7 +143,7 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_also_fails(
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
-    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    harness = _make_harness()
     collected = run(_drain(harness, session, "do something"))
 
     budget_events = [e for e in collected if isinstance(e, BudgetExhaustedEvent)]
@@ -156,7 +166,7 @@ def test_write_file_emits_diff_event(
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
-    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    harness = _make_harness()
     collected = run(_drain(harness, session, "write hello.py"))
 
     diff_events = [e for e in collected if isinstance(e, DiffEvent)]
@@ -220,7 +230,7 @@ def test_nested_agent_stopped_with_different_run_id_does_not_end_stream(
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
-    harness = Harness(model="test-model", api_key="key", api_base="http://localhost")
+    harness = _make_harness()
     collected = run(_drain(harness, session, "do something"))
 
     from agent.events import LogEvent

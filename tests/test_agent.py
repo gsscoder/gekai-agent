@@ -39,6 +39,7 @@ def _make_session(tmp_path: Path) -> Session:
 def _stub_agent(chunks: list[str]) -> GekaiAgent:
     stub = object.__new__(GekaiAgent)
     stub._main = cast(Harness, _FakeMain(chunks))
+    stub._tier_error = None
     return stub
 
 

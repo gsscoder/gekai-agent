@@ -6,7 +6,6 @@ requires-python = ">=3.11"
 dependencies = [
     "rich>=13.0",
     "openai>=1.50",
-    "python-dotenv>=1.0",
     "python-toon",
     "textual>=0.70",
     "tree-sitter>=0.25",
@@ -17,6 +16,7 @@ dependencies = [
     "pathspec>=0.12",
     "sqlite-vec",
     "fastembed",
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +33,9 @@ testpaths = ["tests"]
 markers = [
     "llm: marks tests that make real LLM calls (deselected by default, run with --llm)",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent"]
 
 [build-system]
 requires = ["hatchling"]

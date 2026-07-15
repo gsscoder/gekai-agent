@@ -4,16 +4,16 @@ import asyncio
 
 import pytest
 
-from agent.harness.interpreter import PlanHalted, resolve_refs, run_plan
-from agent.pipeline.plan import Plan, PlanStep
+from agent.harness.interpreter import TaskGraphHalted, resolve_refs, run_task_graph
+from agent.pipeline.plan import Task, TaskGraph
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-async def _dispatch_ok(agent: str, task: str, mission: str = "") -> str:
-    return f"{agent} did: {task}"
+async def _dispatch_ok(agent: str, instruction: str, mission: str = "") -> str:
+    return f"{agent} did: {instruction}"
 
 
 def test_resolve_refs_substitutes_prior_outputs() -> None:
@@ -24,15 +24,15 @@ def test_resolve_refs_leaves_dangling_ref_untouched() -> None:
     assert resolve_refs("build on {{step_2}}", ["only one"]) == "build on {{step_2}}"
 
 
-def test_passing_plan_runs_all_steps_with_refs_substituted() -> None:
-    plan = Plan(
+def test_passing_graph_runs_all_steps_with_refs_substituted() -> None:
+    graph = TaskGraph(
         summary="build a tokenizer with tests",
         steps=[
-            PlanStep(agent="code-expert", task="write tokenizer", mission="write tokenizer"),
-            PlanStep(agent="test-expert", task="test {{step_1}}", mission="test tokenizer"),
+            Task(agent="code-expert", instruction="write tokenizer", mission="write tokenizer"),
+            Task(agent="test-expert", instruction="test {{step_1}}", mission="test tokenizer"),
         ],
     )
-    results = run(run_plan(plan, _dispatch_ok))
+    results = run(run_task_graph(graph, _dispatch_ok))
     assert results[0].output.startswith("code-expert did:")
     assert results[0].output.endswith("write tokenizer")
     assert results[1].output.startswith("test-expert did:")
@@ -42,67 +42,67 @@ def test_passing_plan_runs_all_steps_with_refs_substituted() -> None:
 
 
 def test_step_failing_verify_once_is_repaired_then_passes() -> None:
-    plan = Plan(summary="s", steps=[PlanStep(agent="code-expert", task="write it", mission="write it", verify="fact-checker")])
+    graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker")])
     verify_calls: list[str] = []
 
-    async def verify(step: PlanStep, out: str) -> bool:
+    async def verify(step: Task, out: str) -> bool:
         verify_calls.append(out)
         return len(verify_calls) > 1  # fail first call, pass second
 
-    results = run(run_plan(plan, _dispatch_ok, verify_agent=verify))
+    results = run(run_task_graph(graph, _dispatch_ok, verify_agent=verify))
     assert len(results) == 1
     assert len(verify_calls) == 2
 
 
 def test_step_failing_verify_twice_halts_and_later_steps_do_not_run() -> None:
-    plan = Plan(
+    graph = TaskGraph(
         summary="s",
         steps=[
-            PlanStep(agent="code-expert", task="write it", mission="write it", verify="fact-checker"),
-            PlanStep(agent="test-expert", task="test it", mission="test it"),
+            Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker"),
+            Task(agent="test-expert", instruction="test it", mission="test it"),
         ],
     )
     ran: list[str] = []
 
-    async def dispatch(agent: str, task: str, mission: str = "") -> str:
+    async def dispatch(agent: str, instruction: str, mission: str = "") -> str:
         ran.append(agent)
         return f"{agent} output"
 
-    async def always_fail(step: PlanStep, out: str) -> bool:
+    async def always_fail(step: Task, out: str) -> bool:
         return False
 
-    with pytest.raises(PlanHalted) as exc_info:
-        run(run_plan(plan, dispatch, verify_agent=always_fail))
+    with pytest.raises(TaskGraphHalted) as exc_info:
+        run(run_task_graph(graph, dispatch, verify_agent=always_fail))
     assert exc_info.value.index == 0
     assert ran == ["code-expert", "code-expert"]  # original attempt + one repair, no test-expert
 
 
 def test_empty_dispatch_output_halts() -> None:
-    async def empty_dispatch(agent: str, task: str, mission: str = "") -> str:
+    async def empty_dispatch(agent: str, instruction: str, mission: str = "") -> str:
         return ""
 
-    plan = Plan(summary="s", steps=[PlanStep(agent="code-expert", task="write it", mission="write it")])
-    with pytest.raises(PlanHalted, match="empty dispatch output"):
-        run(run_plan(plan, empty_dispatch))
+    graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
+    with pytest.raises(TaskGraphHalted, match="empty dispatch output"):
+        run(run_task_graph(graph, empty_dispatch))
 
 
 def test_repair_uses_named_repair_agent_not_original() -> None:
-    plan = Plan(
+    graph = TaskGraph(
         summary="s",
-        steps=[PlanStep(agent="code-expert", task="write it", mission="write it", verify="fact-checker", repair="code-refactorer")],
+        steps=[Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker", repair="code-refactorer")],
     )
     dispatched: list[str] = []
 
-    async def dispatch(agent: str, task: str, mission: str = "") -> str:
+    async def dispatch(agent: str, instruction: str, mission: str = "") -> str:
         dispatched.append(agent)
         return f"{agent} output"
 
     calls = 0
 
-    async def verify(step: PlanStep, out: str) -> bool:
+    async def verify(step: Task, out: str) -> bool:
         nonlocal calls
         calls += 1
         return calls > 1
 
-    run(run_plan(plan, dispatch, verify_agent=verify))
+    run(run_task_graph(graph, dispatch, verify_agent=verify))
     assert dispatched == ["code-expert", "code-refactorer"]

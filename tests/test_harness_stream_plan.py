@@ -1,7 +1,7 @@
-"""Coverage for `Harness.stream`'s plan 27 improvement 4 wiring: chit-chat/
-trivial stay on the single-agent path; mutate and a `/agent-x` seed both
-route through the planner + interpreter (`_stream_plan`) — the "one
-mutation path" (decision 4).
+"""Coverage for `Harness.stream`'s plan 27 improvement 4 wiring (renamed
+plan 28): chit-chat/trivial stay on the single-agent path; mutate and a
+`/agent-x` seed both route through the planner + interpreter
+(`_stream_graph`) — the "one mutation path" (decision 4).
 """
 
 from __future__ import annotations
@@ -12,13 +12,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.events import DoneEvent, PlanHaltedEvent, PlanStartedEvent
+from agent.events import DoneEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.providers.base import ProviderAdapter
+from agent.llm.resolve import ResolvedTier
 from agent.llm.types import CompletionResponse, StreamDone, TextBlock
 from agent.pipeline.estimate import ScopeEstimate
-from agent.pipeline.plan import Plan, PlanStep
+from agent.pipeline.plan import Task, TaskGraph
 from agent.session import Session
 from agent.settings import Permissions
 
@@ -32,10 +33,12 @@ def _make_session(tmp_path: Path) -> Session:
 
 
 def _make_harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
+    main_tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
     with patch("agent.harness.core.OpenAIAdapter"):
         harness = Harness(
-            model="test-model", api_key="key", api_base="http://localhost",
-            supp_model="supp-model", supp_api_key="k", supp_api_base=None,
+            sequencer=main_tier, main_dispatch=main_tier, subagent_dispatch=main_tier,
+            estimator=estimator_tier,
         )
     return harness
 
@@ -78,21 +81,21 @@ def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_pat
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "sum 10 numbers"))
 
-    assert not any(isinstance(e, PlanStartedEvent) for e in collected)
+    assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
     harness._planner.plan.assert_not_awaited()
 
 
 def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
-    plan = Plan(
+    graph = TaskGraph(
         summary="build a library with tests",
         steps=[
-            PlanStep(agent="code-expert", task="write the library", mission="write the library"),
-            PlanStep(agent="test-expert", task="write tests", mission="write tests"),
+            Task(agent="code-expert", instruction="write the library", mission="write the library"),
+            Task(agent="test-expert", instruction="write tests", mission="write tests"),
         ],
     )
-    harness._planner.plan = AsyncMock(return_value=plan)
+    harness._planner.plan = AsyncMock(return_value=graph)
 
     async def fake_run_subagent(agent, task, **kwargs):
         return f"{agent} done"
@@ -102,7 +105,7 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "build a library with tests"))
 
-    started = [e for e in collected if isinstance(e, PlanStartedEvent)]
+    started = [e for e in collected if isinstance(e, TaskGraphStartedEvent)]
     assert len(started) == 1
     assert started[0].step_count == 2
     assert started[0].agents == ["code-expert", "test-expert"]
@@ -115,8 +118,8 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
 ) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
-    plan = Plan(summary="add coverage", steps=[PlanStep(agent="test-expert", task="add coverage", mission="add coverage")])
-    harness._planner.plan = AsyncMock(return_value=plan)
+    graph = TaskGraph(summary="add coverage", steps=[Task(agent="test-expert", instruction="add coverage", mission="add coverage")])
+    harness._planner.plan = AsyncMock(return_value=graph)
 
     async def fake_run_subagent(agent, task, **kwargs):
         return "done"
@@ -129,24 +132,24 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
     harness._planner.plan.assert_awaited_once()
     _, kwargs = harness._planner.plan.await_args
     assert kwargs.get("seed") == "test-expert"
-    assert any(isinstance(e, PlanStartedEvent) for e in collected)
+    assert any(isinstance(e, TaskGraphStartedEvent) for e in collected)
 
 
-def test_plan_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
-    plan = Plan(summary="build something", steps=[PlanStep(agent="code-expert", task="write it", mission="write it")])
-    harness._planner.plan = AsyncMock(return_value=plan)
+    graph = TaskGraph(summary="build something", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
+    harness._planner.plan = AsyncMock(return_value=graph)
 
     async def failing_run_subagent(agent, task, **kwargs):
-        return ""  # empty dispatch output -> PlanHalted
+        return ""  # empty dispatch output -> TaskGraphHalted
 
     monkeypatch.setattr(harness_core, "run_subagent", failing_run_subagent)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "build something"))
 
-    halted = [e for e in collected if isinstance(e, PlanHaltedEvent)]
+    halted = [e for e in collected if isinstance(e, TaskGraphHaltedEvent)]
     assert len(halted) == 1
     assert halted[0].step_index == 0
     assert "prior steps" in collected[-1] or "HALTED" in collected[-1]

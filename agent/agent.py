@@ -1,42 +1,25 @@
 from __future__ import annotations
 
 import logging
-import os
 import platform
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from . import __version__
-from .llm.model_caps import resolve_thinking_params
+from .llm.resolve import ResolvedTier, TierResolutionError, resolve_touchpoint
+from .llm.tiers import TierName
 from .harness import Harness, HiddenGrantCallback
 from .permissions import PermissionCallback
 from .pipeline import Gate, Route
 from .session import Session
-from .settings import Permissions
+from .settings import Permissions, load_model_catalog, load_tier_bindings
 from .logging import EventLogger
 
 from .events import MaxIterationsEvent, AgentEvent
 from .persistence import append_message, append_debug, append_event
 from .workspace import db as workspace_db
-
-load_dotenv()
-
-
-def _validate_config() -> None:
-    errors: list[str] = []
-    if not os.environ.get("GEKAI_CORE_MODEL_NAME", ""):
-        errors.append("GEKAI_CORE_MODEL_NAME is not set")
-    if not os.environ.get("GEKAI_CORE_MODEL_KEY", ""):
-        errors.append("GEKAI_CORE_MODEL_KEY is not set")
-    if not os.environ.get("GEKAI_SUPPORT_MODEL_NAME", ""):
-        errors.append("GEKAI_SUPPORT_MODEL_NAME is not set")
-    if not os.environ.get("GEKAI_SUPPORT_MODEL_KEY", ""):
-        errors.append("GEKAI_SUPPORT_MODEL_KEY is not set")
-    if errors:
-        raise RuntimeError("missing configuration:\n" + "\n".join(f"  - {e}" for e in errors))
 
 
 class GekaiAgent:
@@ -45,43 +28,102 @@ class GekaiAgent:
         workspace_db.handle_db_upgrade(self.working_dir)
         self.permissions = permissions
         self.debug = debug
-        _validate_config()
-        self.model: str = os.environ["GEKAI_CORE_MODEL_NAME"]
-        self._api_key: str | None = os.environ.get("GEKAI_CORE_MODEL_KEY")
-        self._api_base: str | None = os.environ.get("GEKAI_CORE_MODEL_URL")
-        _effort = os.environ.get("GEKAI_THINKING_EFFORT") or None
-        self._extra_params: dict = resolve_thinking_params(self.model, _effort)
-        self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
-        self._supp_model: str = os.environ["GEKAI_SUPPORT_MODEL_NAME"]
-        self._supp_api_key: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_KEY")
-        self._supp_api_base: str | None = os.environ.get("GEKAI_SUPPORT_MODEL_URL")
-        self._supp_client = AsyncOpenAI(api_key=self._supp_api_key, base_url=self._supp_api_base)
-        # gate runs on SUPP non-thinking — intent classification is pattern-matching,
-        # not reasoning, and is the high-volume common path (one cheap call per turn)
-        self._gate = Gate(
-            model=self._supp_model,
-            api_key=self._supp_api_key,
-            api_base=self._supp_api_base,
+
+        # Resolution must NOT raise here: this constructor runs in
+        # agent/main.py before the TUI (and so before `/tiers`) exists —
+        # raising would permanently lock an unconfigured install out of the
+        # only place that can fix it. `_configure_touchpoints` stashes
+        # `self._tier_error` instead and `gate()`/`process_stream()` retry it
+        # lazily on every call while still unconfigured (not just once — see
+        # `_configure_touchpoints`'s own docstring for why a single attempt
+        # isn't enough), raising it once there's a live chat (`_stream`'s
+        # existing try/except) to show it in. The startup/per-prompt nudge
+        # (`_maybe_warn_tiers_unconfigured`) covers the "haven't configured
+        # yet" case before the user even tries to chat.
+        self._tier_error: str | None = None
+        self._gate: Gate | None = None
+        self._main: Harness | None = None
+        self.model: str = "unconfigured"
+        self.effort: str | None = None
+        self._api_key: str | None = None
+        self._api_base: str | None = None
+        gate_model, estimator_model, sequencer_model, main_dispatch_model, subagent_dispatch_model = (
+            self._configure_touchpoints()
         )
-        self._main = Harness(
-            model=self.model,
-            api_key=self._api_key,
-            api_base=self._api_base,
-            extra_params=self._extra_params,
-            debug=self.debug,
-            supp_model=self._supp_model,
-            supp_api_key=self._supp_api_key,
-            supp_api_base=self._supp_api_base,
-        )
+        self._client = AsyncOpenAI(api_key=self._api_key or "unconfigured", base_url=self._api_base)
+
         self.events = EventLogger()
         self.events.emit(
             "run.start",
             version=__version__,
             platform=platform.system(),
-            core_model=self.model,
-            supp_model=self._supp_model,
+            gate_model=gate_model,
+            estimator_model=estimator_model,
+            sequencer_model=sequencer_model,
+            main_dispatch_model=main_dispatch_model,
+            subagent_dispatch_model=subagent_dispatch_model,
+            tiers_configured=self._tier_error is None,
             permissions={"read": permissions.read, "write": permissions.write, "exec": permissions.exec},
             debug=self.debug,
+        )
+
+    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+        """(Re)resolve every touchpoint against the *current* on-disk tier
+        catalog+bindings, updating `self._gate`/`self._main`/`self.model`/
+        `self._api_key`/`self._api_base` in place. A single resolve-once-at-
+        construction attempt isn't enough: `/tiers` runs inside the same
+        already-constructed `GekaiAgent` and only touches disk, so without a
+        retry here every touchpoint stays permanently stuck on whatever
+        failed at process startup — the exact bug this fixes (config saved
+        mid-session, next prompt still reports the pre-`/tiers` error).
+        Called once at construction and again lazily from `gate()`/
+        `process_stream()` on every call while `self._tier_error` is set.
+        Returns the five touchpoints' resolved model names (or all-`None` on
+        failure) purely for the `run.start` telemetry emit.
+        """
+        catalog = load_model_catalog()
+        bindings = load_tier_bindings()
+        resolved: dict[str, ResolvedTier] = {}
+        try:
+            for name in ("gate", "estimator", "sequencer", "main-dispatch", "subagent-dispatch"):
+                resolved[name] = resolve_touchpoint(name, catalog, bindings)
+        except TierResolutionError:
+            # The specific failure (which tier, why) is deliberately not
+            # surfaced here: it's an artifact of touchpoint iteration order,
+            # not a meaningful "this is the one broken thing" signal (e.g.
+            # "tier 'fast' is not configured" reads as "you never configured
+            # this" even when FAST *is* bound and it's actually SUPP that's
+            # missing a stored credential). A `/tiers` grid UI shows per-tier
+            # detail in its own status column instead.
+            self._tier_error = "tier configuration is incomplete — run /tiers"
+            return (None, None, None, None, None)
+
+        self._tier_error = None
+        sequencer_cfg = resolved["sequencer"]
+        self.model = sequencer_cfg.model
+        self.effort = bindings[TierName.CORE].default_effort  # sequencer's nominal tier is CORE
+        self._api_key = sequencer_cfg.api_key
+        self._api_base = sequencer_cfg.api_base
+        # gate runs on FAST — intent classification is pattern-matching, not
+        # reasoning, and is the high-volume common path (one cheap call per turn)
+        self._gate = Gate(
+            model=resolved["gate"].model,
+            api_key=resolved["gate"].api_key,
+            api_base=resolved["gate"].api_base,
+        )
+        self._main = Harness(
+            sequencer=sequencer_cfg,
+            main_dispatch=resolved["main-dispatch"],
+            subagent_dispatch=resolved["subagent-dispatch"],
+            estimator=resolved["estimator"],
+            debug=self.debug,
+        )
+        return (
+            resolved["gate"].model,
+            resolved["estimator"].model,
+            sequencer_cfg.model,
+            resolved["main-dispatch"].model,
+            resolved["subagent-dispatch"].model,
         )
 
     @property
@@ -103,6 +145,10 @@ class GekaiAgent:
         return session
 
     async def gate(self, user_input: str, history: list[dict] | None = None) -> Route:
+        if self._gate is None:
+            self._configure_touchpoints()
+        if self._gate is None:
+            raise RuntimeError(self._tier_error or "tiers are not configured — run /tiers")
         return await self._gate.gate(user_input, history=history)
 
     async def process_stream(
@@ -116,6 +162,10 @@ class GekaiAgent:
         append_user: bool = True,
         seed: str | None = None,
     ) -> AsyncIterator[str | AgentEvent]:
+        if self._main is None:
+            self._configure_touchpoints()
+        if self._main is None:
+            raise RuntimeError(self._tier_error or "tiers are not configured — run /tiers")
         if append_user:
             session.messages.append({"role": "user", "content": user_input})
             append_message(session, session.messages[-1], turn=turn_id)

@@ -13,23 +13,32 @@ from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
 from ..persona import SYSTEM_PROMPT, render_tool_instruction
 from ..pipeline.estimate import Estimator
-from ..pipeline.plan import Plan, PlanStep
+from ..pipeline.plan import Task, TaskGraph
 from ..pipeline.planner import Planner
-from ..harness.interpreter import PlanHalted, StepResult, run_plan
+from ..harness.interpreter import TaskGraphHalted, StepResult, run_task_graph
 from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, PlanHaltedEvent, PlanStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
 from ..tools.delegate import run_subagent
+
+if TYPE_CHECKING:
+    # deferred: agent.llm.resolve imports agent.harness.touchpoints, which
+    # would otherwise cycle back through agent.harness's package __init__
+    # (`from .core import Harness`) before this module finishes loading.
+    # `from __future__ import annotations` (top of file) makes this
+    # type-checking-only import safe for the annotations below.
+    from ..llm.resolve import ResolvedTier
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
@@ -158,29 +167,31 @@ def _build_agent(
 class Harness:
     def __init__(
         self,
-        model: str,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        extra_params: dict | None = None,
+        sequencer: ResolvedTier,
+        main_dispatch: ResolvedTier,
+        subagent_dispatch: ResolvedTier,
+        estimator: ResolvedTier | None = None,
         debug: bool = False,
-        supp_model: str | None = None,
-        supp_api_key: str | None = None,
-        supp_api_base: str | None = None,
     ) -> None:
-        self._model = model
-        self._api_key = api_key
-        self._api_base = api_base
-        self._extra_params = extra_params or {}
+        # One resolved config per touchpoint (plan 28 Phase 1b) — sequencer
+        # (the Planner), main-dispatch (main's own runs), subagent-dispatch
+        # (run_subagent) — instead of one CORE + one SUPP pair. `estimator`
+        # stays optional: tests that only care about the single-agent path
+        # (no estimator wired) get the pre-plan-27 flat "trivial" behavior.
+        self._sequencer = sequencer
+        self._main_dispatch = main_dispatch
+        self._subagent_dispatch = subagent_dispatch
         self._debug = debug
         self._estimator = (
-            Estimator(model=supp_model, api_key=supp_api_key, api_base=supp_api_base)
-            if supp_model
+            Estimator(model=estimator.model, api_key=estimator.api_key, api_base=estimator.api_base)
+            if estimator is not None
             else None
         )
-        # planner runs CORE thinking (same model/creds as main) — one call per
-        # mutation turn (plan 27 decision 5)
+        # sequencer runs CORE thinking — one call per mutation turn (plan 27
+        # decision 5; touchpoint renamed under plan 28)
         self._planner = Planner(
-            model=model, api_key=api_key, api_base=api_base, extra_params=self._extra_params,
+            model=sequencer.model, api_key=sequencer.api_key, api_base=sequencer.api_base,
+            extra_params=sequencer.extra_params,
         )
 
     async def stream(
@@ -196,7 +207,7 @@ class Harness:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
         system_base = _enrich_system_base(system_base, session.working_dir)
-        effective_extra_params = self._extra_params if extra_params is None else extra_params
+        effective_extra_params = self._main_dispatch.extra_params if extra_params is None else extra_params
 
         estimate_decision = "skipped"
         estimate_duration_ms = 0
@@ -213,14 +224,14 @@ class Harness:
         yield EstimateEvent(decision=estimate_decision, specialists=[], duration_ms=estimate_duration_ms)
 
         if subagent is None and estimate_decision in ("mutate", "seeded"):
-            async for item in self._stream_plan(
+            async for item in self._stream_graph(
                 session, user_input, seed, permission_callback, hidden_grant_callback, bus,
             ):
                 yield item
             return
 
         agent = _build_agent(
-            self._model, self._api_key, self._api_base, effective_extra_params,
+            self._main_dispatch.model, self._main_dispatch.api_key, self._main_dispatch.api_base, effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
@@ -280,7 +291,7 @@ class Harness:
                 agent_task.cancel()
             unsubscribe()
 
-    async def _stream_plan(
+    async def _stream_graph(
         self,
         session: Session,
         user_input: str,
@@ -289,12 +300,12 @@ class Harness:
         hidden_grant_callback: HiddenGrantCallback | None,
         bus: EventBus,
     ) -> AsyncIterator[AgentEvent | str]:
-        """Case 3/4 mutation path: planner produces a validated Plan, the
-        fixed interpreter walks it (plan 27 improvements 2-3). `main` steps
-        run as a direct instruction (no spawn); subagent steps are a cold,
-        fire-and-forget run whose start/outcome are traced on `bus` — the
-        same bridge the single-agent path above uses, so DiffEvent/LogEvent/
-        Delegation* rendering is shared, not reimplemented.
+        """Case 3/4 mutation path: planner produces a validated TaskGraph, the
+        fixed interpreter walks it (plan 27 improvements 2-3; renamed plan 28).
+        `main` steps run as a direct instruction (no spawn); subagent steps
+        are a cold, fire-and-forget run whose start/outcome are traced on
+        `bus` — the same bridge the single-agent path above uses, so
+        DiffEvent/LogEvent/Delegation* rendering is shared, not reimplemented.
         """
         working_dir = session.working_dir
         permissions = session.permissions
@@ -313,45 +324,47 @@ class Harness:
         yield SubAgentStartEvent(name="planner", description="planning", color=_MAIN_COLOR)
 
         try:
-            plan = await self._planner.plan(user_input, seed=seed)
+            graph = await self._planner.plan(user_input, seed=seed)
         except ValueError as exc:
             unsubscribe()
-            yield PlanHaltedEvent(step_index=-1, agent="planner", reason=str(exc))
+            yield TaskGraphHaltedEvent(step_index=-1, agent="planner", reason=str(exc))
             yield DoneEvent(thinking_chars=0, files_touched=[])
-            yield f"[planner failed to produce a valid plan: {exc}]"
+            yield f"[planner failed to produce a valid task graph: {exc}]"
             return
 
-        yield PlanStartedEvent(
-            step_count=len(plan),
-            agents=[s.agent for s in plan],
-            verify_placements=sum(1 for s in plan if s.verify),
+        yield TaskGraphStartedEvent(
+            step_count=len(graph),
+            agents=[s.agent for s in graph],
+            verify_placements=sum(1 for s in graph if s.verify),
         )
 
-        async def dispatch(agent_name: str, task: str, mission: str = "") -> str:
+        async def dispatch(agent_name: str, instruction: str, mission: str = "") -> str:
             if agent_name == "main":
                 main_system = _enrich_system_base(SYSTEM_PROMPT, working_dir)
                 agent_obj = _build_agent(
-                    self._model, self._api_key, self._api_base, self._extra_params,
+                    self._main_dispatch.model, self._main_dispatch.api_key, self._main_dispatch.api_base,
+                    self._main_dispatch.extra_params,
                     working_dir, permissions, permission_callback, main_system, bus,
                     subagent=None, hidden_grant_callback=hidden_grant_callback,
                 )
                 run_id = uuid.uuid4().hex
-                bus.emit(DelegationStarted(agent="main", task=task, mission=mission, run_id=run_id))
+                bus.emit(DelegationStarted(agent="main", task=instruction, mission=mission, run_id=run_id))
                 try:
-                    history = await agent_obj.run(task, run_id=run_id)
+                    history = await agent_obj.run(instruction, run_id=run_id)
                 finally:
                     bus.emit(DelegationCompleted(agent="main", run_id=run_id))
                 return _last_assistant_text(history)
             return await run_subagent(
-                agent_name, task,
+                agent_name, instruction,
                 mission=mission,
-                model=self._model, api_key=self._api_key, api_base=self._api_base,
-                extra_params=self._extra_params, working_dir=working_dir,
+                model=self._subagent_dispatch.model, api_key=self._subagent_dispatch.api_key,
+                api_base=self._subagent_dispatch.api_base,
+                extra_params=self._subagent_dispatch.extra_params, working_dir=working_dir,
                 permissions=permissions, permission_callback=permission_callback,
                 bus=bus, hidden_grant_callback=hidden_grant_callback,
             )
 
-        async def verify_agent(step: PlanStep, out: str) -> bool:
+        async def verify_agent(step: Task, out: str) -> bool:
             # No dedicated verdict-emitting verify agent exists yet (open point 2,
             # hard problem 3) — "mechanical" or any unnamed check is a placeholder:
             # non-empty output passes. A named post-planning-only agent gets a
@@ -360,18 +373,18 @@ class Harness:
             if step.verify in roster_names:
                 verdict = await dispatch(
                     step.verify,
-                    f"verify this step's output against its task, then answer PASS or FAIL "
-                    f"on the first line.\n\ntask: {step.task}\n\noutput:\n{out}",
+                    f"verify this step's output against its instruction, then answer PASS or FAIL "
+                    f"on the first line.\n\ninstruction: {step.instruction}\n\noutput:\n{out}",
                 )
                 return verdict.strip().upper().startswith("PASS")
             return bool(out.strip())
 
-        plan_task: asyncio.Task[list[StepResult]] = asyncio.create_task(
-            run_plan(plan, dispatch, verify_agent=verify_agent)
+        graph_task: asyncio.Task[list[StepResult]] = asyncio.create_task(
+            run_task_graph(graph, dispatch, verify_agent=verify_agent)
         )
 
         try:
-            while not plan_task.done():
+            while not graph_task.done():
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=0.05)
                 except asyncio.TimeoutError:
@@ -381,15 +394,15 @@ class Harness:
                 yield queue.get_nowait()
 
             try:
-                await plan_task
-            except PlanHalted as halted:
-                yield PlanHaltedEvent(step_index=halted.index, agent=halted.step.agent, reason=halted.reason)
+                await graph_task
+            except TaskGraphHalted as halted:
+                yield TaskGraphHaltedEvent(step_index=halted.index, agent=halted.step.agent, reason=halted.reason)
                 yield DoneEvent(thinking_chars=0, files_touched=files_touched)
-                yield _recap(plan, halted=halted)
+                yield _recap(graph, halted=halted)
                 return
 
             yield DoneEvent(thinking_chars=0, files_touched=files_touched)
-            yield _recap(plan, halted=None)
+            yield _recap(graph, halted=None)
         finally:
             unsubscribe()
 
@@ -405,15 +418,15 @@ def _last_assistant_text(history: list[Message]) -> str:
     return ""
 
 
-def _recap(plan: Plan, *, halted: PlanHalted | None) -> str:
-    """Mechanical (no narrator LLM call) recap of the plan's outcome — this
-    is both the yielded assistant text (so it persists into session history
-    for next-turn continuity, plan 27 hard problem 4) and the rendered
-    checkpoint artifact (decision 15)."""
+def _recap(graph: TaskGraph, *, halted: TaskGraphHalted | None) -> str:
+    """Mechanical (no narrator LLM call) recap of the task graph's outcome —
+    this is both the yielded assistant text (so it persists into session
+    history for next-turn continuity, plan 27 hard problem 4) and the
+    rendered checkpoint artifact (decision 15)."""
     if halted is None:
-        return plan.summary
+        return graph.summary
     return (
-        f"{plan.summary}\n"
+        f"{graph.summary}\n"
         f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
         "prior steps' work is kept; nothing was rolled back."
     )
