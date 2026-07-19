@@ -47,6 +47,7 @@ from agent.harness.core import Harness
 from agent.llm.events import AgentStopped, EventBus
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
+from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.tools import Tool
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
 from agent.session import Session
@@ -102,9 +103,22 @@ def _make_harness() -> Harness:
     """No estimator wired — `Harness.stream(subagent=None)` takes the
     "trivial (no estimator)" branch straight to the single-agent path,
     exactly as the pre-plan-27 flat behavior these tests were written
-    against (see module docstring)."""
+    against (see module docstring).
+
+    Plan 28 Phase 2: `Harness` now takes a resolver closure + a `TierPolicy`
+    per scaled touchpoint instead of one frozen `ResolvedTier` each — the
+    resolver here always returns the same `tier`, regardless of which
+    `TierName` it's asked for, so every touchpoint still resolves to the
+    exact same config these tests were written against.
+    """
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
-    return Harness(sequencer=tier, main_dispatch=tier, subagent_dispatch=tier)
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    return Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        main_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+    )
 
 
 async def _drain(harness: Harness, session: Session, prompt: str) -> list[AgentEvent | str]:

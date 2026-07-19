@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from agent.harness.interpreter import TaskGraphHalted, resolve_refs, run_task_graph
+from agent.harness.scaling import WorkSignal
 from agent.pipeline.plan import Task, TaskGraph
 
 
@@ -12,7 +13,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-async def _dispatch_ok(agent: str, instruction: str, mission: str = "") -> str:
+async def _dispatch_ok(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal()) -> str:
     return f"{agent} did: {instruction}"
 
 
@@ -64,7 +65,7 @@ def test_step_failing_verify_twice_halts_and_later_steps_do_not_run() -> None:
     )
     ran: list[str] = []
 
-    async def dispatch(agent: str, instruction: str, mission: str = "") -> str:
+    async def dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal()) -> str:
         ran.append(agent)
         return f"{agent} output"
 
@@ -78,7 +79,7 @@ def test_step_failing_verify_twice_halts_and_later_steps_do_not_run() -> None:
 
 
 def test_empty_dispatch_output_halts() -> None:
-    async def empty_dispatch(agent: str, instruction: str, mission: str = "") -> str:
+    async def empty_dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal()) -> str:
         return ""
 
     graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
@@ -93,7 +94,7 @@ def test_repair_uses_named_repair_agent_not_original() -> None:
     )
     dispatched: list[str] = []
 
-    async def dispatch(agent: str, instruction: str, mission: str = "") -> str:
+    async def dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal()) -> str:
         dispatched.append(agent)
         return f"{agent} output"
 

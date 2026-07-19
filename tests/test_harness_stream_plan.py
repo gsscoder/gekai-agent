@@ -7,19 +7,23 @@ plan 28): chit-chat/trivial stay on the single-agent path; mutate and a
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.events import DoneEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent
+from agent.events import DoneEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
+from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.types import CompletionResponse, StreamDone, TextBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
+from agent.pipeline.planner import Planner
 from agent.session import Session
 from agent.settings import Permissions
 
@@ -33,14 +37,34 @@ def _make_session(tmp_path: Path) -> Session:
 
 
 def _make_harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
+    """Plan 28 Phase 2: `Harness` takes a resolver closure + a `TierPolicy`
+    per scaled touchpoint instead of one frozen `ResolvedTier` each. The
+    resolver here always returns `main_tier`, so every touchpoint (including
+    the sequencer's freshly-built `Planner`, now constructed inside
+    `_stream_graph()` instead of `__init__`) still resolves to the exact
+    same config these tests were written against."""
     main_tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     with patch("agent.harness.core.OpenAIAdapter"):
         harness = Harness(
-            sequencer=main_tier, main_dispatch=main_tier, subagent_dispatch=main_tier,
+            resolve=lambda _tier: main_tier,
+            sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+            main_dispatch_policy=policy,
+            subagent_dispatch_policy=policy,
             estimator=estimator_tier,
         )
     return harness
+
+
+def _patch_planner_plan(monkeypatch: pytest.MonkeyPatch, mock: AsyncMock) -> None:
+    """`Harness._stream_graph` now builds a fresh `Planner` per call (plan 28
+    Phase 2 — the sequencer's tier is chosen per call), so a test can no
+    longer stash a mock onto a pre-built `harness._planner` instance; patch
+    `Planner.plan` at the class level instead — every `Planner()` built
+    during the test picks it up the same way an instance-attribute override
+    used to."""
+    monkeypatch.setattr(Planner, "plan", mock)
 
 
 async def _drain(harness: Harness, session: Session, prompt: str, **kwargs) -> list:
@@ -69,10 +93,86 @@ class _ScriptedAdapter(ProviderAdapter):
         yield StreamDone(response=self._responses[len(self.calls) - 1])
 
 
+# --- plan 28 Phase 2 (assignment-time tier scaling) integration fixtures ---
+#
+# `_make_harness`'s resolver is flat (returns the same `ResolvedTier`
+# regardless of which `TierName` it's asked for) — fine for tests that don't
+# care about scaling, but it can't distinguish a promoted/demoted dispatch
+# from a no-op. The fixtures below add a resolver that *can* distinguish
+# tiers, plus capture helpers, so these tests can prove scaling end-to-end
+# through the real Harness/_stream_graph/dispatch wiring rather than only the
+# already-unit-tested pure `scale()`/`node_signal()`/`_sequencer_signal()`
+# functions (tests/test_scaling.py).
+
+
+def _tier_distinguishing_resolve(tier: TierName) -> ResolvedTier:
+    """Fake resolver returning a distinguishable `.model` per tier (SUPP vs
+    CORE), so a test can assert which tier a dispatch actually resolved and
+    used."""
+    return ResolvedTier(model=f"{tier.value}-model", api_key="key", api_base=None, extra_params={})
+
+
+def _make_scaling_harness(resolve: Callable[[TierName], ResolvedTier]) -> Harness:
+    """Like `_make_harness`, but takes a caller-supplied `resolve` instead of
+    a flat one, so scaling tests can tell which tier a dispatch used."""
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
+    with patch("agent.harness.core.OpenAIAdapter"):
+        harness = Harness(
+            resolve=resolve,
+            sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+            main_dispatch_policy=policy,
+            subagent_dispatch_policy=policy,
+            estimator=estimator_tier,
+        )
+    return harness
+
+
+class _RecordingAdapter(ProviderAdapter):
+    """Captures the `model` kwarg passed to `stream()` per instance
+    (agent/llm/agent.py's `_provider_kwargs` threads `self.model` into every
+    provider call) — lets a test tell which resolved tier's config a given
+    `main` dispatch actually used. Mirrors `_ScriptedAdapter` above /
+    test_harness_core.py's `_CapturingEventBus` class-level-list capture
+    pattern; always answers with fixed, immediate text (no tool calls), since
+    these tests care about *which model* a dispatch used, not its content.
+    """
+
+    instances: ClassVar[list["_RecordingAdapter"]] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.calls: list[dict] = []
+        type(self).instances.append(self)
+
+    async def complete(self, **kwargs):
+        raise NotImplementedError
+
+    async def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        yield StreamDone(
+            response=CompletionResponse(content=[TextBlock(text="step done")], stop_reason="end_turn")
+        )
+
+
+def _capturing_planner_init(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Replaces `Planner.__init__` with one that records its kwargs instead
+    of building a real `AsyncOpenAI` client, so a test can assert which
+    resolved tier's config the sequencer's freshly-built `Planner` (built
+    per `_stream_graph()` call, plan 28 Phase 2) actually received."""
+    calls: list[dict] = []
+
+    def _init(self, model, api_key=None, api_base=None, extra_params=None) -> None:
+        calls.append({"model": model, "api_key": api_key, "api_base": api_base, "extra_params": extra_params})
+
+    monkeypatch.setattr(Planner, "__init__", _init)
+    return calls
+
+
 def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
-    harness._planner.plan = AsyncMock(side_effect=AssertionError("planner must not run on trivial"))
+    plan_mock = AsyncMock(side_effect=AssertionError("planner must not run on trivial"))
+    _patch_planner_plan(monkeypatch, plan_mock)
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn"),
     ]
@@ -82,7 +182,7 @@ def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_pat
     collected = run(_drain(harness, session, "sum 10 numbers"))
 
     assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
-    harness._planner.plan.assert_not_awaited()
+    plan_mock.assert_not_awaited()
 
 
 def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -95,7 +195,7 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
             Task(agent="test-expert", instruction="write tests", mission="write tests"),
         ],
     )
-    harness._planner.plan = AsyncMock(return_value=graph)
+    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
 
     async def fake_run_subagent(agent, task, **kwargs):
         return f"{agent} done"
@@ -119,7 +219,8 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
     graph = TaskGraph(summary="add coverage", steps=[Task(agent="test-expert", instruction="add coverage", mission="add coverage")])
-    harness._planner.plan = AsyncMock(return_value=graph)
+    plan_mock = AsyncMock(return_value=graph)
+    _patch_planner_plan(monkeypatch, plan_mock)
 
     async def fake_run_subagent(agent, task, **kwargs):
         return "done"
@@ -129,8 +230,8 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "add coverage", seed="test-expert"))
 
-    harness._planner.plan.assert_awaited_once()
-    _, kwargs = harness._planner.plan.await_args
+    plan_mock.assert_awaited_once()
+    _, kwargs = plan_mock.await_args
     assert kwargs.get("seed") == "test-expert"
     assert any(isinstance(e, TaskGraphStartedEvent) for e in collected)
 
@@ -139,7 +240,7 @@ def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatc
     harness = _make_harness(monkeypatch)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(summary="build something", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
-    harness._planner.plan = AsyncMock(return_value=graph)
+    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
 
     async def failing_run_subagent(agent, task, **kwargs):
         return ""  # empty dispatch output -> TaskGraphHalted
@@ -153,3 +254,142 @@ def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatc
     assert len(halted) == 1
     assert halted[0].step_index == 0
     assert "prior steps" in collected[-1] or "HALTED" in collected[-1]
+
+
+# --- plan 28 Phase 2 (assignment-time tier scaling) end-to-end coverage ---
+#
+# These prove the scaling wiring through the real Harness/_stream_graph/
+# dispatch path — not just the pure `scale()`/`node_signal()`/
+# `_sequencer_signal()` functions already unit-tested in isolation in
+# tests/test_scaling.py.
+
+
+def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ/EDGE: scale() is stateless per-dispatch (scaling.py module
+    # docstring, decision 6) — a step 1 mechanical-verify promotion to CORE
+    # must not leak into step 2's dispatch, which has no verify and must
+    # resolve back at main-dispatch's configured default (SUPP). Also proves
+    # a ScaleEvent is yielded for the adjusted step only (core.py's
+    # `dispatch()`: `if tier != policy.default: queue.put_nowait(ScaleEvent(...))`).
+    harness = _make_scaling_harness(_tier_distinguishing_resolve)
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    graph = TaskGraph(
+        summary="two main steps",
+        steps=[
+            Task(agent="main", instruction="step one", mission="step one", verify="mechanical"),
+            Task(agent="main", instruction="step two", mission="step two", verify=None),
+        ],
+    )
+    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+
+    _RecordingAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+
+    session = _make_session(tmp_path)
+    # Contains "and"/"both" -> `_sequencer_signal` stays neutral (keeps the
+    # sequencer at its own CORE default) so the only ScaleEvent in this run
+    # is the main-dispatch one under test, not a sequencer one too.
+    prompt = "please handle both step one and step two carefully"
+    collected = run(_drain(harness, session, prompt))
+
+    assert len(_RecordingAdapter.instances) == 2
+    assert _RecordingAdapter.instances[0].calls[0]["model"] == "core-model", (
+        "step 1 (verify='mechanical') should dispatch at the promoted CORE tier"
+    )
+    assert _RecordingAdapter.instances[1].calls[0]["model"] == "supp-model", (
+        "step 2 (verify=None) should dispatch back at the default SUPP tier "
+        "-- no memory of step 1's promotion"
+    )
+
+    scale_events = [e for e in collected if isinstance(e, ScaleEvent)]
+    assert scale_events == [
+        ScaleEvent(component="main-dispatch", default_tier="supp", chosen_tier="core", reason="reasoning-shaped")
+    ]
+
+
+def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # REQ: item 5 -- a short, mechanically-simple request demotes the
+    # sequencer off its configured CORE default to SUPP (`_sequencer_signal`,
+    # scaling.py); proven end-to-end via the actual resolved config the
+    # freshly-built `Planner` receives, plus the yielded `ScaleEvent`.
+    harness = _make_scaling_harness(_tier_distinguishing_resolve)
+    harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
+    planner_calls = _capturing_planner_init(monkeypatch)
+    graph = TaskGraph(summary="renamed", steps=[Task(agent="main", instruction="rename it", mission="rename it")])
+    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+
+    _RecordingAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+
+    session = _make_session(tmp_path)
+    # 3 words, none in the multi-step keyword list -> guaranteed demote
+    # (scaling.py's own test_sequencer_signal_demotes_short_simple_prompt
+    # uses this exact prompt).
+    prompt = "rename this variable"
+    assert len(prompt.split()) <= 15  # sanity: within _SEQUENCER_WORD_LIMIT
+
+    collected = run(_drain(harness, session, prompt, seed="main"))
+
+    assert planner_calls[0]["model"] == "supp-model", "Planner should be built from the SUPP-resolved config"
+    sequencer_events = [e for e in collected if isinstance(e, ScaleEvent) and e.component == "sequencer"]
+    assert sequencer_events == [
+        ScaleEvent(component="sequencer", default_tier="core", chosen_tier="supp", reason="easy-demote")
+    ]
+
+
+def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # REQ: item 5 (inverse) -- a longer, multi-clause request (contains
+    # "and") keeps `_sequencer_signal` neutral, so the sequencer stays at its
+    # own configured default (CORE): the `Planner` is built from the
+    # CORE-resolved config, and no sequencer ScaleEvent is yielded.
+    harness = _make_scaling_harness(_tier_distinguishing_resolve)
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    planner_calls = _capturing_planner_init(monkeypatch)
+    graph = TaskGraph(
+        summary="login + tests",
+        steps=[Task(agent="main", instruction="do it", mission="do it")],
+    )
+    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+
+    _RecordingAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+
+    session = _make_session(tmp_path)
+    prompt = "add a login endpoint and write tests for it"
+
+    collected = run(_drain(harness, session, prompt))
+
+    assert planner_calls[0]["model"] == "core-model", "Planner should stay on the CORE-resolved config"
+    sequencer_events = [e for e in collected if isinstance(e, ScaleEvent) and e.component == "sequencer"]
+    assert sequencer_events == []
+
+
+def test_single_agent_path_never_scales_or_emits_scale_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: item 6 -- the non-graph, trivial-estimate single-agent path
+    # (`Harness.stream`'s no-graph branch) always resolves
+    # `main_dispatch_policy.default` and structurally never calls `scale()`:
+    # proven here by a fake `resolve` that *would* produce a distinguishable
+    # config at another tier -- the dispatch still uses the SUPP (default)
+    # model, and no `ScaleEvent` is ever yielded, even though this test's
+    # `_make_scaling_harness` fixture is the exact one that does trigger
+    # ScaleEvents on the graph path above.
+    harness = _make_scaling_harness(_tier_distinguishing_resolve)
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
+    plan_mock = AsyncMock(side_effect=AssertionError("planner must not run on trivial"))
+    _patch_planner_plan(monkeypatch, plan_mock)
+
+    _RecordingAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "sum 10 numbers"))
+
+    assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
+    plan_mock.assert_not_awaited()
+    assert not any(isinstance(e, ScaleEvent) for e in collected)
+    assert len(_RecordingAdapter.instances) == 1
+    assert _RecordingAdapter.instances[0].calls[0]["model"] == "supp-model"

@@ -8,9 +8,10 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from . import __version__
-from .llm.resolve import ResolvedTier, TierResolutionError, resolve_touchpoint
+from .llm.resolve import ResolvedTier, TierResolutionError, resolve_tier, resolve_touchpoint
 from .llm.tiers import TierName
 from .harness import Harness, HiddenGrantCallback
+from .harness.touchpoints import touchpoint
 from .permissions import PermissionCallback
 from .pipeline import Gate, Route
 from .session import Session
@@ -111,10 +112,22 @@ class GekaiAgent:
             api_key=resolved["gate"].api_key,
             api_base=resolved["gate"].api_base,
         )
+
+        # The 3 scaled touchpoints (plan 28 Phase 2) don't get a frozen
+        # ResolvedTier baked into the Harness — they get this resolver
+        # closure plus each touchpoint's TierPolicy, so the harness can
+        # re-resolve at a scaled tier per dispatch instead of the one
+        # resolved above at `policy.default` (kept only for `run.start`
+        # telemetry, below). Rebuilt fresh every call so a `/tiers` save
+        # mid-session is picked up the same way the frozen values used to be.
+        def _resolve(tier: TierName) -> ResolvedTier:
+            return resolve_tier(tier, catalog, bindings)
+
         self._main = Harness(
-            sequencer=sequencer_cfg,
-            main_dispatch=resolved["main-dispatch"],
-            subagent_dispatch=resolved["subagent-dispatch"],
+            resolve=_resolve,
+            sequencer_policy=touchpoint("sequencer").policy,
+            main_dispatch_policy=touchpoint("main-dispatch").policy,
+            subagent_dispatch_policy=touchpoint("subagent-dispatch").policy,
             estimator=resolved["estimator"],
             debug=self.debug,
         )

@@ -119,3 +119,14 @@ class TaskGraphHaltedEvent(AgentEvent):
     step_index: int = 0
     agent: str = ""
     reason: str = ""
+
+
+@dataclass
+class ScaleEvent(AgentEvent):
+    """Telemetry only (plan 28 Phase 2, hard problem 4): emitted to events-*.jsonl
+    when the harness moves a component off its configured default tier for one
+    dispatch. Never emitted on a no-op (chosen_tier == default_tier)."""
+    component: str = ""      # e.g. "main-dispatch" | "subagent-dispatch" | "sequencer"
+    default_tier: str = ""   # e.g. "supp"
+    chosen_tier: str = ""    # e.g. "core"
+    reason: str = ""

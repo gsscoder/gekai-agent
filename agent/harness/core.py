@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
@@ -15,6 +15,7 @@ from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..llm.tiers import TierName, TierPolicy
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
 from ..persona import SYSTEM_PROMPT, render_tool_instruction
@@ -22,11 +23,12 @@ from ..pipeline.estimate import Estimator
 from ..pipeline.plan import Task, TaskGraph
 from ..pipeline.planner import Planner
 from ..harness.interpreter import TaskGraphHalted, StepResult, run_task_graph
+from ..harness.scaling import WorkSignal, scale, _sequencer_signal
 from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
@@ -167,32 +169,36 @@ def _build_agent(
 class Harness:
     def __init__(
         self,
-        sequencer: ResolvedTier,
-        main_dispatch: ResolvedTier,
-        subagent_dispatch: ResolvedTier,
+        resolve: Callable[[TierName], ResolvedTier],
+        sequencer_policy: TierPolicy,
+        main_dispatch_policy: TierPolicy,
+        subagent_dispatch_policy: TierPolicy,
         estimator: ResolvedTier | None = None,
         debug: bool = False,
     ) -> None:
-        # One resolved config per touchpoint (plan 28 Phase 1b) — sequencer
-        # (the Planner), main-dispatch (main's own runs), subagent-dispatch
-        # (run_subagent) — instead of one CORE + one SUPP pair. `estimator`
-        # stays optional: tests that only care about the single-agent path
-        # (no estimator wired) get the pre-plan-27 flat "trivial" behavior.
-        self._sequencer = sequencer
-        self._main_dispatch = main_dispatch
-        self._subagent_dispatch = subagent_dispatch
+        # Assignment-time tier scaling (plan 28 Phase 2): the 3 scaled
+        # touchpoints (sequencer, main-dispatch, subagent-dispatch) no longer
+        # get one frozen `ResolvedTier` baked in at construction — they get
+        # this resolver closure (over the current catalog+bindings) plus
+        # each touchpoint's declared `TierPolicy`, so a dispatch site can
+        # pick a tier per call (`scale(policy, signal)`) and resolve it fresh
+        # (`resolve(tier)`). `estimator` stays optional and still frozen: it
+        # is not one of the scaled components — tests that only care about
+        # the single-agent path (no estimator wired) get the pre-plan-27 flat
+        # "trivial" behavior.
+        self._resolve = resolve
+        self._sequencer_policy = sequencer_policy
+        self._main_dispatch_policy = main_dispatch_policy
+        self._subagent_dispatch_policy = subagent_dispatch_policy
         self._debug = debug
         self._estimator = (
             Estimator(model=estimator.model, api_key=estimator.api_key, api_base=estimator.api_base)
             if estimator is not None
             else None
         )
-        # sequencer runs CORE thinking — one call per mutation turn (plan 27
-        # decision 5; touchpoint renamed under plan 28)
-        self._planner = Planner(
-            model=sequencer.model, api_key=sequencer.api_key, api_base=sequencer.api_base,
-            extra_params=sequencer.extra_params,
-        )
+        # `Planner` is no longer built once here: the sequencer's tier is
+        # chosen per `_stream_graph()` call (pre-plan signal), so it is
+        # constructed fresh there, against a freshly resolved tier.
 
     async def stream(
         self,
@@ -207,7 +213,6 @@ class Harness:
         bus = EventBus()
         system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
         system_base = _enrich_system_base(system_base, session.working_dir)
-        effective_extra_params = self._main_dispatch.extra_params if extra_params is None else extra_params
 
         estimate_decision = "skipped"
         estimate_duration_ms = 0
@@ -230,8 +235,15 @@ class Harness:
                 yield item
             return
 
+        # No-graph turn (trivial single-agent, or a cold subagent run outside
+        # a task graph): runs at main-dispatch's configured default, always —
+        # there is no per-node signal here (no verify/retry concept exists in
+        # this path), so it never modulates (plan 28 Phase 2 guardrail).
+        main_dispatch_resolved = self._resolve(self._main_dispatch_policy.default)
+        effective_extra_params = main_dispatch_resolved.extra_params if extra_params is None else extra_params
         agent = _build_agent(
-            self._main_dispatch.model, self._main_dispatch.api_key, self._main_dispatch.api_base, effective_extra_params,
+            main_dispatch_resolved.model, main_dispatch_resolved.api_key, main_dispatch_resolved.api_base,
+            effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
@@ -323,8 +335,26 @@ class Harness:
         # underneath it via the same DelegationStart/DoneEvent bridge.
         yield SubAgentStartEvent(name="planner", description="planning", color=_MAIN_COLOR)
 
+        # Sequencer pre-plan signal (plan 28 Phase 2): a cheap, engineered
+        # read of the raw prompt, computed before the task graph exists (no
+        # `Task.verify` to read yet) — demotes CORE->SUPP on a clearly-easy
+        # request, otherwise stays at the configured default.
+        sequencer_tier, sequencer_reason = scale(self._sequencer_policy, _sequencer_signal(user_input))
+        resolved_sequencer = self._resolve(sequencer_tier)
+        if sequencer_tier != self._sequencer_policy.default:
+            yield ScaleEvent(
+                component="sequencer",
+                default_tier=self._sequencer_policy.default.value,
+                chosen_tier=sequencer_tier.value,
+                reason=sequencer_reason,
+            )
+        planner = Planner(
+            model=resolved_sequencer.model, api_key=resolved_sequencer.api_key,
+            api_base=resolved_sequencer.api_base, extra_params=resolved_sequencer.extra_params,
+        )
+
         try:
-            graph = await self._planner.plan(user_input, seed=seed)
+            graph = await planner.plan(user_input, seed=seed)
         except ValueError as exc:
             unsubscribe()
             yield TaskGraphHaltedEvent(step_index=-1, agent="planner", reason=str(exc))
@@ -338,12 +368,23 @@ class Harness:
             verify_placements=sum(1 for s in graph if s.verify),
         )
 
-        async def dispatch(agent_name: str, instruction: str, mission: str = "") -> str:
+        async def dispatch(
+            agent_name: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(),
+        ) -> str:
             if agent_name == "main":
+                tier, reason = scale(self._main_dispatch_policy, signal)
+                resolved = self._resolve(tier)
+                if tier != self._main_dispatch_policy.default:
+                    queue.put_nowait(ScaleEvent(
+                        component="main-dispatch",
+                        default_tier=self._main_dispatch_policy.default.value,
+                        chosen_tier=tier.value,
+                        reason=reason,
+                    ))
                 main_system = _enrich_system_base(SYSTEM_PROMPT, working_dir)
                 agent_obj = _build_agent(
-                    self._main_dispatch.model, self._main_dispatch.api_key, self._main_dispatch.api_base,
-                    self._main_dispatch.extra_params,
+                    resolved.model, resolved.api_key, resolved.api_base,
+                    resolved.extra_params,
                     working_dir, permissions, permission_callback, main_system, bus,
                     subagent=None, hidden_grant_callback=hidden_grant_callback,
                 )
@@ -354,12 +395,21 @@ class Harness:
                 finally:
                     bus.emit(DelegationCompleted(agent="main", run_id=run_id))
                 return _last_assistant_text(history)
+            tier, reason = scale(self._subagent_dispatch_policy, signal)
+            resolved = self._resolve(tier)
+            if tier != self._subagent_dispatch_policy.default:
+                queue.put_nowait(ScaleEvent(
+                    component="subagent-dispatch",
+                    default_tier=self._subagent_dispatch_policy.default.value,
+                    chosen_tier=tier.value,
+                    reason=reason,
+                ))
             return await run_subagent(
                 agent_name, instruction,
                 mission=mission,
-                model=self._subagent_dispatch.model, api_key=self._subagent_dispatch.api_key,
-                api_base=self._subagent_dispatch.api_base,
-                extra_params=self._subagent_dispatch.extra_params, working_dir=working_dir,
+                model=resolved.model, api_key=resolved.api_key,
+                api_base=resolved.api_base,
+                extra_params=resolved.extra_params, working_dir=working_dir,
                 permissions=permissions, permission_callback=permission_callback,
                 bus=bus, hidden_grant_callback=hidden_grant_callback,
             )

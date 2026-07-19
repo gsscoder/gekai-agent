@@ -25,6 +25,7 @@ from ..events import (
     InferEndEvent,
     LogEvent,
     MaxIterationsEvent,
+    ScaleEvent,
     TaskGraphStartedEvent,
 )
 from ..permissions import PermissionCallback
@@ -102,6 +103,19 @@ async def run_step(
                 "task_graph", session=session_id, turn=turn_id,
                 step_count=item.step_count, agents=item.agents,
                 verify_placements=item.verify_placements,
+            )
+        elif isinstance(item, ScaleEvent):
+            # Telemetry only (plan 28 Phase 2) — events-*.jsonl via
+            # `EventLogger.emit`, same sink as `estimate`/`task_graph` above.
+            # `_on_event` above already re-emits it to the TUI's `on_event`
+            # like every other item, but the TUI's own handler doesn't
+            # recognize `ScaleEvent` (same as `EstimateEvent`/
+            # `TaskGraphStartedEvent`), so it renders nothing — not
+            # TUI-visible, per the event's docstring.
+            events.emit(
+                "scale", session=session_id, turn=turn_id,
+                component=item.component, default_tier=item.default_tier,
+                chosen_tier=item.chosen_tier, reason=item.reason,
             )
         elif isinstance(item, LogEvent):
             if item.tool_name:

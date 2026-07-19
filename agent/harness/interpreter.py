@@ -13,8 +13,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..pipeline.plan import Task, TaskGraph
+from .scaling import WorkSignal, node_signal
 
-DispatchFn = Callable[[str, str, str], Awaitable[str]]
+DispatchFn = Callable[[str, str, str, WorkSignal], Awaitable[str]]
 VerifyFn = Callable[[Task, str], Awaitable[bool]]
 # Structured pass/fail is a placeholder here (hard problem 3, open point 2 —
 # the verdict contract is not yet designed); a bool is enough to drive the
@@ -101,7 +102,7 @@ async def run_task_graph(
             on_event("start", index, step)
         instruction = resolve_refs(step.instruction, prior_outputs)
         instruction = _inject_request_summary(graph, index, instruction)
-        out = await dispatch(step.agent, instruction, step.mission)
+        out = await dispatch(step.agent, instruction, step.mission, node_signal(step))
         if not out:
             if on_event:
                 on_event("halt", index, step)
@@ -113,7 +114,12 @@ async def run_task_graph(
             if not await verify_agent(step, out):
                 if on_event:
                     on_event("repair", index, step)
-                out = await dispatch(step.repair or step.agent, _repair_instruction(step, out), step.mission)
+                # Repair dispatch composes the retry bump on top of the
+                # node's own reasoning-shaped signal — not a bare
+                # WorkSignal(retry=1) replacing it (plan 28 Phase 2).
+                base = node_signal(step)
+                retry_signal = WorkSignal(direction=base.direction, retry=base.retry + 1)
+                out = await dispatch(step.repair or step.agent, _repair_instruction(step, out), step.mission, retry_signal)
                 if on_event:
                     on_event("verify", index, step)
                 if not await verify_agent(step, out):

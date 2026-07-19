@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..llm.tiers import TierName
+from ..llm.tiers import TierName, TierPolicy
 
 
 @dataclass(frozen=True)
@@ -23,14 +23,34 @@ class Touchpoint:
     name: str
     job: str
     nominal_tier: TierName
+    # Assignment-time scaling (Phase 2): a component's declared tier mobility.
+    # None for the three touchpoints not scaled in v1 (gate, estimator, micro)
+    # — they run at a bare `nominal_tier` with no mobility. When set,
+    # `policy.default` is expected to equal `nominal_tier`.
+    policy: TierPolicy | None = None
 
 
 TOUCHPOINTS: tuple[Touchpoint, ...] = (
     Touchpoint("gate", "chit-chat vs act (one token)", TierName.FAST),
     Touchpoint("estimator", "trivial vs mutate", TierName.FAST),
-    Touchpoint("sequencer", "build the task graph (formerly 'planner')", TierName.CORE),
-    Touchpoint("main-dispatch", "run main on a task", TierName.SUPP),
-    Touchpoint("subagent-dispatch", "run a specialist cold", TierName.SUPP),
+    Touchpoint(
+        "sequencer",
+        "build the task graph (formerly 'planner')",
+        TierName.CORE,
+        policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+    ),
+    Touchpoint(
+        "main-dispatch",
+        "run main on a task",
+        TierName.SUPP,
+        policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
+    ),
+    Touchpoint(
+        "subagent-dispatch",
+        "run a specialist cold",
+        TierName.SUPP,
+        policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
+    ),
     Touchpoint("micro", "one-shot summaries / labels / fs-support", TierName.FAST),
 )
 

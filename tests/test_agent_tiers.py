@@ -111,16 +111,23 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     assert agent._main._estimator is not None
     assert agent._main._estimator._model == "fast-model"
 
-    # sequencer (CORE) -> Planner
-    assert agent._main._planner._model == "core-model"
+    # sequencer/main-dispatch/subagent-dispatch (plan 28 Phase 2) are no
+    # longer frozen `ResolvedTier`s on the Harness — they're a resolver
+    # closure plus each touchpoint's `TierPolicy`; the policy default is
+    # what a no-signal (unscaled) dispatch resolves to, matching Phase 1b's
+    # frozen behavior exactly.
+    assert agent._main._sequencer_policy.default is TierName.CORE
+    assert agent._main._resolve(agent._main._sequencer_policy.default).model == "core-model"
 
-    # main-dispatch (SUPP)
-    assert agent._main._main_dispatch.model == "supp-model"
-    assert agent._main._main_dispatch.api_key == "key-for-supp-model"
+    assert agent._main._main_dispatch_policy.default is TierName.SUPP
+    main_dispatch_resolved = agent._main._resolve(agent._main._main_dispatch_policy.default)
+    assert main_dispatch_resolved.model == "supp-model"
+    assert main_dispatch_resolved.api_key == "key-for-supp-model"
 
-    # subagent-dispatch (SUPP)
-    assert agent._main._subagent_dispatch.model == "supp-model"
-    assert agent._main._subagent_dispatch.api_key == "key-for-supp-model"
+    assert agent._main._subagent_dispatch_policy.default is TierName.SUPP
+    subagent_dispatch_resolved = agent._main._resolve(agent._main._subagent_dispatch_policy.default)
+    assert subagent_dispatch_resolved.model == "supp-model"
+    assert subagent_dispatch_resolved.api_key == "key-for-supp-model"
 
 
 def test_gate_self_heals_after_tiers_configured_mid_session(

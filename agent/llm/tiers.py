@@ -26,6 +26,9 @@ class TierName(Enum):
     CORE = "core"
 
 
+_TIER_RANK: dict[TierName, int] = {TierName.FAST: 0, TierName.SUPP: 1, TierName.CORE: 2}
+
+
 def _effort_index(effort: str) -> int:
     try:
         return EFFORT_LADDER.index(effort)
@@ -33,69 +36,25 @@ def _effort_index(effort: str) -> int:
         raise ValueError(f"unknown effort level {effort!r}; expected one of {EFFORT_LADDER}") from None
 
 
-def effort_in_range(effort: str, min_effort: str, max_effort: str) -> bool:
-    lo, hi, val = _effort_index(min_effort), _effort_index(max_effort), _effort_index(effort)
-    return lo <= val <= hi
-
-
-@dataclass(frozen=True)
-class TierLimit:
-    """One entry in a component's tier space, e.g. `core(low-high; thinking)`."""
-    tier: TierName
-    min_effort: str
-    max_effort: str
-    thinking: bool = False  # locked decision 8: thinking is legal only on CORE
-
-    def __post_init__(self) -> None:
-        if self.thinking and self.tier is not TierName.CORE:
-            raise ValueError(f"thinking is CORE-only; got thinking=True on tier {self.tier}")
-        _effort_index(self.min_effort)
-        _effort_index(self.max_effort)
-        if _effort_index(self.min_effort) > _effort_index(self.max_effort):
-            raise ValueError(f"min_effort {self.min_effort!r} is above max_effort {self.max_effort!r}")
-
-    def allows(self, effort: str, thinking: bool = False) -> bool:
-        if thinking and not self.thinking:
-            return False
-        return effort_in_range(effort, self.min_effort, self.max_effort)
-
-
-@dataclass(frozen=True)
-class TierPoint:
-    """One concrete operating point: used both as a component's configured
-    default and as an assignment-time scaling target."""
-    tier: TierName
-    effort: str
-    thinking: bool = False
-
-    def __post_init__(self) -> None:
-        _effort_index(self.effort)
-        if self.thinking and self.tier is not TierName.CORE:
-            raise ValueError(f"thinking is CORE-only; got thinking=True on tier {self.tier}")
-
-
 @dataclass(frozen=True)
 class TierPolicy:
-    """A component's full tier declaration: a fixed configured default plus
-    the space (`limits`) the harness may move it within. A degenerate space
-    (one limit, min_effort == max_effort) is how a non-scalable component
-    (e.g. a future file-explorer) is expressed — no separate freeze flag."""
-    default: TierPoint
-    limits: tuple[TierLimit, ...]
+    """A component's tier mobility: an ordered, ascending array of tiers the
+    harness may run it at, plus which one is the configured default absent
+    any assignment-time scaling. Effort/thinking are NOT a per-component axis
+    — they come entirely from the tier's own global binding (TierBinding).
+    A degenerate space (len(allowed) == 1) is how a non-scalable component
+    is expressed — no separate freeze flag."""
+    default: TierName
+    allowed: tuple[TierName, ...]  # ascending by tier rank (FAST < SUPP < CORE); default must be a member
 
     def __post_init__(self) -> None:
-        if not self.limits:
-            raise ValueError("a tier policy must declare at least one limit")
-        if not any(
-            lim.tier is self.default.tier and lim.allows(self.default.effort, self.default.thinking)
-            for lim in self.limits
-        ):
-            raise ValueError(
-                f"configured default {self.default} is not realizable within declared limits {self.limits}"
-            )
-
-    def allows(self, point: TierPoint) -> bool:
-        return any(lim.tier is point.tier and lim.allows(point.effort, point.thinking) for lim in self.limits)
+        if not self.allowed:
+            raise ValueError("a tier policy must declare at least one allowed tier")
+        ranks = [_TIER_RANK[t] for t in self.allowed]
+        if ranks != sorted(ranks) or len(set(ranks)) != len(ranks):
+            raise ValueError(f"allowed tiers must be ascending with no duplicates, got {self.allowed}")
+        if self.default not in self.allowed:
+            raise ValueError(f"configured default {self.default} is not in allowed tiers {self.allowed}")
 
 
 Suitability = Literal["ok", "warning", "deprecated"]
@@ -153,9 +112,9 @@ def suitability(model: str, tier: TierName, thinking: bool = False) -> Suitabili
 def _check_efforts_explicit_ascending(efforts: tuple[str, ...]) -> None:
     """Model-catalog efforts are a hard provider fact, not policy — an
     explicit array, listed in ascending EFFORT_LADDER order, gaps allowed
-    (a real model may lack e.g. `xhigh`). Distinct from TierLimit's range,
-    which expresses a component's policy intent, not a provider capability
-    (plan 28 decision 3a)."""
+    (a real model may lack e.g. `xhigh`). Distinct from a component's
+    `TierPolicy.allowed`, which expresses policy intent (which tiers a
+    component may run at), not a provider capability (plan 28 decision 3a)."""
     if not efforts:
         raise ValueError("efforts must be a non-empty array")
     indices = [_effort_index(e) for e in efforts]
@@ -239,8 +198,6 @@ DEFAULT_MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = _build_default_catalog()
 __all__ = [
     "EFFORT_LADDER",
     "TierName",
-    "TierLimit",
-    "TierPoint",
     "TierPolicy",
     "Suitability",
     "TierSuitability",
@@ -248,7 +205,6 @@ __all__ = [
     "ModelCatalogEntry",
     "TierBinding",
     "DEFAULT_MODEL_CATALOG",
-    "effort_in_range",
     "suitability",
     "validate_binding",
 ]
