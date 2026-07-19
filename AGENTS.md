@@ -40,13 +40,19 @@ The development documents are organized in the `memory-bank` dir:
 - NEVER commit changes to Git history without explicit authorization
 
 ## Guardrails
-### Coding & Design
-- Simplicity Over Abstraction: write the simplest solution that meets the requirements; avoid unnecessary layers, patterns, and bloated APIs unless explicitly justified
-- Plan Before Implementing: outline a brief strategy or approach before writing code, especially for non-trivial tasks, to catch wrong directions early
-- Scope Changes Precisely: remove dead code and stale comments made obsolete by your changes, but never modify, reformat, or delete code and comments orthogonal to the current task
-### Reasoning & Collaboration 
-- Surface Uncertainty, Don't Guess Through It: when requirements are ambiguous, contradictory, or incomplete, stop and ask for clarification instead of assuming intent and proceeding silently
-- Honesty Over Agreement: push back on questionable requests and defend sound technical choices instead of immediately complying with every suggestion
-- Signal Confidence Level: indicate when a solution is a best guess versus a well-established approach, so the user can calibrate their review effort
-### Instruction Governance
-- Respect User Instructions Strictly: treat directives in instruction files as hard constraints, not soft suggestions to be overridden by default tendencies
+These are hard constraints, not suggestions, and they bias toward caution over speed — apply them proportionately on trivial or throwaway tasks. Where a request conflicts with a guardrail, follow the guardrail and say why.
+
+### Before Implementing — Reason First
+- Surface Uncertainty, Don't Guess Through It: When requirements are ambiguous, contradictory, or incomplete, stop and ask instead of assuming intent and proceeding silently. State assumptions explicitly; if multiple readings are viable, present them rather than picking one silently. Resolve intent up front — this is what makes autonomous execution safe afterward
+- Plan Before Implementing: For non-trivial tasks, outline a brief approach before writing code so wrong directions surface early. For multi-step work, list the steps with a verification check for each
+
+### Design & Scope — Code Minimally
+- Simplicity Over Abstraction: Write the simplest solution that meets the requirements. Avoid speculative features, abstractions for single-use code, unrequested configurability, and error handling for impossible cases. If a construction could be materially shorter without losing correctness, rewrite it — ask whether a senior engineer would call it overcomplicated
+- Surgical Scope: Every changed line should trace directly to the current task. Match the surrounding style even where you'd choose differently. Remove imports, variables, and comments that *your* changes made obsolete, but never modify, reformat, or delete code or comments orthogonal to the task. If you notice unrelated dead code, mention it — don't delete it
+
+### Execution — Verify Against Goals
+- Drive Toward Success Criteria: Turn the task into checkable goals and work until they're met — e.g. "add validation" → write tests for invalid inputs, then make them pass; "fix the bug" → write a failing test that reproduces it, then make it pass. When the goal is well-defined, loop and self-verify independently rather than pausing for confirmation the criteria already answer. (This is the counterpart to *Surface Uncertainty*: clarify the goal before starting; do not re-open a settled goal mid-execution)
+
+### Collaboration — Communicate Honestly
+- Honesty Over Agreement: Push back on questionable requests and defend sound technical choices instead of complying by default; avoid reflexive agreement
+- Signal Confidence Level: Indicate when a solution is a best guess versus a well-established approach, so review effort can be calibrated. (Complements `Surface Uncertainty`: if you couldn't proceed at all, you ask; if you proceeded on a judgment call, you flag it)
