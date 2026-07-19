@@ -141,6 +141,27 @@ once the *effective* tool set is known. `mandate` is now a bare role-identity se
 `<core_mandate>` wrapper tag; `<directives>` (the operational *how*) remains the only
 subagent-specific tag. Tags throughout are non-closing (no `</tag>`).
 
+### Dynamic directive pump (plan 28 Phase 3)
+
+`agent/directive_pump.py` generalizes `render_tool_instruction`'s pattern — deterministic,
+non-LLM assembly keyed on a detected set — from "tools you have" to "domains this turn needs".
+Each namespace package under `agent/subagents/` may declare `namespace_directives` (a shallow,
+mission-free craft-text block, e.g. `coding/__init__.py`, `testing/__init__.py`) alongside a
+`namespace_directive_rank` int (lower = higher priority). `agent/subagents/__init__.py._discover()`
+collects these into two module-level exports, `NAMESPACE_DIRECTIVES` and
+`NAMESPACE_DIRECTIVE_RANK`, disjoint from `Subagent.directives` (the deep, mission-presupposing
+per-role text a specialist gets from `build_system_base()` — this never escapes to main).
+
+`detect_domains(prompt)` reads backtick-quoted file-path extensions and a small keyword lexicon
+out of the raw prompt (no filesystem access, no located-files list — nothing upstream of the
+harness populates one yet); `pump(prompt)` intersects the detected domains against
+`NAMESPACE_DIRECTIVES`, sorts by rank, and takes the top `PUMP_BUDGET` (2), returning the
+concatenated directive text plus the domain list for telemetry. `Harness.stream`/`_stream_graph`
+(`agent/harness/core.py`) call this only when `subagent is None`, appending the result as a
+`<domain_directives>` block onto `system_base` before `_enrich_system_base`, and emit a
+`DirectivePumpEvent` (logged to `events-*.jsonl` as `directive_pump`) whenever a domain was
+actually pumped.
+
 ---
 
 ## Sandbox / Isolation

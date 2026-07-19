@@ -15,6 +15,7 @@ from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..directive_pump import pump as pump_directives
 from ..llm.tiers import TierName, TierPolicy
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
@@ -28,7 +29,7 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
@@ -44,6 +45,17 @@ if TYPE_CHECKING:
 
 _MAIN_COLOR = "#4169E1"
 _RECENCY_N = 2
+
+
+def _pumped_system_base(system_base: str, prompt: str) -> tuple[str, list[str]]:
+    """Dynamic-directive pump (plan 28 Phase 3, decision 12): appends the
+    escaping directives of this prompt's mechanically-detected domains, if
+    any. Never called for a subagent dispatch — pumping is main-only
+    (decision 13, the specialist already carries its own directives)."""
+    text, domains = pump_directives(prompt)
+    if text:
+        system_base = f"{system_base}\n<domain_directives>\n{text}"
+    return system_base, domains
 
 
 def _enrich_system_base(system_base: str, working_dir: Path) -> str:
@@ -211,8 +223,14 @@ class Harness:
         seed: str | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
-        system_base = subagent.build_system_base() if subagent else SYSTEM_PROMPT
+        pumped_domains: list[str] = []
+        if subagent is None:
+            system_base, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, user_input)
+        else:
+            system_base = subagent.build_system_base()
         system_base = _enrich_system_base(system_base, session.working_dir)
+        if pumped_domains:
+            yield DirectivePumpEvent(domains=pumped_domains)
 
         estimate_decision = "skipped"
         estimate_duration_ms = 0
@@ -381,7 +399,10 @@ class Harness:
                         chosen_tier=tier.value,
                         reason=reason,
                     ))
-                main_system = _enrich_system_base(SYSTEM_PROMPT, working_dir)
+                main_system, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, instruction)
+                main_system = _enrich_system_base(main_system, working_dir)
+                if pumped_domains:
+                    queue.put_nowait(DirectivePumpEvent(domains=pumped_domains))
                 agent_obj = _build_agent(
                     resolved.model, resolved.api_key, resolved.api_base,
                     resolved.extra_params,

@@ -46,10 +46,11 @@ class Subagent:
         return system
 
 
-def _discover() -> list[Subagent]:
+def _discover() -> tuple[list[Subagent], dict[str, str], dict[str, int]]:
     import dataclasses
 
     ns_directives: dict[str, str] = {}
+    ns_directive_rank: dict[str, int] = {}
     raw_subagents: list[Subagent] = []
     package = __name__
     for ns_info in pkgutil.iter_modules(__path__):  # type: ignore[name-defined]
@@ -60,6 +61,7 @@ def _discover() -> list[Subagent]:
         nd = getattr(ns_pkg, "namespace_directives", None)
         if isinstance(ns, str) and isinstance(nd, str):
             ns_directives[ns] = nd
+            ns_directive_rank[ns] = getattr(ns_pkg, "namespace_directive_rank", 100)
         for info in pkgutil.iter_modules(ns_pkg.__path__):
             mod = importlib.import_module(f"{package}.{ns_info.name}.{info.name}")
             p = getattr(mod, "subagent", None)
@@ -74,10 +76,13 @@ def _discover() -> list[Subagent]:
             result.append(dataclasses.replace(p, directives=composed))
         else:
             result.append(p)
-    return result
+    return result, ns_directives, ns_directive_rank
 
 
-SUBAGENTS: list[Subagent] = _discover()
+SUBAGENTS: list[Subagent]
+NAMESPACE_DIRECTIVES: dict[str, str]
+NAMESPACE_DIRECTIVE_RANK: dict[str, int]
+SUBAGENTS, NAMESPACE_DIRECTIVES, NAMESPACE_DIRECTIVE_RANK = _discover()
 
 
 def validate_registry() -> None:

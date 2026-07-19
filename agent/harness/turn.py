@@ -20,6 +20,7 @@ from ..agent import GekaiAgent
 from ..events import (
     AgentEvent,
     BudgetExhaustedEvent,
+    DirectivePumpEvent,
     DoneEvent,
     EstimateEvent,
     InferEndEvent,
@@ -116,6 +117,13 @@ async def run_step(
                 "scale", session=session_id, turn=turn_id,
                 component=item.component, default_tier=item.default_tier,
                 chosen_tier=item.chosen_tier, reason=item.reason,
+            )
+        elif isinstance(item, DirectivePumpEvent):
+            # Telemetry only (plan 28 Phase 3, hard problem 3) — same
+            # not-TUI-visible treatment as ScaleEvent above.
+            events.emit(
+                "directive_pump", session=session_id, turn=turn_id,
+                domains=item.domains,
             )
         elif isinstance(item, LogEvent):
             if item.tool_name:

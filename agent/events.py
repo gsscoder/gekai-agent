@@ -130,3 +130,11 @@ class ScaleEvent(AgentEvent):
     default_tier: str = ""   # e.g. "supp"
     chosen_tier: str = ""    # e.g. "core"
     reason: str = ""
+
+
+@dataclass
+class DirectivePumpEvent(AgentEvent):
+    """Telemetry only (plan 28 Phase 3, hard problem 3): emitted when the
+    harness pumps domain-craft directives into main's system prompt for one
+    dispatch. Never emitted when no domain was detected (empty pump)."""
+    domains: list[str] = field(default_factory=list)

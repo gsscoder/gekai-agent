@@ -41,7 +41,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, MaxIterationsEvent
+from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, MaxIterationsEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.events import AgentStopped, EventBus
@@ -186,6 +186,27 @@ def test_write_file_emits_diff_event(
     diff_events = [e for e in collected if isinstance(e, DiffEvent)]
     assert len(diff_events) == 1
     assert diff_events[0].path == "hello.py"
+
+
+def test_coding_prompt_emits_directive_pump_event_on_main_dispatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan 28 Phase 3: a Python-file-shaped prompt on the no-graph
+    (trivial, subagent=None) path pumps the coding domain's escaping
+    directives into main and reports it via `DirectivePumpEvent` —
+    `test_directive_pump.py` covers the pump function itself; this proves
+    the harness wiring at the `Harness.stream` call site."""
+    responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
+
+    pump_events = [e for e in collected if isinstance(e, DirectivePumpEvent)]
+    assert len(pump_events) == 1
+    assert pump_events[0].domains == ["coding"]
 
 
 class _CapturingEventBus(EventBus):

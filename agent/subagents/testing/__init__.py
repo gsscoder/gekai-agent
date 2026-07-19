@@ -1,4 +1,5 @@
 namespace = "testing"
+namespace_directive_rank = 2  # plan 28 Phase 3: lower = higher priority when the pump's budget cuts
 namespace_directives = (
     "match the project's existing test conventions — framework, assertion style, layout, "
     "fixtures, runner; if no existing tests or conventions exist, adopt the ecosystem default "
