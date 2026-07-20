@@ -223,14 +223,6 @@ class Harness:
         seed: str | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
-        pumped_domains: list[str] = []
-        if subagent is None:
-            system_base, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, user_input)
-        else:
-            system_base = subagent.build_system_base()
-        system_base = _enrich_system_base(system_base, session.working_dir)
-        if pumped_domains:
-            yield DirectivePumpEvent(domains=pumped_domains)
 
         estimate_decision = "skipped"
         estimate_duration_ms = 0
@@ -257,6 +249,15 @@ class Harness:
         # a task graph): runs at main-dispatch's configured default, always —
         # there is no per-node signal here (no verify/retry concept exists in
         # this path), so it never modulates (plan 28 Phase 2 guardrail).
+        pumped_domains: list[str] = []
+        if subagent is None:
+            system_base, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, user_input)
+        else:
+            system_base = subagent.build_system_base()
+        system_base = _enrich_system_base(system_base, session.working_dir)
+        if pumped_domains:
+            yield DirectivePumpEvent(domains=pumped_domains)
+
         main_dispatch_resolved = self._resolve(self._main_dispatch_policy.default)
         effective_extra_params = main_dispatch_resolved.extra_params if extra_params is None else extra_params
         agent = _build_agent(

@@ -38,6 +38,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -50,6 +51,9 @@ from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.tools import Tool
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
+from agent.pipeline.estimate import ScopeEstimate
+from agent.pipeline.plan import Task, TaskGraph
+from agent.pipeline.planner import Planner
 from agent.session import Session
 from agent.settings import Permissions
 
@@ -207,6 +211,58 @@ def test_coding_prompt_emits_directive_pump_event_on_main_dispatch(
     pump_events = [e for e in collected if isinstance(e, DirectivePumpEvent)]
     assert len(pump_events) == 1
     assert pump_events[0].domains == ["coding"]
+
+
+def _make_mutate_harness() -> Harness:
+    """Like `_make_harness`, but with an estimator wired so `Harness.stream`
+    can route into the "mutate" branch (`_stream_graph`) instead of the
+    no-graph path."""
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    return Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        main_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=estimator_tier,
+    )
+
+
+def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression test: before the fix, `Harness.stream` computed the
+    domain-directive pump (and yielded `DirectivePumpEvent`) unconditionally,
+    before knowing whether the turn takes the no-graph path or routes into
+    `_stream_graph()` -- so a mutate-routed turn with a coding-shaped prompt
+    emitted a phantom `DirectivePumpEvent` for a `system_base`/dispatch that
+    was thrown away and never used. Here the graph's single step delegates to
+    a non-"main" subagent (`run_subagent` is monkeypatched to bypass
+    `_stream_graph`'s own `dispatch()` closure entirely, which is the only
+    place a real pump for the graph path would happen -- and only for
+    agent_name == "main" steps), so under the fix no `DirectivePumpEvent`
+    should be emitted at all for this turn."""
+    harness = _make_mutate_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    graph = TaskGraph(
+        summary="fix the bug",
+        steps=[Task(agent="code-expert", instruction="fix it", mission="fix it")],
+    )
+    monkeypatch.setattr(Planner, "plan", AsyncMock(return_value=graph))
+
+    async def fake_run_subagent(agent, task, **kwargs):
+        return f"{agent} done"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    # Same coding-shaped prompt as the no-graph test above -- under the bug,
+    # this prompt alone (independent of the graph's own dispatch) was enough
+    # to trigger the phantom early pump/yield.
+    collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
+
+    assert not any(isinstance(e, DirectivePumpEvent) for e in collected)
 
 
 class _CapturingEventBus(EventBus):
