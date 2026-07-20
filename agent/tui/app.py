@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
+from rich.text import Text
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -72,6 +73,22 @@ class ConversationContainer(ScrollableContainer):
 
 _SPINNER_FRAMES = ["·", "•", "●", "•"]
 _BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+_THINKING_WINDOW = 3  # max completed thinking "steps" (sentences) visible at once
+_DIAMOND = "◆"
+_SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
+
+
+def _split_thinking_steps(buffer: str) -> tuple[list[str], str]:
+    """Split a thinking-token buffer into completed "steps" — each ending in
+    `.`/`!`/`?` — and the remaining in-progress tail (not yet a full step)."""
+    steps: list[str] = []
+    start = 0
+    for m in _SENTENCE_END_RE.finditer(buffer):
+        step = buffer[start:m.end()].strip()
+        if step:
+            steps.append(step)
+        start = m.end()
+    return steps, buffer[start:]
 
 
 class SubAgentRenderer:
@@ -93,7 +110,8 @@ class SubAgentRenderer:
         self._progress_bar: ProgressBar | None = None
         self._header_widget: MessageWidget | None = None
         self._spinner_task: asyncio.Task | None = None
-        self._thinking_buf: str = ""
+        self._thinking_tail: str = ""
+        self._thinking_widgets: list[Static] = []
         self._badge_namespace: str | None = None
         self._badge_color: str = ""
         self._tool_calls: int = 0
@@ -164,15 +182,30 @@ class SubAgentRenderer:
         elif event.total is not None:
             self._progress_bar.update(total=event.total, progress=event.progress)
 
-    def thinking_chunk(self, text: str) -> None:
+    async def thinking_chunk(self, text: str) -> None:
         if self._badge_namespace is not None:
             return  # badge header is persistent — never overwrite it with a thinking preview
-        self._thinking_buf += text
-        snippet = _last_sentence(self._thinking_buf)
-        if snippet and self._header_widget is not None:
-            self._header_widget.query_one(".header-text", Static).update(
-                f"[bold #666666]Thinking({snippet})[/bold #666666]"
-            )
+        self._thinking_tail += text
+        steps, self._thinking_tail = _split_thinking_steps(self._thinking_tail)
+        for step in steps:
+            # rich.text.Text (not markup interpolation) so a sentence
+            # containing e.g. "[0]" can never be misparsed as a markup tag;
+            # no_wrap+ellipsis keeps each step to exactly one line.
+            step_text = Text(no_wrap=True, overflow="ellipsis")
+            step_text.append(_DIAMOND, style="white")
+            step_text.append(f" {step}", style="#666666")
+            widget = Static(step_text, classes="thinking-step")
+            # anchored right after the last thinking widget (or the header,
+            # for the first one) so a tool-log line mounted in between two
+            # thinking chunks never ends up sandwiched above a later sentence
+            # — tool usage always stacks below every visible sentence.
+            anchor = self._thinking_widgets[-1] if self._thinking_widgets else self._header_widget
+            await self._conversation.mount(widget, after=anchor)
+            self._thinking_widgets.append(widget)
+            if len(self._thinking_widgets) > _THINKING_WINDOW:
+                await self._thinking_widgets.pop(0).remove()
+        if steps:
+            self._conversation.scroll_end(animate=False)
 
     def stop_spinner(self) -> None:
         if self._spinner_task is not None:
@@ -193,6 +226,9 @@ class SubAgentRenderer:
         for w in self._log_widgets:
             await w.remove()
         self._log_widgets.clear()
+        for w in self._thinking_widgets:
+            await w.remove()
+        self._thinking_widgets.clear()
         if self._progress_bar is not None:
             await self._progress_bar.remove()
             self._progress_bar = None
@@ -215,17 +251,16 @@ class SubAgentRenderer:
             self._conversation.scroll_end(animate=False)
             return summary
         else:
-            parts = []
+            parts = [_fmt_duration_verbose(elapsed)]
             if self._total_tokens > 0:
                 parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
-            parts.append(_fmt_duration_verbose(elapsed))
             if self._infer_count > 0:
                 calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
                 parts.append(calls)
             summary = " · ".join(parts)
             if self._header_widget is not None:
-                self._header_widget.query_one(".header-dot", Static).update("[#666666]●[/#666666]")
-                self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought ({summary})[/#666666]")
+                self._header_widget.query_one(".header-dot", Static).update(f"[white]{_DIAMOND}[/white]")
+                self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought for {summary}[/#666666]")
                 self._header_widget = None
             self._conversation.scroll_end(animate=False)
             return summary
@@ -251,20 +286,6 @@ def _fallback_ui_label(text: str, max_words: int = 12) -> str:
     stripped = re.sub(r"`[^`]*`", "", text)
     words = stripped.split()
     return " ".join(words[:max_words])
-
-
-def _last_sentence(text: str, max_chars: int = 60) -> str:
-    last = -1
-    for ch in ".!?\n":
-        idx = text.rfind(ch)
-        if idx > last:
-            last = idx
-    fragment = text[last + 1:].strip() if last >= 0 else text.strip()
-    if not fragment and last >= 0:
-        fragment = text[:last + 1].strip()
-    if not fragment:
-        return ""
-    return (fragment[:max_chars].rstrip() + "...") if len(fragment) > max_chars else fragment
 
 
 def _resolve_at_refs(text: str) -> str:
@@ -543,6 +564,10 @@ class GekaiApp(App[None]):
         background: ansi_default;
         padding: 0;
         display: none;
+    }
+
+    .thinking-step {
+        height: 1;
     }
 
     #status-spacer {
@@ -1450,7 +1475,7 @@ class GekaiApp(App[None]):
                 elif isinstance(item, InferEndEvent):
                     active_renderer.accumulate_tokens(item)
                 elif isinstance(item, ThinkingTokenEvent):
-                    active_renderer.thinking_chunk(item.text)
+                    await active_renderer.thinking_chunk(item.text)
                 elif isinstance(item, StatusUpdateEvent):
                     await active_renderer.status_update(item)
                 elif isinstance(item, DoneEvent):
