@@ -50,6 +50,7 @@ from agent.settings import (
 from agent.workspace import db as workspace_db, list_files, list_dirs
 from agent.tui.styles import OPERATIVE_COLOR, random_accent_color, random_operative_verb
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
+from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 from .palette import CommandPalette
 from .history import PromptHistory
@@ -75,7 +76,19 @@ _SPINNER_FRAMES = ["·", "•", "●", "•"]
 _BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _THINKING_WINDOW = 3  # max completed thinking "steps" (sentences) visible at once
 _DIAMOND = "◆"
+_SQUARE = "■"
 _SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
+
+
+def _tool_kind_color(tool_name: str) -> str:
+    """green = read, red = write (edit + filesystem mutation), yellow = shell."""
+    if tool_name in READ_TOOLS:
+        return "green"
+    if tool_name in EDIT_TOOLS or tool_name in FS_TOOLS:
+        return "red"
+    if tool_name in SHELL_TOOLS:
+        return "yellow"
+    return "#666666"
 
 
 def _split_thinking_steps(buffer: str) -> tuple[list[str], str]:
@@ -94,18 +107,12 @@ def _split_thinking_steps(buffer: str) -> tuple[list[str], str]:
 class SubAgentRenderer:
     """Manages header, L-connector, token accumulation, and Done line for subagent events."""
 
-    def __init__(self, conversation: ScrollableContainer, debug: bool = False) -> None:
+    def __init__(self, conversation: ScrollableContainer) -> None:
         self._conversation = conversation
-        self._first_item = True
         self.name: str = ""
         self._total_tokens: int = 0
         self._infer_count: int = 0
         self._start_time: float = time.monotonic()
-        self._debug = debug
-        self._current_tool: str = ""
-        self._current_count: int = 0
-        self._current_widget: Static | None = None
-        self._current_prefix: str = ""
         self._log_widgets: list[Static] = []
         self._progress_bar: ProgressBar | None = None
         self._header_widget: MessageWidget | None = None
@@ -148,29 +155,26 @@ class SubAgentRenderer:
             self._tool_calls += 1
         if message.endswith("..."):
             return
-        if not self._debug and tool_name:
-            if tool_name == self._current_tool and self._current_widget is not None:
-                self._current_count += 1
-                kind = message.split()[0] if message else tool_name
-                self._current_widget.update(f"{self._current_prefix} {kind} ({self._current_count} calls)")
-                self._conversation.scroll_end(animate=False)
-                return
-            self._current_tool = tool_name
-            self._current_count = 1
-        prefix = "  ⎿" if self._first_item else "   "
-        self._first_item = False
-        if not self._debug and tool_name:
-            kind = message.split()[0] if message else tool_name
-            widget = Static(f"{prefix} {kind} (1 call)")
-            await self._conversation.mount(widget)
-            self._log_widgets.append(widget)
-            self._current_widget = widget
-            self._current_prefix = prefix
+        marker = f"[{_tool_kind_color(tool_name)}]{_SQUARE}[/{_tool_kind_color(tool_name)}]" if tool_name else " "
+        if tool_name:
+            # kind (the verb, e.g. "Run") vs detail (its argument, e.g. the
+            # command/path) — split via Text.append with explicit styles
+            # (not markup interpolation) so a detail containing "[" (a
+            # plausible path/command fragment) can never be misparsed as a
+            # markup tag, same reasoning as the thinking-step rendering.
+            # Not gated on a debug flag: that gate existed only to skip the
+            # old "(N calls)" aggregation, which no longer exists — every
+            # call gets its own line now, styled the same way in every mode.
+            kind, _, detail = message.partition(" ")
+            line = Text.from_markup(f"{marker} ")
+            line.append(kind, style="#666666")
+            if detail:
+                line.append(f" {detail}", style="white")
+            widget = Static(line)
         else:
-            widget = Static(f"{prefix} {message}")
-            await self._conversation.mount(widget)
-            self._log_widgets.append(widget)
-            self._current_widget = None
+            widget = Static(f"{marker} {message}")
+        await self._conversation.mount(widget)
+        self._log_widgets.append(widget)
         self._conversation.scroll_end(animate=False)
 
     async def status_update(self, event: "StatusUpdateEvent") -> None:
@@ -1055,6 +1059,20 @@ class GekaiApp(App[None]):
             prompt.insert("\n")
             event.stop()
             return
+        # Bracketed paste never reaches this app (see the `/tiers` key-field
+        # comment above) — Textual has no `Paste` message to fall back on,
+        # so `ctrl+v` does nothing unless handled explicitly here. Reads the
+        # OS clipboard directly (same ctypes helper the key field uses) and
+        # inserts at the cursor; auto-focuses the prompt first if it wasn't
+        # already focused, mirroring the printable-character fallback below.
+        if event.key == "ctrl+v" and not self._any_panel_active():
+            clipboard_text = self._read_clipboard_text()
+            if clipboard_text:
+                if not prompt.has_focus:
+                    prompt.focus(scroll_visible=False)
+                prompt.insert(clipboard_text)
+            event.stop()
+            return
         # `.focus()`/`.insert()` are programmatic API calls that work even
         # while `read_only=True` (Textual only blocks the widget's own
         # keyboard-driven edit actions) — so this auto-focus-and-type
@@ -1445,13 +1463,13 @@ class GekaiApp(App[None]):
                     "— prior steps' work is kept, nothing rolled back",
                 ))
             elif isinstance(item, SubAgentStartEvent):
-                ws_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
+                ws_renderer = SubAgentRenderer(conversation)
                 active_renderer = ws_renderer
                 await ws_renderer.start(item.name)
             elif isinstance(item, DelegationStartEvent):
                 resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
                 if resolved is not None:
-                    delegation_renderer = SubAgentRenderer(conversation, debug=self._agent.debug)
+                    delegation_renderer = SubAgentRenderer(conversation)
                     await delegation_renderer.start(
                         resolved.name,
                         namespace=resolved.namespace,
@@ -1857,13 +1875,22 @@ class GekaiApp(App[None]):
             return None
 
     async def _poll_clipboard(self) -> None:
+        """Keeps `last` fresh for the whole app lifetime (so opening the
+        `/tiers` key-edit field never fires a stale notice for an earlier,
+        unrelated copy), but only surfaces the visible notice while that
+        field is the one thing actually listening for a pasted key — the
+        sequence number itself is OS-wide (any app's copy bumps it), so
+        showing it unconditionally reported on every copy anywhere on the
+        system, not just Gekai."""
         last = self._clipboard_sequence()
         while True:
             await asyncio.sleep(0.4)
             current = self._clipboard_sequence()
             if current != last:
                 last = current
-                self._show_copy_notice()
+                edit = self._tiers_edit
+                if edit is not None and edit.key_editing:
+                    self._show_copy_notice()
 
     def _show_copy_notice(self) -> None:
         notice = self.query_one("#copy-notice", Static)
