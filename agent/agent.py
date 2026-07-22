@@ -5,8 +5,6 @@ import platform
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from . import __version__
 from .llm.resolve import ResolvedTier, TierResolutionError, resolve_tier, resolve_touchpoint
 from .llm.tiers import TierName
@@ -51,8 +49,6 @@ class GekaiAgent:
         gate_model, estimator_model, sequencer_model, main_dispatch_model, subagent_dispatch_model = (
             self._configure_touchpoints()
         )
-        self._client = AsyncOpenAI(api_key=self._api_key or "unconfigured", base_url=self._api_base)
-
         self.events = EventLogger()
         self.events.emit(
             "run.start",
@@ -138,10 +134,6 @@ class GekaiAgent:
             resolved["main-dispatch"].model,
             resolved["subagent-dispatch"].model,
         )
-
-    @property
-    def client(self) -> AsyncOpenAI:
-        return self._client
 
     def start_session(
         self,

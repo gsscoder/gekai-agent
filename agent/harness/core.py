@@ -387,19 +387,23 @@ class Harness:
             verify_placements=sum(1 for s in graph if s.verify),
         )
 
+        def _scale_and_resolve(policy, component, signal):
+            tier, reason = scale(policy, signal)
+            resolved = self._resolve(tier)
+            if tier != policy.default:
+                queue.put_nowait(ScaleEvent(
+                    component=component,
+                    default_tier=policy.default.value,
+                    chosen_tier=tier.value,
+                    reason=reason,
+                ))
+            return resolved
+
         async def dispatch(
             agent_name: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(),
         ) -> str:
             if agent_name == "main":
-                tier, reason = scale(self._main_dispatch_policy, signal)
-                resolved = self._resolve(tier)
-                if tier != self._main_dispatch_policy.default:
-                    queue.put_nowait(ScaleEvent(
-                        component="main-dispatch",
-                        default_tier=self._main_dispatch_policy.default.value,
-                        chosen_tier=tier.value,
-                        reason=reason,
-                    ))
+                resolved = _scale_and_resolve(self._main_dispatch_policy, "main-dispatch", signal)
                 main_system, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, instruction)
                 main_system = _enrich_system_base(main_system, working_dir)
                 if pumped_domains:
@@ -417,15 +421,7 @@ class Harness:
                 finally:
                     bus.emit(DelegationCompleted(agent="main", run_id=run_id))
                 return _last_assistant_text(history)
-            tier, reason = scale(self._subagent_dispatch_policy, signal)
-            resolved = self._resolve(tier)
-            if tier != self._subagent_dispatch_policy.default:
-                queue.put_nowait(ScaleEvent(
-                    component="subagent-dispatch",
-                    default_tier=self._subagent_dispatch_policy.default.value,
-                    chosen_tier=tier.value,
-                    reason=reason,
-                ))
+            resolved = _scale_and_resolve(self._subagent_dispatch_policy, "subagent-dispatch", signal)
             return await run_subagent(
                 agent_name, instruction,
                 mission=mission,

@@ -195,15 +195,7 @@ class MessageWidget(Widget):
             self.query_one(Static).update(self._as_markup())
 
     def append_text(self, chunk: str) -> None:
-        self._text += chunk
-        if self._kind == MessageKind.ASSISTANT:
-            self.query_one(Markdown).update(self._text)
-        elif self._kind == MessageKind.USER:
-            self.query_one(Static).update(self._as_user_text())
-        elif self._kind == MessageKind.HEADER:
-            self.query_one(".header-text", Static).update(self._text)
-        else:
-            self.query_one(Static).update(self._as_markup())
+        self.update(self._text + chunk)
 
 
 def _fmt_ago(ts: float) -> str:

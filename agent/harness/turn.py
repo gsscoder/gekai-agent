@@ -127,7 +127,6 @@ async def run_step(
             )
         elif isinstance(item, LogEvent):
             if item.tool_name:
-                result.query_tool_count += 1
                 result.tool_counts[item.tool_name] = result.tool_counts.get(item.tool_name, 0) + 1
         elif isinstance(item, InferEndEvent):
             result.llm_calls += 1
@@ -147,6 +146,7 @@ async def run_step(
         if (result.max_iter_hit and not answer_chunks) or (not answer_chunks and not result.files_touched)
         else "ok"
     )
+    result.query_tool_count = sum(result.tool_counts.values())
     events.emit(
         "harness", session=session_id, turn=turn_id, outcome=result.outcome,
         llm_calls=result.llm_calls, prompt_tokens=result.prompt_tokens,

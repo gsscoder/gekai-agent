@@ -43,8 +43,8 @@ class Gate:
             base_url=api_base,
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
-        self._subagents = [p for p in SUBAGENTS if p.user_invocable]
-        menu = "\n".join(f"  {p.name} — {p.description}" for p in self._subagents)
+        subagents = [p for p in SUBAGENTS if p.user_invocable]
+        menu = "\n".join(f"  {p.name} — {p.description}" for p in subagents)
         self._prompt = PIPELINE_DIRECTIVES + _GATE_PROMPT.replace("{subagents-meta}", menu)
 
     async def gate(self, user_input: str, history: list[dict] | None = None) -> Route:

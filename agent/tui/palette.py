@@ -38,10 +38,6 @@ class CommandPalette(Static):
         return self._items[self._selected][0]
 
     @property
-    def selected_command(self) -> str | None:
-        return self.selected_name
-
-    @property
     def selected_is_subagent(self) -> bool:
         if not self._items:
             return False

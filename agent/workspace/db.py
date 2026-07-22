@@ -204,6 +204,12 @@ def is_fresh(
     return _content_hash(working_dir / path) == content_hash
 
 
+def _evict_stale(conn: sqlite3.Connection, stale_ids: list[int]) -> None:
+    if stale_ids:
+        conn.executemany("DELETE FROM files WHERE id = ?", [(i,) for i in stale_ids])
+        conn.commit()
+
+
 def find_candidates(
     conn: sqlite3.Connection,
     working_dir: Path,
@@ -243,9 +249,7 @@ def find_candidates(
         else:
             stale_ids.append(file_id)
 
-    if stale_ids:
-        conn.executemany("DELETE FROM files WHERE id = ?", [(i,) for i in stale_ids])
-        conn.commit()
+    _evict_stale(conn, stale_ids)
 
     return candidates[:limit]
 
@@ -284,14 +288,17 @@ def find_semantic(
         else:
             stale_ids.append(file_id)
 
-    if stale_ids:
-        conn.executemany("DELETE FROM files WHERE id = ?", [(i,) for i in stale_ids])
-        conn.commit()
+    _evict_stale(conn, stale_ids)
 
     return results[:k]
 
 
 _RRF_C = 60
+
+
+def _add_rrf_scores(scores: dict[str, float], results: list[tuple[str, float]]) -> None:
+    for rank, (path, _) in enumerate(results):
+        scores[path] = scores.get(path, 0.0) + 1.0 / (_RRF_C + rank)
 
 
 def find_hybrid(
@@ -305,10 +312,8 @@ def find_hybrid(
     semantic = find_semantic(conn, working_dir, query, k=k * 2)
 
     scores: dict[str, float] = {}
-    for rank, (path, _) in enumerate(lexical):
-        scores[path] = scores.get(path, 0.0) + 1.0 / (_RRF_C + rank)
-    for rank, (path, _) in enumerate(semantic):
-        scores[path] = scores.get(path, 0.0) + 1.0 / (_RRF_C + rank)
+    _add_rrf_scores(scores, lexical)
+    _add_rrf_scores(scores, semantic)
 
     return sorted(scores, key=lambda p: scores[p], reverse=True)[:k]
 

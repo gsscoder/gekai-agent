@@ -45,15 +45,17 @@ class PromptHistory:
         entries.sort(key=lambda e: e.get("timestamp", 0))
         return entries
 
-    def start_browse(self, current_input: str) -> None:
+    def _ensure_loaded(self) -> None:
         if not self._entries:
             self._entries = self.load()
+
+    def start_browse(self, current_input: str) -> None:
+        self._ensure_loaded()
         self._draft = current_input
         self._index = len(self._entries)
 
     def browse_up(self) -> str | None:
-        if not self._entries:
-            self._entries = self.load()
+        self._ensure_loaded()
         if not self._entries:
             return None
         if self._index is None:
@@ -64,8 +66,7 @@ class PromptHistory:
         return self._entries[self._index]["text"]
 
     def browse_down(self) -> str | None:
-        if not self._entries:
-            self._entries = self.load()
+        self._ensure_loaded()
         if self._index is None:
             return None
         self._index += 1

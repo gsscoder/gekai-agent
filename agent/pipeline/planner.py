@@ -72,9 +72,9 @@ class Planner:
             base_url=api_base,
             timeout=httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=30.0),
         )
-        self._roster = [s for s in SUBAGENTS if s.auto_assignable]
+        roster = [s for s in SUBAGENTS if s.auto_assignable]
         self._full_roster = list(SUBAGENTS)
-        self._prompt = _build_prompt(self._roster)
+        self._prompt = _build_prompt(roster)
 
     async def plan(self, user_input: str, *, seed: str | None = None) -> TaskGraph:
         """Returns a validated TaskGraph. Raises ValueError if the model's output

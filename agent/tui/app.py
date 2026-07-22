@@ -48,7 +48,7 @@ from agent.settings import (
     tiers_configured,
 )
 from agent.workspace import db as workspace_db, list_files, list_dirs
-from agent.tui.styles import OPERATIVE_COLOR, random_accent_color, random_operative_verb
+from agent.tui.styles import OPERATIVE_COLOR, random_accent_color, _OPERATIVE_VERB
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
 from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
@@ -1120,11 +1120,10 @@ class GekaiApp(App[None]):
         self,
         question: str,
         options: list[tuple[str, str]],
-        default_index: int = 0,
     ) -> str | None:
         loop = asyncio.get_event_loop()
         self._pending_choice = loop.create_future()
-        self.query_one(ChoiceBar).show(question, options, default_index)
+        self.query_one(ChoiceBar).show(question, options, 0)
         return await self._pending_choice
 
     async def _submit_prompt(self) -> None:
@@ -1139,7 +1138,7 @@ class GekaiApp(App[None]):
         palette = self.query_one(CommandPalette)
         stripped = prompt.text.strip()
         if palette.display:
-            cmd = palette.selected_command
+            cmd = palette.selected_name
             is_subagent_sel = palette.selected_is_subagent
             palette.hide()
             if cmd:
@@ -1525,7 +1524,7 @@ class GekaiApp(App[None]):
         events.emit("turn.start", session=session_id, turn=turn_id, input_len=len(user_input))
         outcome = "ok"
         stage = ["route"]
-        verb = random_operative_verb()
+        verb = _OPERATIVE_VERB
         color = OPERATIVE_COLOR
         conversation = self.query_one("#conversation", ScrollableContainer)
         ws_renderer: SubAgentRenderer | None = None
@@ -1658,6 +1657,15 @@ class GekaiApp(App[None]):
         hint.update("")
         hint.display = False
 
+    def _toggle_esc_pending_clear(self) -> None:
+        prompt = self.query_one("#prompt", TextArea)
+        if self._esc_pending:
+            prompt.clear()
+            self._clear_hint()
+        elif prompt.text:
+            self._esc_pending = True
+            self._show_hint("ESC again to clear input")
+
     def on_conversation_container_scrolled(self, event: ConversationContainer.Scrolled) -> None:
         is_streaming = self._worker is not None and not self._worker.is_finished
         self.query_one("#scroll-hint-wrap", Container).display = not event.at_end and not is_streaming
@@ -1728,13 +1736,7 @@ class GekaiApp(App[None]):
             self._focus_prompt()
             return
 
-        prompt = self.query_one("#prompt", TextArea)
-        if self._esc_pending:
-            prompt.clear()
-            self._clear_hint()
-        elif prompt.text:
-            self._esc_pending = True
-            self._show_hint("ESC again to clear input")
+        self._toggle_esc_pending_clear()
 
     def action_toggle_history(self) -> None:
         panel = self.query_one("#history-panel", HistoryPanel)
@@ -1768,57 +1770,47 @@ class GekaiApp(App[None]):
 
         file_panel = self.query_one("#file-panel", FilePanel)
         if file_panel.display:
-            path = file_panel.selected_text
-            file_panel.hide()
-            if path is not None:
-                prompt = self.query_one("#prompt", TextArea)
-                at_pos = self._file_at_pos
-                if at_pos != -1 and at_pos < len(prompt.text):
-                    new_value = prompt.text[:at_pos] + f"@{path} "
-                    prompt.text = new_value
-                    self._prompt_move_to_end(prompt)
-            self._file_at_pos = -1
-            self._focus_prompt()
+            self._consume_file_selection(file_panel.selected_text)
             return
 
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
-            text = panel.selected_text
-            panel.hide()
-            prompt = self.query_one("#prompt", TextArea)
-            if text:
-                prompt.text = text
-                self._prompt_move_to_end(prompt)
-            self._focus_prompt()
+            self._consume_history_selection(panel.selected_text)
             return
 
         await self._submit_prompt()
 
-    def on_file_panel_row_clicked(self, event: FilePanel.RowClicked) -> None:
+    def _consume_file_selection(self, selected_text: str | None) -> None:
         file_panel = self.query_one("#file-panel", FilePanel)
-        file_panel.select_index(event.index)
-        path = file_panel.selected_text
         file_panel.hide()
-        if path is not None:
+        if selected_text is not None:
             prompt = self.query_one("#prompt", TextArea)
             at_pos = self._file_at_pos
             if at_pos != -1 and at_pos < len(prompt.text):
-                new_value = prompt.text[:at_pos] + f"@{path} "
+                new_value = prompt.text[:at_pos] + f"@{selected_text} "
                 prompt.text = new_value
                 self._prompt_move_to_end(prompt)
         self._file_at_pos = -1
         self._focus_prompt()
 
-    def on_history_panel_row_clicked(self, event: HistoryPanel.RowClicked) -> None:
+    def _consume_history_selection(self, selected_text: str | None) -> None:
         panel = self.query_one("#history-panel", HistoryPanel)
-        panel.select_index(event.index)
-        text = panel.selected_text
-        if text:
+        if selected_text:
             prompt = self.query_one("#prompt", TextArea)
-            prompt.text = text
+            prompt.text = selected_text
             self._prompt_move_to_end(prompt)
         panel.hide()
         self._focus_prompt()
+
+    def on_file_panel_row_clicked(self, event: FilePanel.RowClicked) -> None:
+        file_panel = self.query_one("#file-panel", FilePanel)
+        file_panel.select_index(event.index)
+        self._consume_file_selection(file_panel.selected_text)
+
+    def on_history_panel_row_clicked(self, event: HistoryPanel.RowClicked) -> None:
+        panel = self.query_one("#history-panel", HistoryPanel)
+        panel.select_index(event.index)
+        self._consume_history_selection(panel.selected_text)
 
     @staticmethod
     def _clipboard_sequence() -> int:
@@ -2063,13 +2055,7 @@ class GekaiApp(App[None]):
         event.stop()
         self.action_scroll_to_end()
 
-        prompt = self.query_one("#prompt", TextArea)
-        if self._esc_pending:
-            prompt.clear()
-            self._clear_hint()
-        elif prompt.text:
-            self._esc_pending = True
-            self._show_hint("ESC again to clear input")
+        self._toggle_esc_pending_clear()
 
         self._clear_status()
         self._focus_prompt()

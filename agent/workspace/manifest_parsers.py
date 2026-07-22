@@ -17,10 +17,16 @@ _EXTRAS = re.compile(r"\[.*?\]")
 _INLINE_COMMENT = re.compile(r"\s+#.*$")
 
 
-def _parse_requirements_txt(path: Path) -> list[str]:
+def _read_text_or_none(path: Path) -> str | None:
     try:
-        text = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except OSError:
+        return None
+
+
+def _parse_requirements_txt(path: Path) -> list[str]:
+    text = _read_text_or_none(path)
+    if text is None:
         return []
 
     packages: list[str] = []
@@ -30,10 +36,7 @@ def _parse_requirements_txt(path: Path) -> list[str]:
             continue
         if re.match(r"^-[rce]\s", line):
             continue
-        line = _INLINE_COMMENT.sub("", line)
-        line = _VERSION_SPECIFIERS.sub("", line)
-        line = _EXTRAS.sub("", line)
-        line = line.strip()
+        line = _strip_toml_version(line)
         if line:
             packages.append(line)
     return packages
@@ -59,9 +62,8 @@ def _strip_toml_version(value: str) -> str:
 
 
 def _parse_pyproject_toml(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_text_or_none(path)
+    if text is None:
         return []
 
     deps: list[str] = []
@@ -87,9 +89,8 @@ def _parse_pyproject_toml(path: Path) -> list[str]:
 
 
 def _parse_cargo_toml(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_text_or_none(path)
+    if text is None:
         return []
 
     deps: list[str] = []
@@ -123,9 +124,8 @@ def _parse_csproj(path: Path) -> list[str]:
 
 
 def _parse_setup_py(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_text_or_none(path)
+    if text is None:
         return []
 
     match = re.search(r"install_requires\s*=\s*\[([^\]]*)\]", text, re.DOTALL)
@@ -146,9 +146,8 @@ def _parse_setup_py(path: Path) -> list[str]:
 
 
 def _parse_go_mod(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_text_or_none(path)
+    if text is None:
         return []
 
     packages: list[str] = []
@@ -202,9 +201,8 @@ _GRADLE_DEP = re.compile(
 
 
 def _parse_build_gradle(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_text_or_none(path)
+    if text is None:
         return []
 
     packages: list[str] = []

@@ -75,6 +75,24 @@ async def _authorize(
     return target
 
 
+async def _authorize_file(
+    path: str,
+    working_dir: Path,
+    allow_hidden: set[str] | None,
+    grant_cb: HiddenGrantCallback | None,
+    pending: set[str] | None = None,
+    *,
+    mode: str,
+) -> Path | str:
+    """Like `_authorize`, but also rejects paths that resolve to a directory."""
+    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode=mode)
+    if isinstance(result, str):
+        return result
+    if result.is_dir():
+        return f"error: {path!r} is a directory — specify a file path"
+    return result
+
+
 def _walk_files(base: Path, root: Path) -> list[Path]:
     """Files under `base`, skipping ignored dirs (.git, .venv, .gekai, etc.).
 
@@ -101,12 +119,10 @@ async def _read_file(
     grant_cb: HiddenGrantCallback | None = None,
     pending: set[str] | None = None,
 ) -> str:
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
     if isinstance(result, str):
         return result
     target = result
-    if target.is_dir():
-        return f"error: {path!r} is a directory — specify a file path"
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
         if start_line is None and end_line is None:
@@ -146,12 +162,10 @@ async def _file_info(
     grant_cb: HiddenGrantCallback | None = None,
     pending: set[str] | None = None,
 ) -> str:
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
     if isinstance(result, str):
         return result
     target = result
-    if target.is_dir():
-        return f"error: {path!r} is a directory — specify a file path"
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
         line_count = len(text.splitlines())
@@ -215,12 +229,10 @@ async def _edit_file(
     grant_cb: HiddenGrantCallback | None = None,
     pending: set[str] | None = None,
 ) -> str:
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
     if isinstance(result, str):
         return result
     target = result
-    if target.is_dir():
-        return f"error: {path!r} is a directory — specify a file path"
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -242,12 +254,10 @@ async def _write_file(
     grant_cb: HiddenGrantCallback | None = None,
     pending: set[str] | None = None,
 ) -> str:
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
     if isinstance(result, str):
         return result
     target = result
-    if target.is_dir():
-        return f"error: {path!r} is a directory — specify a file path"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -329,12 +339,10 @@ async def _move_file(
     grant_cb: HiddenGrantCallback | None = None,
     pending: set[str] | None = None,
 ) -> str:
-    src_result = await _authorize(src, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    src_result = await _authorize_file(src, working_dir, allow_hidden, grant_cb, pending, mode="write")
     if isinstance(src_result, str):
         return src_result
     src_path = src_result
-    if src_path.is_dir():
-        return f"error: {src!r} is a directory — specify a file path"
     dst_result = await _authorize(dst, working_dir, allow_hidden, grant_cb, pending, mode="write")
     if isinstance(dst_result, str):
         return dst_result
