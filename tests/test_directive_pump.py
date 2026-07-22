@@ -15,21 +15,18 @@ from agent.directive_pump import PUMP_BUDGET, detect_domains, pump
 from agent.subagents import NAMESPACE_DIRECTIVES
 
 
-def test_detect_domains_from_backtick_path_extension() -> None:
-    assert detect_domains("update `src/app/foo.py` to fix the bug") == {"coding"}
-
-
-def test_detect_domains_from_test_path_adds_testing_alongside_coding() -> None:
-    assert detect_domains("update `tests/test_foo.py`") == {"coding", "testing"}
-
-
-def test_detect_domains_from_keyword_with_no_file_path() -> None:
-    """No located files (bare prose ask) — keyword lexicon only."""
-    assert detect_domains("write a pytest for the parser") == {"testing"}
-
-
-def test_detect_domains_empty_for_unrelated_prose() -> None:
-    assert detect_domains("what's the weather like today") == set()
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("update `src/app/foo.py` to fix the bug", {"coding"}),
+        ("update `tests/test_foo.py`", {"coding", "testing"}),
+        # No located files (bare prose ask) — keyword lexicon only.
+        ("write a pytest for the parser", {"testing"}),
+        ("what's the weather like today", set()),
+    ],
+)
+def test_detect_domains(text, expected) -> None:
+    assert detect_domains(text) == expected
 
 
 def test_pump_returns_empty_for_no_detected_domain() -> None:

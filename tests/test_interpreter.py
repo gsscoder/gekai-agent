@@ -17,12 +17,15 @@ async def _dispatch_ok(agent: str, instruction: str, mission: str = "", signal: 
     return f"{agent} did: {instruction}"
 
 
-def test_resolve_refs_substitutes_prior_outputs() -> None:
-    assert resolve_refs("build on {{step_1}}", ["tokenizer done"]) == "build on tokenizer done"
-
-
-def test_resolve_refs_leaves_dangling_ref_untouched() -> None:
-    assert resolve_refs("build on {{step_2}}", ["only one"]) == "build on {{step_2}}"
+@pytest.mark.parametrize(
+    "text,prior,expected",
+    [
+        ("build on {{step_1}}", ["tokenizer done"], "build on tokenizer done"),
+        ("build on {{step_2}}", ["only one"], "build on {{step_2}}"),
+    ],
+)
+def test_resolve_refs(text: str, prior: list[str], expected: str) -> None:
+    assert resolve_refs(text, prior) == expected
 
 
 def test_passing_graph_runs_all_steps_with_refs_substituted() -> None:

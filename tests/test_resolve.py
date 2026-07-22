@@ -12,14 +12,15 @@ CATALOG = {
 }
 
 
-def test_resolve_tier_missing_binding():
-    with pytest.raises(TierResolutionError, match="not configured"):
-        resolve_tier(TierName.FAST, CATALOG, {})
-
-
-def test_resolve_tier_stale_binding_model_not_in_catalog():
-    bindings = {TierName.FAST: TierBinding(model="ghost", default_effort="low")}
-    with pytest.raises(TierResolutionError, match="stale"):
+@pytest.mark.parametrize(
+    "bindings, match",
+    [
+        ({}, "not configured"),
+        ({TierName.FAST: TierBinding(model="ghost", default_effort="low")}, "stale"),
+    ],
+)
+def test_resolve_tier_raises_for_unresolvable_binding(bindings, match):
+    with pytest.raises(TierResolutionError, match=match):
         resolve_tier(TierName.FAST, CATALOG, bindings)
 
 

@@ -30,46 +30,43 @@ def test_well_formed_graph_parses() -> None:
     ]
 
 
-def test_unknown_agent_rejects_whole_graph() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "nonexistent-agent", "instruction": "do something"}]}
-    with pytest.raises(ValueError, match="nonexistent-agent"):
+@pytest.mark.parametrize(
+    "raw, match",
+    [
+        (
+            {"summary": "s", "steps": [{"agent": "nonexistent-agent", "instruction": "do something"}]},
+            "nonexistent-agent",
+        ),
+        (
+            {"summary": "s", "steps": [{"agent": "main", "instruction": ""}]},
+            "instruction",
+        ),
+        (
+            {"summary": "s", "steps": [{"agent": "main", "instruction": "use {{step_5}}", "mission": "use it"}]},
+            "dangling ref",
+        ),
+        (
+            {"summary": "s", "steps": [{"agent": "fact-checker", "instruction": "review the change"}]},
+            "fact-checker",
+        ),
+        (
+            {"summary": "s", "steps": [{"agent": "main", "instruction": "scaffold", "mission": "scaffold it", "verify": "code-expert"}]},
+            "code-expert",
+        ),
+        (
+            {"summary": "s", "steps": []},
+            "at least one step",
+        ),
+        (
+            {"steps": [{"agent": "main", "instruction": "do it"}]},
+            "summary",
+        ),
+        (
+            [{"agent": "main", "instruction": "do it"}],
+            "JSON object",
+        ),
+    ],
+)
+def test_unknown_agent_rejects_whole_graph(raw, match) -> None:
+    with pytest.raises(ValueError, match=match):
         parse_task_graph(raw, _ROSTER)
-
-
-def test_empty_instruction_rejects_whole_graph() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "main", "instruction": ""}]}
-    with pytest.raises(ValueError, match="instruction"):
-        parse_task_graph(raw, _ROSTER)
-
-
-def test_dangling_ref_rejects_whole_graph() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "main", "instruction": "use {{step_5}}", "mission": "use it"}]}
-    with pytest.raises(ValueError, match="dangling ref"):
-        parse_task_graph(raw, _ROSTER)
-
-
-def test_post_planning_only_agent_in_phase1_agent_field_rejects() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "fact-checker", "instruction": "review the change"}]}
-    with pytest.raises(ValueError, match="fact-checker"):
-        parse_task_graph(raw, _ROSTER)
-
-
-def test_auto_assignable_agent_in_verify_field_rejects() -> None:
-    raw = {"summary": "s", "steps": [{"agent": "main", "instruction": "scaffold", "mission": "scaffold it", "verify": "code-expert"}]}
-    with pytest.raises(ValueError, match="code-expert"):
-        parse_task_graph(raw, _ROSTER)
-
-
-def test_empty_graph_rejects() -> None:
-    with pytest.raises(ValueError, match="at least one step"):
-        parse_task_graph({"summary": "s", "steps": []}, _ROSTER)
-
-
-def test_missing_summary_rejects() -> None:
-    with pytest.raises(ValueError, match="summary"):
-        parse_task_graph({"steps": [{"agent": "main", "instruction": "do it"}]}, _ROSTER)
-
-
-def test_bare_array_input_rejects() -> None:
-    with pytest.raises(ValueError, match="JSON object"):
-        parse_task_graph([{"agent": "main", "instruction": "do it"}], _ROSTER)

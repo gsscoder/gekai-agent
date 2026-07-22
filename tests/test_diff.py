@@ -1,3 +1,5 @@
+import pytest
+
 from agent.diff import DiffLine, build_diff, render_diff
 
 
@@ -79,15 +81,8 @@ class TestRenderDiff:
         result = render_diff([])
         assert isinstance(result, Text)
 
-    def test_add_line_has_green_bg(self):
-        dl = DiffLine(kind="add", text="+foo")
+    @pytest.mark.parametrize("kind,text", [("add", "+foo"), ("del", "-foo")])
+    def test_add_or_del_line_has_colored_bg(self, kind, text):
+        dl = DiffLine(kind=kind, text=text)
         result = render_diff([dl])
-        # Rich stores spans; check the style string contains green bg color
-        plain = result.plain
-        assert "+foo" in plain
-
-    def test_del_line_has_red_bg(self):
-        dl = DiffLine(kind="del", text="-foo")
-        result = render_diff([dl])
-        plain = result.plain
-        assert "-foo" in plain
+        assert text in result.plain

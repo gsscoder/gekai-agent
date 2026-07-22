@@ -1,3 +1,5 @@
+import pytest
+
 from agent.workspace.manifest_parsers import (
     _parse_build_gradle,
     _parse_cargo_toml,
@@ -15,45 +17,26 @@ class TestParseRequirementsTxt:
     def test_missing_file(self, tmp_path):
         assert _parse_requirements_txt(tmp_path / "requirements.txt") == []
 
-    def test_empty_file(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            ("requests>=2.0\n", ["requests"]),
+            ("requests[security]>=2.0\n", ["requests"]),
+            ("-r other.txt\n-c constraints.txt\n-e git+https://example.com\n", []),
+            ("# comment\n\nrequests\n", ["requests"]),
+            ("flask\ndjango\nfastapi\n", ["flask", "django", "fastapi"]),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "requirements.txt"
-        f.write_text("")
-        assert _parse_requirements_txt(f) == []
-
-    def test_strips_version_specifiers(self, tmp_path):
-        f = tmp_path / "requirements.txt"
-        f.write_text("requests>=2.0\n")
-        assert _parse_requirements_txt(f) == ["requests"]
-
-    def test_strips_extras(self, tmp_path):
-        f = tmp_path / "requirements.txt"
-        f.write_text("requests[security]>=2.0\n")
-        assert _parse_requirements_txt(f) == ["requests"]
-
-    def test_skips_flags(self, tmp_path):
-        f = tmp_path / "requirements.txt"
-        f.write_text("-r other.txt\n-c constraints.txt\n-e git+https://example.com\n")
-        assert _parse_requirements_txt(f) == []
-
-    def test_skips_comments_and_blanks(self, tmp_path):
-        f = tmp_path / "requirements.txt"
-        f.write_text("# comment\n\nrequests\n")
-        assert _parse_requirements_txt(f) == ["requests"]
-
-    def test_multiple_packages(self, tmp_path):
-        f = tmp_path / "requirements.txt"
-        f.write_text("flask\ndjango\nfastapi\n")
-        assert _parse_requirements_txt(f) == ["flask", "django", "fastapi"]
+        f.write_text(content)
+        assert _parse_requirements_txt(f) == expected
 
 
 class TestParsePackageJson:
     def test_missing_file(self, tmp_path):
         assert _parse_package_json(tmp_path / "package.json") == []
-
-    def test_empty_file(self, tmp_path):
-        f = tmp_path / "package.json"
-        f.write_text("")
-        assert _parse_package_json(f) == []
 
     def test_dependencies_and_dev_dependencies(self, tmp_path):
         f = tmp_path / "package.json"
@@ -62,15 +45,18 @@ class TestParsePackageJson:
         assert "react" in result
         assert "typescript" in result
 
-    def test_missing_keys(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            ('{"name": "my-app", "version": "1.0.0"}', []),
+            ("{not valid json", []),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "package.json"
-        f.write_text('{"name": "my-app", "version": "1.0.0"}')
-        assert _parse_package_json(f) == []
-
-    def test_invalid_json(self, tmp_path):
-        f = tmp_path / "package.json"
-        f.write_text("{not valid json")
-        assert _parse_package_json(f) == []
+        f.write_text(content)
+        assert _parse_package_json(f) == expected
 
 
 class TestParsePyprojectToml:
@@ -82,19 +68,27 @@ class TestParsePyprojectToml:
         f.write_text("")
         assert _parse_pyproject_toml(f) == []
 
-    def test_project_dependencies_section(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected1, expected2",
+        [
+            (
+                "[project.dependencies]\nrequests = \">=2.0\"\nflask = \">=2.0\"\n",
+                "requests",
+                "flask",
+            ),
+            (
+                "[tool.poetry.dependencies]\npython = \"^3.11\"\nhttpx = \"^0.24\"\n",
+                "python",
+                "httpx",
+            ),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected1, expected2):
         f = tmp_path / "pyproject.toml"
-        f.write_text("[project.dependencies]\nrequests = \">=2.0\"\nflask = \">=2.0\"\n")
+        f.write_text(content)
         result = _parse_pyproject_toml(f)
-        assert "requests" in result
-        assert "flask" in result
-
-    def test_poetry_dependencies_section(self, tmp_path):
-        f = tmp_path / "pyproject.toml"
-        f.write_text("[tool.poetry.dependencies]\npython = \"^3.11\"\nhttpx = \"^0.24\"\n")
-        result = _parse_pyproject_toml(f)
-        assert "python" in result
-        assert "httpx" in result
+        assert expected1 in result
+        assert expected2 in result
 
     def test_other_sections_ignored(self, tmp_path):
         f = tmp_path / "pyproject.toml"
@@ -138,49 +132,36 @@ class TestParseCsproj:
     def test_missing_file(self, tmp_path):
         assert _parse_csproj(tmp_path / "project.csproj") == []
 
-    def test_empty_file(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            (
+                '<Project><ItemGroup>'
+                '<PackageReference Include="Newtonsoft.Json" Version="13.0" />'
+                '</ItemGroup></Project>',
+                ["Newtonsoft.Json"],
+            ),
+            (
+                '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">'
+                '<ItemGroup>'
+                '<PackageReference Include="Serilog" Version="3.0" />'
+                '</ItemGroup></Project>',
+                ["Serilog"],
+            ),
+            ('<Project><ItemGroup></ItemGroup></Project>', []),
+            ("<Project><ItemGroup>", []),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "project.csproj"
-        f.write_text("")
-        assert _parse_csproj(f) == []
-
-    def test_package_references(self, tmp_path):
-        f = tmp_path / "project.csproj"
-        f.write_text(
-            '<Project><ItemGroup>'
-            '<PackageReference Include="Newtonsoft.Json" Version="13.0" />'
-            '</ItemGroup></Project>'
-        )
-        assert _parse_csproj(f) == ["Newtonsoft.Json"]
-
-    def test_namespaced_tags(self, tmp_path):
-        f = tmp_path / "project.csproj"
-        f.write_text(
-            '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">'
-            '<ItemGroup>'
-            '<PackageReference Include="Serilog" Version="3.0" />'
-            '</ItemGroup></Project>'
-        )
-        assert _parse_csproj(f) == ["Serilog"]
-
-    def test_no_packages(self, tmp_path):
-        f = tmp_path / "project.csproj"
-        f.write_text('<Project><ItemGroup></ItemGroup></Project>')
-        assert _parse_csproj(f) == []
-
-    def test_invalid_xml(self, tmp_path):
-        f = tmp_path / "project.csproj"
-        f.write_text("<Project><ItemGroup>")
-        assert _parse_csproj(f) == []
+        f.write_text(content)
+        assert _parse_csproj(f) == expected
 
 
 class TestParseSetupPy:
     def test_missing_file(self, tmp_path):
         assert _parse_setup_py(tmp_path / "setup.py") == []
-
-    def test_empty_file(self, tmp_path):
-        f = tmp_path / "setup.py"
-        f.write_text("")
-        assert _parse_setup_py(f) == []
 
     def test_install_requires(self, tmp_path):
         f = tmp_path / "setup.py"
@@ -195,11 +176,6 @@ class TestParseSetupPy:
         result = _parse_setup_py(f)
         assert "requests" in result
         assert "flask" in result
-
-    def test_strips_version_specifiers(self, tmp_path):
-        f = tmp_path / "setup.py"
-        f.write_text('setup(install_requires=["requests>=2.0"])')
-        assert _parse_setup_py(f) == ["requests"]
 
     def test_strips_extras(self, tmp_path):
         f = tmp_path / "setup.py"
@@ -228,30 +204,23 @@ class TestParseSetupPy:
         assert "requests" in result
         assert "flask" in result
 
-    def test_no_install_requires(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            ('setup(install_requires=["requests>=2.0"])', ["requests"]),
+            ('setup(name="mypackage", version="1.0")', []),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "setup.py"
-        f.write_text('setup(name="mypackage", version="1.0")')
-        assert _parse_setup_py(f) == []
+        f.write_text(content)
+        assert _parse_setup_py(f) == expected
 
 
 class TestParseGoMod:
     def test_missing_file(self, tmp_path):
         assert _parse_go_mod(tmp_path / "go.mod") == []
-
-    def test_empty_file(self, tmp_path):
-        f = tmp_path / "go.mod"
-        f.write_text("")
-        assert _parse_go_mod(f) == []
-
-    def test_require_block(self, tmp_path):
-        f = tmp_path / "go.mod"
-        f.write_text("module example.com/mymod\n\nrequire (\n\tgithub.com/foo/bar v1.0.0\n)\n")
-        assert _parse_go_mod(f) == ["github.com/foo/bar"]
-
-    def test_single_line_require(self, tmp_path):
-        f = tmp_path / "go.mod"
-        f.write_text("module example.com/mymod\n\nrequire github.com/foo/bar v1.0.0\n")
-        assert _parse_go_mod(f) == ["github.com/foo/bar"]
 
     def test_includes_indirect(self, tmp_path):
         f = tmp_path / "go.mod"
@@ -265,39 +234,37 @@ class TestParseGoMod:
         assert "github.com/foo/bar" in result
         assert "github.com/baz/qux" in result
 
-    def test_skips_blank_and_comment_lines(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            (
+                "module example.com/mymod\n\nrequire (\n\tgithub.com/foo/bar v1.0.0\n)\n",
+                ["github.com/foo/bar"],
+            ),
+            (
+                "module example.com/mymod\n\nrequire github.com/foo/bar v1.0.0\n",
+                ["github.com/foo/bar"],
+            ),
+            (
+                "module example.com/mymod\n\nrequire (\n"
+                "\n"
+                "\t// a comment\n"
+                "\tgithub.com/foo/bar v1.0.0\n"
+                ")\n",
+                ["github.com/foo/bar"],
+            ),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "go.mod"
-        f.write_text(
-            "module example.com/mymod\n\nrequire (\n"
-            "\n"
-            "\t// a comment\n"
-            "\tgithub.com/foo/bar v1.0.0\n"
-            ")\n"
-        )
-        result = _parse_go_mod(f)
-        assert result == ["github.com/foo/bar"]
+        f.write_text(content)
+        assert _parse_go_mod(f) == expected
 
 
 class TestParsePomXml:
     def test_missing_file(self, tmp_path):
         assert _parse_pom_xml(tmp_path / "pom.xml") == []
-
-    def test_empty_file(self, tmp_path):
-        f = tmp_path / "pom.xml"
-        f.write_text("")
-        assert _parse_pom_xml(f) == []
-
-    def test_dependency_format(self, tmp_path):
-        f = tmp_path / "pom.xml"
-        f.write_text(
-            "<project><dependencies>"
-            "<dependency>"
-            "<groupId>org.springframework</groupId>"
-            "<artifactId>spring-core</artifactId>"
-            "</dependency>"
-            "</dependencies></project>"
-        )
-        assert _parse_pom_xml(f) == ["org.springframework:spring-core"]
 
     def test_multiple_deps(self, tmp_path):
         f = tmp_path / "pom.xml"
@@ -311,54 +278,66 @@ class TestParsePomXml:
         assert "org.springframework:spring-core" in result
         assert "junit:junit" in result
 
-    def test_namespaced_tags(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            (
+                "<project><dependencies>"
+                "<dependency>"
+                "<groupId>org.springframework</groupId>"
+                "<artifactId>spring-core</artifactId>"
+                "</dependency>"
+                "</dependencies></project>",
+                ["org.springframework:spring-core"],
+            ),
+            (
+                '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+                "<dependencies>"
+                "<dependency>"
+                "<groupId>com.fasterxml.jackson.core</groupId>"
+                "<artifactId>jackson-databind</artifactId>"
+                "</dependency>"
+                "</dependencies></project>",
+                ["com.fasterxml.jackson.core:jackson-databind"],
+            ),
+            ("<project><dependencies>", []),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "pom.xml"
-        f.write_text(
-            '<project xmlns="http://maven.apache.org/POM/4.0.0">'
-            "<dependencies>"
-            "<dependency>"
-            "<groupId>com.fasterxml.jackson.core</groupId>"
-            "<artifactId>jackson-databind</artifactId>"
-            "</dependency>"
-            "</dependencies></project>"
-        )
-        assert _parse_pom_xml(f) == ["com.fasterxml.jackson.core:jackson-databind"]
-
-    def test_invalid_xml(self, tmp_path):
-        f = tmp_path / "pom.xml"
-        f.write_text("<project><dependencies>")
-        assert _parse_pom_xml(f) == []
+        f.write_text(content)
+        assert _parse_pom_xml(f) == expected
 
 
 class TestParseBuildGradle:
     def test_missing_file(self, tmp_path):
         assert _parse_build_gradle(tmp_path / "build.gradle") == []
 
-    def test_empty_file(self, tmp_path):
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("", []),
+            (
+                "dependencies {\n    implementation 'com.google.guava:guava:31.0'\n}\n",
+                ["com.google.guava:guava:31.0"],
+            ),
+            (
+                'dependencies {\n    api "org.springframework:spring-core:5.0"\n}\n',
+                ["org.springframework:spring-core:5.0"],
+            ),
+            (
+                "dependencies {\n    compile 'log4j:log4j:1.2'\n}\n",
+                ["log4j:log4j:1.2"],
+            ),
+            (
+                "plugins {\n    id 'java'\n}\napply plugin: 'application'\n"
+                "dependencies {\n    implementation 'com.google.guava:guava:31.0'\n}\n",
+                ["com.google.guava:guava:31.0"],
+            ),
+        ],
+    )
+    def test_parses(self, tmp_path, content, expected):
         f = tmp_path / "build.gradle"
-        f.write_text("")
-        assert _parse_build_gradle(f) == []
-
-    def test_implementation(self, tmp_path):
-        f = tmp_path / "build.gradle"
-        f.write_text("dependencies {\n    implementation 'com.google.guava:guava:31.0'\n}\n")
-        assert _parse_build_gradle(f) == ["com.google.guava:guava:31.0"]
-
-    def test_api(self, tmp_path):
-        f = tmp_path / "build.gradle"
-        f.write_text('dependencies {\n    api "org.springframework:spring-core:5.0"\n}\n')
-        assert _parse_build_gradle(f) == ["org.springframework:spring-core:5.0"]
-
-    def test_compile(self, tmp_path):
-        f = tmp_path / "build.gradle"
-        f.write_text("dependencies {\n    compile 'log4j:log4j:1.2'\n}\n")
-        assert _parse_build_gradle(f) == ["log4j:log4j:1.2"]
-
-    def test_non_dep_lines_ignored(self, tmp_path):
-        f = tmp_path / "build.gradle"
-        f.write_text(
-            "plugins {\n    id 'java'\n}\napply plugin: 'application'\n"
-            "dependencies {\n    implementation 'com.google.guava:guava:31.0'\n}\n"
-        )
-        result = _parse_build_gradle(f)
-        assert result == ["com.google.guava:guava:31.0"]
+        f.write_text(content)
+        assert _parse_build_gradle(f) == expected

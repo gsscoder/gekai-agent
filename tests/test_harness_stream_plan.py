@@ -36,25 +36,20 @@ def _make_session(tmp_path: Path) -> Session:
     return Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
 
 
-def _make_harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
+def _only(events: list, cls: type) -> list:
+    return [e for e in events if isinstance(e, cls)]
+
+
+def _make_harness() -> Harness:
     """Plan 28 Phase 2: `Harness` takes a resolver closure + a `TierPolicy`
     per scaled touchpoint instead of one frozen `ResolvedTier` each. The
     resolver here always returns `main_tier`, so every touchpoint (including
     the sequencer's freshly-built `Planner`, now constructed inside
     `_stream_graph()` instead of `__init__`) still resolves to the exact
     same config these tests were written against."""
-    main_tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
-    estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
-    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
-    with patch("agent.harness.core.OpenAIAdapter"):
-        harness = Harness(
-            resolve=lambda _tier: main_tier,
-            sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
-            main_dispatch_policy=policy,
-            subagent_dispatch_policy=policy,
-            estimator=estimator_tier,
-        )
-    return harness
+    return _make_scaling_harness(
+        lambda _tier: ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    )
 
 
 def _patch_planner_plan(monkeypatch: pytest.MonkeyPatch, mock: AsyncMock) -> None:
@@ -169,7 +164,7 @@ def _capturing_planner_init(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    harness = _make_harness(monkeypatch)
+    harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
     plan_mock = AsyncMock(side_effect=AssertionError("planner must not run on trivial"))
     _patch_planner_plan(monkeypatch, plan_mock)
@@ -186,7 +181,7 @@ def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 
 def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    harness = _make_harness(monkeypatch)
+    harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
         summary="build a library with tests",
@@ -205,7 +200,7 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "build a library with tests"))
 
-    started = [e for e in collected if isinstance(e, TaskGraphStartedEvent)]
+    started = _only(collected, TaskGraphStartedEvent)
     assert len(started) == 1
     assert started[0].step_count == 2
     assert started[0].agents == ["code-expert", "test-expert"]
@@ -216,7 +211,7 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
 def test_seed_routes_through_planner_even_without_mutate_estimate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    harness = _make_harness(monkeypatch)
+    harness = _make_harness()
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
     graph = TaskGraph(summary="add coverage", steps=[Task(agent="test-expert", instruction="add coverage", mission="add coverage")])
     plan_mock = AsyncMock(return_value=graph)
@@ -237,7 +232,7 @@ def test_seed_routes_through_planner_even_without_mutate_estimate(
 
 
 def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    harness = _make_harness(monkeypatch)
+    harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(summary="build something", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
     _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
@@ -250,7 +245,7 @@ def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatc
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "build something"))
 
-    halted = [e for e in collected if isinstance(e, TaskGraphHaltedEvent)]
+    halted = _only(collected, TaskGraphHaltedEvent)
     assert len(halted) == 1
     assert halted[0].step_index == 0
     assert "prior steps" in collected[-1] or "HALTED" in collected[-1]
@@ -303,7 +298,7 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
         "-- no memory of step 1's promotion"
     )
 
-    scale_events = [e for e in collected if isinstance(e, ScaleEvent)]
+    scale_events = _only(collected, ScaleEvent)
     assert scale_events == [
         ScaleEvent(component="main-dispatch", default_tier="supp", chosen_tier="core", reason="reasoning-shaped")
     ]
@@ -333,7 +328,7 @@ def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPat
     collected = run(_drain(harness, session, prompt, seed="main"))
 
     assert planner_calls[0]["model"] == "supp-model", "Planner should be built from the SUPP-resolved config"
-    sequencer_events = [e for e in collected if isinstance(e, ScaleEvent) and e.component == "sequencer"]
+    sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
     assert sequencer_events == [
         ScaleEvent(component="sequencer", default_tier="core", chosen_tier="supp", reason="easy-demote")
     ]
@@ -362,7 +357,7 @@ def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.Mon
     collected = run(_drain(harness, session, prompt))
 
     assert planner_calls[0]["model"] == "core-model", "Planner should stay on the CORE-resolved config"
-    sequencer_events = [e for e in collected if isinstance(e, ScaleEvent) and e.component == "sequencer"]
+    sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
     assert sequencer_events == []
 
 

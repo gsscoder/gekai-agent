@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from agent.settings import load_allow_hidden
 from agent.tools import _move_file, _copy_file, _delete_file, _make_dir
 from agent.tools.files import _grep, _read_file, _edit_file, _write_file, _list_files, _file_info
@@ -13,6 +15,20 @@ def run(coro):
 def _write(p: Path, text: str = "content") -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text)
+
+
+@pytest.fixture
+def secret_aiignore(tmp_path: Path) -> Path:
+    _write(tmp_path / ".aiignore", "secret.txt\n")
+    _write(tmp_path / "secret.txt", "top secret")
+    return tmp_path
+
+
+@pytest.fixture
+def secret_gitignore(tmp_path: Path) -> Path:
+    _write(tmp_path / ".gitignore", "secret.txt\n")
+    _write(tmp_path / "secret.txt", "top secret")
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------
@@ -176,35 +192,25 @@ class TestGrep:
 # ---------------------------------------------------------------------------
 
 class TestAiignoreForbidden:
-    def test_read_file_denied(self, tmp_path):
-        _write(tmp_path / ".aiignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-        result = run(_read_file("secret.txt", working_dir=tmp_path))
+    def test_read_file_denied(self, secret_aiignore: Path):
+        result = run(_read_file("secret.txt", working_dir=secret_aiignore))
         assert result == "error: path outside working directory"
 
-    def test_edit_file_denied(self, tmp_path):
-        _write(tmp_path / ".aiignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-        result = run(_edit_file("secret.txt", "x", "y", working_dir=tmp_path))
+    def test_edit_file_denied(self, secret_aiignore: Path):
+        result = run(_edit_file("secret.txt", "x", "y", working_dir=secret_aiignore))
         assert result == "error: path outside working directory"
 
-    def test_write_file_denied(self, tmp_path):
-        _write(tmp_path / ".aiignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-        result = run(_write_file("secret.txt", "data", working_dir=tmp_path))
+    def test_write_file_denied(self, secret_aiignore: Path):
+        result = run(_write_file("secret.txt", "data", working_dir=secret_aiignore))
         assert result == "error: path outside working directory"
 
-    def test_grep_with_path_denied(self, tmp_path):
-        _write(tmp_path / ".aiignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-        result = run(_grep("anything", path="secret.txt", working_dir=tmp_path))
+    def test_grep_with_path_denied(self, secret_aiignore: Path):
+        result = run(_grep("anything", path="secret.txt", working_dir=secret_aiignore))
         assert result == "error: path outside working directory"
 
-    def test_non_listed_file_still_readable(self, tmp_path):
-        _write(tmp_path / ".aiignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-        _write(tmp_path / "normal.txt", "nothing special")
-        result = run(_read_file("normal.txt", working_dir=tmp_path))
+    def test_non_listed_file_still_readable(self, secret_aiignore: Path):
+        _write(secret_aiignore / "normal.txt", "nothing special")
+        result = run(_read_file("normal.txt", working_dir=secret_aiignore))
         assert result == "nothing special"
 
 
@@ -241,38 +247,29 @@ class TestGitignoreHidden:
 # ---------------------------------------------------------------------------
 
 class TestHiddenGrant:
-    def test_grant_yes_allows_read_and_persists(self, tmp_path):
-        _write(tmp_path / ".gitignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-
+    def test_grant_yes_allows_read_and_persists(self, secret_gitignore: Path):
         calls = []
 
         async def cb(rel, mode):
             calls.append((rel, mode))
             return True
 
-        result = run(_read_file("secret.txt", working_dir=tmp_path, allow_hidden=set(), grant_cb=cb))
+        result = run(_read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=set(), grant_cb=cb))
 
         assert result == "top secret"
         assert calls == [("secret.txt", "read")]
-        assert load_allow_hidden(tmp_path) == {"secret.txt"}
+        assert load_allow_hidden(secret_gitignore) == {"secret.txt"}
 
-    def test_grant_no_denies(self, tmp_path):
-        _write(tmp_path / ".gitignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-
+    def test_grant_no_denies(self, secret_gitignore: Path):
         async def cb(rel, mode):
             return False
 
-        result = run(_read_file("secret.txt", working_dir=tmp_path, allow_hidden=set(), grant_cb=cb))
+        result = run(_read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=set(), grant_cb=cb))
 
         assert result == "error: access to hidden path denied: secret.txt"
-        assert load_allow_hidden(tmp_path) == set()
+        assert load_allow_hidden(secret_gitignore) == set()
 
-    def test_granted_path_not_reprompted(self, tmp_path):
-        _write(tmp_path / ".gitignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-
+    def test_granted_path_not_reprompted(self, secret_gitignore: Path):
         allow_hidden: set[str] = set()
         count = 0
 
@@ -281,8 +278,8 @@ class TestHiddenGrant:
             count += 1
             return True
 
-        result1 = run(_read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb))
-        result2 = run(_read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb))
+        result1 = run(_read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb))
+        result2 = run(_read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb))
 
         assert result1 == "top secret"
         assert result2 == "top secret"
@@ -358,10 +355,7 @@ class TestHiddenGrant:
 
 
 class TestHiddenGrantConcurrency:
-    def test_concurrent_double_call_not_double_prompted(self, tmp_path):
-        _write(tmp_path / ".gitignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-
+    def test_concurrent_double_call_not_double_prompted(self, secret_gitignore: Path):
         allow_hidden: set[str] = set()
         pending: set[str] = set()
         count = 0
@@ -374,8 +368,8 @@ class TestHiddenGrantConcurrency:
 
         async def both():
             return await asyncio.gather(
-                _read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
-                _read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
+                _read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
+                _read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
             )
 
         result1, result2 = run(both())
@@ -387,10 +381,7 @@ class TestHiddenGrantConcurrency:
         assert pending == set()
         assert allow_hidden == {"secret.txt"}
 
-    def test_concurrent_double_call_read_and_grep_not_double_prompted(self, tmp_path):
-        _write(tmp_path / ".gitignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-
+    def test_concurrent_double_call_read_and_grep_not_double_prompted(self, secret_gitignore: Path):
         allow_hidden: set[str] = set()
         pending: set[str] = set()
         count = 0
@@ -403,8 +394,8 @@ class TestHiddenGrantConcurrency:
 
         async def both():
             return await asyncio.gather(
-                _read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
-                _grep("secret", path="secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
+                _read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
+                _grep("secret", path="secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
             )
 
         result1, result2 = run(both())
@@ -419,10 +410,7 @@ class TestHiddenGrantConcurrency:
             assert result1 == "top secret"
             assert result2 == denied
 
-    def test_followup_call_after_race_not_reprompted(self, tmp_path):
-        _write(tmp_path / ".gitignore", "secret.txt\n")
-        _write(tmp_path / "secret.txt", "top secret")
-
+    def test_followup_call_after_race_not_reprompted(self, secret_gitignore: Path):
         allow_hidden: set[str] = set()
         pending: set[str] = set()
         count = 0
@@ -435,14 +423,14 @@ class TestHiddenGrantConcurrency:
 
         async def both():
             return await asyncio.gather(
-                _read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
-                _read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
+                _read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
+                _read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending),
             )
 
         run(both())
         assert count == 1
 
-        result = run(_read_file("secret.txt", working_dir=tmp_path, allow_hidden=allow_hidden, grant_cb=cb, pending=pending))
+        result = run(_read_file("secret.txt", working_dir=secret_gitignore, allow_hidden=allow_hidden, grant_cb=cb, pending=pending))
 
         assert result == "top secret"
         assert count == 1
@@ -455,11 +443,6 @@ class TestHiddenGrantConcurrency:
 class TestDirectoryPathGuard:
     """Passing '.' or any directory path to file-only tools must return a clear
     'is a directory' error rather than an OS error or a grant prompt."""
-
-    def _no_grant(self):
-        async def cb(rel, mode):
-            raise AssertionError("grant_cb must not be called for directory paths")
-        return cb
 
     def test_read_file_dot_returns_directory_error(self, tmp_path):
         _write(tmp_path / "visible.txt", "hello")

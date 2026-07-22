@@ -5,7 +5,6 @@ import sqlite_vec
 import agent.workspace.embed as embed_module
 from agent.workspace.db import (
     ensure,
-    find_candidates,
     find_hybrid,
     find_semantic,
     save_chunk_vectors,

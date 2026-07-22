@@ -22,21 +22,10 @@ import pytest
 from agent import agent as agent_module
 from agent import logging as agent_logging
 from agent.agent import GekaiAgent
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
+from agent.llm.tiers import TierBinding, TierName
 from agent.pipeline import Route
 from agent.settings import Permissions
-
-CATALOG = {
-    "fast-model": ModelCatalogEntry(name="fast-model", base_url="https://fast.example.com", efforts=("low", "medium"), thinking=False),
-    "supp-model": ModelCatalogEntry(name="supp-model", base_url="https://supp.example.com", efforts=("low", "medium"), thinking=False),
-    "core-model": ModelCatalogEntry(name="core-model", base_url="https://core.example.com", efforts=("high", "xhigh"), thinking=True),
-}
-
-BINDINGS = {
-    TierName.FAST: TierBinding(model="fast-model", default_effort="low"),
-    TierName.SUPP: TierBinding(model="supp-model", default_effort="low"),
-    TierName.CORE: TierBinding(model="core-model", default_effort="high", thinking=True),
-}
+from tests.conftest import TIER_BINDINGS, TIER_CATALOG
 
 
 @pytest.fixture(autouse=True)
@@ -91,8 +80,8 @@ def test_gate_and_process_stream_raise_lazily_when_tiers_unconfigured(
 def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(CATALOG))
-    monkeypatch.setattr(agent_module, "load_tier_bindings", lambda: dict(BINDINGS))
+    monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(TIER_CATALOG))
+    monkeypatch.setattr(agent_module, "load_tier_bindings", lambda: dict(TIER_BINDINGS))
     _stub_credentials(monkeypatch)
 
     agent = _make_agent(tmp_path)
@@ -140,7 +129,7 @@ def test_gate_self_heals_after_tiers_configured_mid_session(
     # (confirmed via a real session log: 4 identical "'fast' is not
     # configured" errors after the user had already saved all 3 bindings).
     current_bindings: dict[TierName, TierBinding] = {}
-    monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(CATALOG))
+    monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(TIER_CATALOG))
     monkeypatch.setattr(agent_module, "load_tier_bindings", lambda: dict(current_bindings))
     _stub_credentials(monkeypatch)
     # Gate.gate() would otherwise make a real network call — stub it so this
@@ -163,7 +152,7 @@ def test_gate_self_heals_after_tiers_configured_mid_session(
 
     # Simulate `/tiers` saving all three bindings mid-session (disk changes
     # under the already-running agent, nothing re-constructs it).
-    current_bindings.update(BINDINGS)
+    current_bindings.update(TIER_BINDINGS)
 
     asyncio.run(_drive_gate())  # must NOT raise now
     assert agent._gate is not None
@@ -171,8 +160,8 @@ def test_gate_self_heals_after_tiers_configured_mid_session(
 
 
 def test_construction_succeeds_when_partially_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    partial = {TierName.FAST: BINDINGS[TierName.FAST]}
-    monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(CATALOG))
+    partial = {TierName.FAST: TIER_BINDINGS[TierName.FAST]}
+    monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(TIER_CATALOG))
     monkeypatch.setattr(agent_module, "load_tier_bindings", lambda: partial)
     _stub_credentials(monkeypatch)
 

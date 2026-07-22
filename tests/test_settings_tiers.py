@@ -7,6 +7,7 @@ import pytest
 
 from agent import settings
 from agent.llm.tiers import DEFAULT_MODEL_CATALOG, ModelCatalogEntry, TierBinding, TierName
+from tests.conftest import TIER_BINDINGS, TIER_CATALOG
 
 
 @pytest.fixture(autouse=True)
@@ -79,23 +80,10 @@ def test_load_tier_bindings_empty_when_no_settings_file() -> None:
 
 # --- tiers_configured() (bug fix: "fully resolvable", not merely "has a binding") ---
 
-_CATALOG = {
-    "fast-model": ModelCatalogEntry(name="fast-model", base_url="https://fast.example.com", efforts=("low", "medium"), thinking=False),
-    "supp-model": ModelCatalogEntry(name="supp-model", base_url="https://supp.example.com", efforts=("low", "medium"), thinking=False),
-    "core-model": ModelCatalogEntry(name="core-model", base_url="https://core.example.com", efforts=("high", "xhigh"), thinking=True),
-}
-
-_BINDINGS = {
-    TierName.FAST: TierBinding(model="fast-model", default_effort="low"),
-    TierName.SUPP: TierBinding(model="supp-model", default_effort="low"),
-    TierName.CORE: TierBinding(model="core-model", default_effort="high", thinking=True),
-}
-
-
 def _seed_catalog_and_bindings() -> None:
-    for entry in _CATALOG.values():
+    for entry in TIER_CATALOG.values():
         settings.save_model_catalog_entry(entry)
-    for tier, binding in _BINDINGS.items():
+    for tier, binding in TIER_BINDINGS.items():
         settings.save_tier_binding(tier, binding)
 
 
@@ -104,9 +92,9 @@ def test_tiers_configured_false_when_no_bindings() -> None:
 
 
 def test_tiers_configured_false_when_only_partially_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    for entry in _CATALOG.values():
+    for entry in TIER_CATALOG.values():
         settings.save_model_catalog_entry(entry)
-    settings.save_tier_binding(TierName.FAST, _BINDINGS[TierName.FAST])
+    settings.save_tier_binding(TierName.FAST, TIER_BINDINGS[TierName.FAST])
     monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
 
     assert settings.tiers_configured() is False

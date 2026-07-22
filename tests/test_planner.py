@@ -1,24 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from agent.pipeline.planner import Planner
-
-
-def run(coro):
-    return asyncio.run(coro)
+from tests.conftest import mock_llm_response, run
 
 
 def _make_planner() -> Planner:
     with patch("openai.AsyncOpenAI"):
         return Planner(model="test-model", api_key="key")
-
-
-def _fake_response(raw_text: str) -> SimpleNamespace:
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw_text))])
 
 
 def test_phase1_yields_code_then_test_expert_in_order() -> None:
@@ -30,7 +23,7 @@ def test_phase1_yields_code_then_test_expert_in_order() -> None:
             {"agent": "test-expert", "instruction": "test {{step_1}}", "mission": "test the library", "verify": "mechanical"},
         ],
     })
-    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
+    planner._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
 
     graph = run(planner.plan("build a library with tests"))
 
@@ -45,7 +38,7 @@ def test_trivial_single_duty_yields_one_step_no_verify() -> None:
         "summary": "add minimal test coverage",
         "steps": [{"agent": "test-expert", "instruction": "add coverage to calcexpr", "mission": "add coverage", "verify": None}],
     })
-    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
+    planner._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
 
     graph = run(planner.plan("add minimal test coverage"))
 
@@ -59,7 +52,7 @@ def test_agent_x_seed_assigns_primary_step_to_seed_agent() -> None:
         "summary": "add coverage",
         "steps": [{"agent": "test-expert", "instruction": "add coverage", "mission": "add coverage", "verify": None}],
     })
-    mock_create = AsyncMock(return_value=_fake_response(raw))
+    mock_create = AsyncMock(return_value=mock_llm_response(raw))
     planner._client.chat.completions.create = mock_create
 
     graph = run(planner.plan("add coverage", seed="test-expert"))
@@ -72,24 +65,20 @@ def test_agent_x_seed_assigns_primary_step_to_seed_agent() -> None:
 
 
 def test_post_planning_only_agent_in_phase1_raises() -> None:
-    import pytest
-
     planner = _make_planner()
     raw = json.dumps({
         "summary": "review this",
         "steps": [{"agent": "code-refactorer", "instruction": "review the change", "mission": "review the change", "verify": None}],
     })
-    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response(raw))
+    planner._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
 
     with pytest.raises(ValueError, match="code-refactorer"):
         run(planner.plan("review this"))
 
 
 def test_no_json_object_in_output_raises() -> None:
-    import pytest
-
     planner = _make_planner()
-    planner._client.chat.completions.create = AsyncMock(return_value=_fake_response("not json at all"))
+    planner._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("not json at all"))
 
     with pytest.raises(ValueError, match="no JSON object"):
         run(planner.plan("do something"))

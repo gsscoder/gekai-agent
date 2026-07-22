@@ -9,6 +9,7 @@ instead (cold subagent run, run-tagged events on the shared bus).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +22,15 @@ _WORKING_DIR = Path(".")
 
 def run(coro):
     return asyncio.run(coro)
+
+
+@contextlib.contextmanager
+def _patched_build_agent(mock_agent):
+    with (
+        patch("agent.harness.core._build_agent", return_value=mock_agent),
+        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+    ):
+        yield
 
 
 def _call_run_subagent(agent: str, task: str = "do it", **kwargs):
@@ -46,10 +56,7 @@ def test_returns_text_from_history() -> None:
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(return_value=fake_history)
 
-    with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent),
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
-    ):
+    with _patched_build_agent(mock_agent):
         result = run(_call_run_subagent("code-expert"))
 
     assert result == "done"
@@ -63,10 +70,7 @@ def test_emits_delegation_started_then_completed_on_success() -> None:
     mock_agent.run = AsyncMock(return_value=fake_history)
     mock_bus = MagicMock()
 
-    with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent),
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
-    ):
+    with _patched_build_agent(mock_agent):
         result = run(_call_run_subagent("code-expert", task="do it", bus=mock_bus))
 
     assert result == "done"
@@ -87,10 +91,7 @@ def test_emits_delegation_completed_when_nested_run_raises() -> None:
     mock_agent.run = AsyncMock(side_effect=RuntimeError("boom"))
     mock_bus = MagicMock()
 
-    with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent),
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
-    ):
+    with _patched_build_agent(mock_agent):
         result = run(_call_run_subagent("code-expert", bus=mock_bus))
 
     assert result.startswith("[error]")

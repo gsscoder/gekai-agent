@@ -4,31 +4,24 @@ helper for the rolling thinking-preview window (agent/tui/app.py).
 
 from __future__ import annotations
 
+import pytest
+
 from agent.tui.app import _split_thinking_steps
 
 
-def test_no_terminator_yields_no_steps_and_full_tail() -> None:
-    steps, tail = _split_thinking_steps("still working through this")
-    assert steps == []
-    assert tail == "still working through this"
-
-
-def test_single_completed_sentence() -> None:
-    steps, tail = _split_thinking_steps("first I'll check the file. ")
-    assert steps == ["first I'll check the file."]
-    assert tail == ""
-
-
-def test_multiple_completed_sentences_and_leftover_tail() -> None:
-    steps, tail = _split_thinking_steps("step one. step two! then step three")
-    assert steps == ["step one.", "step two!"]
-    assert tail == "then step three"
-
-
-def test_question_mark_terminates_a_step() -> None:
-    steps, tail = _split_thinking_steps("is this right? ")
-    assert steps == ["is this right?"]
-    assert tail == ""
+@pytest.mark.parametrize(
+    "text, expected_steps, expected_tail",
+    [
+        ("still working through this", [], "still working through this"),
+        ("first I'll check the file. ", ["first I'll check the file."], ""),
+        ("step one. step two! then step three", ["step one.", "step two!"], "then step three"),
+        ("is this right? ", ["is this right?"], ""),
+    ],
+)
+def test_split_thinking_steps(text: str, expected_steps: list[str], expected_tail: str) -> None:
+    steps, tail = _split_thinking_steps(text)
+    assert steps == expected_steps
+    assert tail == expected_tail
 
 
 def test_incremental_calls_accumulate_like_streamed_tokens() -> None:

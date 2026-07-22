@@ -24,13 +24,17 @@ def _fake_response(content: str) -> SimpleNamespace:
     return SimpleNamespace(choices=[choice], usage=None)
 
 
+def _parse_text_blocks(content: str) -> list[TextBlock]:
+    response = _fake_response(content)
+    result = OpenAIAdapter.parse_response(response)
+    text_blocks = [b for b in result.content if isinstance(b, TextBlock)]
+    return text_blocks
+
+
 def test_parse_response_strips_leaked_tool_markup_keeps_surrounding_text() -> None:
     content = f"Let me check that.\n{LEAKED_MARKUP}\nDone."
-    response = _fake_response(content)
+    text_blocks = _parse_text_blocks(content)
 
-    result = OpenAIAdapter.parse_response(response)
-
-    text_blocks = [b for b in result.content if isinstance(b, TextBlock)]
     assert len(text_blocks) == 1
     assert "｜｜DSML｜｜" not in text_blocks[0].text
     assert "Let me check that." in text_blocks[0].text
@@ -38,20 +42,14 @@ def test_parse_response_strips_leaked_tool_markup_keeps_surrounding_text() -> No
 
 
 def test_parse_response_drops_text_block_when_only_leaked_markup() -> None:
-    response = _fake_response(LEAKED_MARKUP)
+    text_blocks = _parse_text_blocks(LEAKED_MARKUP)
 
-    result = OpenAIAdapter.parse_response(response)
-
-    text_blocks = [b for b in result.content if isinstance(b, TextBlock)]
     assert text_blocks == []
 
 
 def test_parse_response_plain_text_unaffected() -> None:
-    response = _fake_response("Just a normal answer, no markup here.")
+    text_blocks = _parse_text_blocks("Just a normal answer, no markup here.")
 
-    result = OpenAIAdapter.parse_response(response)
-
-    text_blocks = [b for b in result.content if isinstance(b, TextBlock)]
     assert len(text_blocks) == 1
     assert text_blocks[0].text == "Just a normal answer, no markup here."
 

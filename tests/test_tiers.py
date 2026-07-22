@@ -10,46 +10,50 @@ from agent.llm.tiers import (
 )
 
 
-def test_degenerate_policy_is_non_scalable() -> None:
-    """A one-tier space (a future file-explorer's allowed=(fast,)) has
-    exactly one legal tier — the whole mobility model, no separate flag."""
-    policy = TierPolicy(default=TierName.FAST, allowed=(TierName.FAST,))
-    assert policy.allowed == (TierName.FAST,)
-    assert policy.default is TierName.FAST
+@pytest.mark.parametrize(
+    "default, allowed",
+    [
+        # A one-tier space (a future file-explorer's allowed=(fast,)) has
+        # exactly one legal tier — the whole mobility model, no separate flag.
+        (TierName.FAST, (TierName.FAST,)),
+        (TierName.SUPP, (TierName.SUPP, TierName.CORE)),
+    ],
+)
+def test_policy_accepts_default_within_allowed(default: TierName, allowed: tuple[TierName, ...]) -> None:
+    policy = TierPolicy(default=default, allowed=allowed)
+    assert policy.allowed == allowed
+    assert policy.default is default
 
 
-def test_multi_tier_policy_allows_movement_within_declared_tiers() -> None:
-    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
-    assert policy.allowed == (TierName.SUPP, TierName.CORE)
-    assert policy.default is TierName.SUPP
+@pytest.mark.parametrize(
+    "default, allowed, match",
+    [
+        (TierName.CORE, (TierName.FAST, TierName.SUPP), "is not in allowed tiers"),
+        (TierName.FAST, (TierName.CORE, TierName.FAST), "ascending"),
+        (TierName.FAST, (TierName.FAST, TierName.FAST), "ascending"),
+    ],
+)
+def test_policy_rejects_invalid_configuration(
+    default: TierName, allowed: tuple[TierName, ...], match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        TierPolicy(default=default, allowed=allowed)
 
 
-def test_policy_rejects_default_not_in_allowed() -> None:
-    with pytest.raises(ValueError, match="is not in allowed tiers"):
-        TierPolicy(default=TierName.CORE, allowed=(TierName.FAST, TierName.SUPP))
-
-
-def test_policy_rejects_non_ascending_allowed() -> None:
-    with pytest.raises(ValueError, match="ascending"):
-        TierPolicy(default=TierName.FAST, allowed=(TierName.CORE, TierName.FAST))
-
-
-def test_policy_rejects_duplicate_allowed() -> None:
-    with pytest.raises(ValueError, match="ascending"):
-        TierPolicy(default=TierName.FAST, allowed=(TierName.FAST, TierName.FAST))
-
-
-def test_suitability_defaults_to_ok_for_unlisted_model() -> None:
-    assert suitability("some-unlisted-model", TierName.CORE) == "ok"
-
-
-def test_suitability_known_model_verdicts() -> None:
-    # deepseek-v4-flash is the FAST/SUPP-tier model, deepseek-v4-pro is
-    # reasoning-only (can't disable thinking) so FAST/SUPP are deprecated.
-    assert suitability("deepseek-v4-flash", TierName.FAST) == "ok"
-    assert suitability("deepseek-v4-flash", TierName.CORE) == "warning"
-    assert suitability("deepseek-v4-pro", TierName.FAST) == "deprecated"
-    assert suitability("deepseek-v4-pro", TierName.CORE) == "ok"
+@pytest.mark.parametrize(
+    "model, tier, expected",
+    [
+        ("some-unlisted-model", TierName.CORE, "ok"),
+        # deepseek-v4-flash is the FAST/SUPP-tier model, deepseek-v4-pro is
+        # reasoning-only (can't disable thinking) so FAST/SUPP are deprecated.
+        ("deepseek-v4-flash", TierName.FAST, "ok"),
+        ("deepseek-v4-flash", TierName.CORE, "warning"),
+        ("deepseek-v4-pro", TierName.FAST, "deprecated"),
+        ("deepseek-v4-pro", TierName.CORE, "ok"),
+    ],
+)
+def test_suitability_known_model_verdicts(model: str, tier: TierName, expected: str) -> None:
+    assert suitability(model, tier) == expected
 
 
 def test_suitability_thinking_override(monkeypatch: pytest.MonkeyPatch) -> None:

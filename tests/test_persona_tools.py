@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent.persona import SYSTEM_PROMPT, _IDENTITY_MAIN, _MAIN_DIRECTIVES, _SHARED_BODY, render_tool_instruction
 from agent.tools.catalog import ALL_TOOLS, EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
@@ -60,16 +62,17 @@ def test_empty_toolset_yields_empty_instruction():
     assert render_tool_instruction([]) == ""
 
 
-def test_shell_kind_powershell_adds_powershell_fact_only():
-    text = render_tool_instruction(SHELL_TOOLS, shell_kind="powershell")
-    assert "the shell is PowerShell" in text
-    assert "the shell is bash" not in text
-
-
-def test_shell_kind_bash_adds_bash_fact_only():
-    text = render_tool_instruction(SHELL_TOOLS, shell_kind="bash")
-    assert "the shell is bash" in text
-    assert "the shell is PowerShell" not in text
+@pytest.mark.parametrize(
+    "shell_kind,expected,other",
+    [
+        ("powershell", "the shell is PowerShell", "the shell is bash"),
+        ("bash", "the shell is bash", "the shell is PowerShell"),
+    ],
+)
+def test_shell_kind_adds_matching_fact_only(shell_kind, expected, other):
+    text = render_tool_instruction(SHELL_TOOLS, shell_kind=shell_kind)
+    assert expected in text
+    assert other not in text
 
 
 def test_shell_kind_fact_does_not_leak_without_shell_trigger():

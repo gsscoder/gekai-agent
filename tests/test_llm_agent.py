@@ -70,24 +70,55 @@ def _collect_agent_stopped(bus: EventBus) -> list[AgentStopped]:
     return collected
 
 
-def test_run_loop_normal_completion_has_budget_exhausted_false() -> None:
-    responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
+def _make_agent(
+    responses: list[CompletionResponse], max_iterations: int = 3
+) -> tuple[Agent, "_ScriptedProvider", list[AgentStopped]]:
     provider = _ScriptedProvider(responses)
     bus = EventBus()
     agent = Agent(
         provider=provider,
         model="test-model",
         tools=_build_registry(),
-        max_iterations=3,
+        max_iterations=max_iterations,
         event_bus=bus,
     )
-    stopped = _collect_agent_stopped(bus)
+    return agent, provider, _collect_agent_stopped(bus)
+
+
+def _assert_stopped_once(stopped: list[AgentStopped], stop_reason: str, budget_exhausted: bool) -> None:
+    assert len(stopped) == 1
+    assert stopped[0].stop_reason == stop_reason
+    assert stopped[0].budget_exhausted is budget_exhausted
+
+
+def _assert_final_call_dropped_tools(provider: "_ScriptedProvider", max_iterations: int) -> None:
+    assert len(provider.calls) == max_iterations + 1
+    assert provider.calls[-1]["tools"] is None
+
+
+def _make_agent_no_bus(responses: list[CompletionResponse]) -> tuple[Agent, "_ScriptedProvider"]:
+    provider = _ScriptedProvider(responses)
+    agent = Agent(
+        provider=provider,
+        model="test-model",
+        tools=_build_registry(),
+        max_iterations=3,
+    )
+    return agent, provider
+
+
+def _assert_no_tools_on_call(provider: "_ScriptedProvider", index: int) -> None:
+    assert len(provider.calls) == 2
+    assert provider.calls[index]["tools"] is None
+
+
+def test_run_loop_normal_completion_has_budget_exhausted_false() -> None:
+    responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
+    agent, provider, stopped = _make_agent(responses)
 
     run(agent.run("do the thing"))
 
-    assert len(stopped) == 1
-    assert stopped[0].stop_reason == "complete"
-    assert stopped[0].budget_exhausted is False
+    _assert_stopped_once(stopped, "complete", False)
 
 
 def test_run_loop_salvages_closing_text_when_budget_exhausted() -> None:
@@ -99,48 +130,25 @@ def test_run_loop_salvages_closing_text_when_budget_exhausted() -> None:
             stop_reason="end_turn",
         )
     )
-    provider = _ScriptedProvider(responses)
-    bus = EventBus()
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=max_iterations,
-        event_bus=bus,
-    )
-    stopped = _collect_agent_stopped(bus)
+    agent, provider, stopped = _make_agent(responses, max_iterations)
 
     messages = run(agent.run("do the thing"))
 
     assert "done: salvaged" in agent._assistant_text(messages)
-    assert len(provider.calls) == max_iterations + 1
-    assert provider.calls[-1]["tools"] is None
-    assert len(stopped) == 1
-    assert stopped[0].stop_reason == "complete"
-    assert stopped[0].budget_exhausted is True
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "complete", True)
 
 
 def test_run_loop_raises_when_salvage_also_empty() -> None:
     max_iterations = 3
     responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
     responses.append(CompletionResponse(content=[], stop_reason="end_turn"))
-    provider = _ScriptedProvider(responses)
-    bus = EventBus()
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=max_iterations,
-        event_bus=bus,
-    )
-    stopped = _collect_agent_stopped(bus)
+    agent, provider, stopped = _make_agent(responses, max_iterations)
 
     with pytest.raises(MaxIterationsExceeded):
         run(agent.run("do the thing"))
 
-    assert len(stopped) == 1
-    assert stopped[0].stop_reason == "max_iterations"
-    assert stopped[0].budget_exhausted is True
+    _assert_stopped_once(stopped, "max_iterations", True)
 
 
 def test_run_stream_salvages_closing_text_when_budget_exhausted() -> None:
@@ -152,16 +160,7 @@ def test_run_stream_salvages_closing_text_when_budget_exhausted() -> None:
             stop_reason="end_turn",
         )
     )
-    provider = _ScriptedProvider(responses)
-    bus = EventBus()
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=max_iterations,
-        event_bus=bus,
-    )
-    stopped = _collect_agent_stopped(bus)
+    agent, provider, stopped = _make_agent(responses, max_iterations)
 
     async def _drain() -> None:
         async for _ in agent.run_stream("do the thing"):
@@ -169,11 +168,8 @@ def test_run_stream_salvages_closing_text_when_budget_exhausted() -> None:
 
     run(_drain())
 
-    assert len(provider.calls) == max_iterations + 1
-    assert provider.calls[-1]["tools"] is None
-    assert len(stopped) == 1
-    assert stopped[0].stop_reason == "complete"
-    assert stopped[0].budget_exhausted is True
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "complete", True)
 
 
 def test_run_stream_with_result_salvages_closing_text_when_budget_exhausted() -> None:
@@ -185,16 +181,7 @@ def test_run_stream_with_result_salvages_closing_text_when_budget_exhausted() ->
             stop_reason="end_turn",
         )
     )
-    provider = _ScriptedProvider(responses)
-    bus = EventBus()
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=max_iterations,
-        event_bus=bus,
-    )
-    stopped = _collect_agent_stopped(bus)
+    agent, provider, stopped = _make_agent(responses, max_iterations)
 
     async def _drain() -> AgentResultEvent:
         result_event: AgentResultEvent | None = None
@@ -208,11 +195,8 @@ def test_run_stream_with_result_salvages_closing_text_when_budget_exhausted() ->
 
     assert result_event.result.stop_reason == "complete"
     assert "done: salvaged" in result_event.result.text
-    assert len(provider.calls) == max_iterations + 1
-    assert provider.calls[-1]["tools"] is None
-    assert len(stopped) == 1
-    assert stopped[0].stop_reason == "complete"
-    assert stopped[0].budget_exhausted is True
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "complete", True)
 
 
 def test_run_loop_nudges_when_early_complete_is_textless() -> None:
@@ -220,18 +204,11 @@ def test_run_loop_nudges_when_early_complete_is_textless() -> None:
         CompletionResponse(content=[], stop_reason="end_turn"),
         CompletionResponse(content=[TextBlock(text="nudged answer")], stop_reason="end_turn"),
     ]
-    provider = _ScriptedProvider(responses)
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=3,
-    )
+    agent, provider = _make_agent_no_bus(responses)
 
     messages = run(agent.run("do the thing"))
 
-    assert len(provider.calls) == 2
-    assert provider.calls[1]["tools"] is None
+    _assert_no_tools_on_call(provider, 1)
     assert "nudged answer" in agent._assistant_text(messages)
 
 
@@ -240,13 +217,7 @@ def test_run_stream_nudges_when_early_complete_is_textless() -> None:
         CompletionResponse(content=[], stop_reason="end_turn"),
         CompletionResponse(content=[TextBlock(text="nudged answer")], stop_reason="end_turn"),
     ]
-    provider = _ScriptedProvider(responses)
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=3,
-    )
+    agent, provider = _make_agent_no_bus(responses)
 
     async def _drain() -> None:
         async for _ in agent.run_stream("do the thing"):
@@ -254,24 +225,14 @@ def test_run_stream_nudges_when_early_complete_is_textless() -> None:
 
     run(_drain())
 
-    assert len(provider.calls) == 2
-    assert provider.calls[1]["tools"] is None
+    _assert_no_tools_on_call(provider, 1)
 
 
 def test_run_stream_with_result_raises_when_salvage_also_empty() -> None:
     max_iterations = 3
     responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
     responses.append(CompletionResponse(content=[], stop_reason="end_turn"))
-    provider = _ScriptedProvider(responses)
-    bus = EventBus()
-    agent = Agent(
-        provider=provider,
-        model="test-model",
-        tools=_build_registry(),
-        max_iterations=max_iterations,
-        event_bus=bus,
-    )
-    stopped = _collect_agent_stopped(bus)
+    agent, provider, stopped = _make_agent(responses, max_iterations)
 
     async def _drain() -> AgentResultEvent:
         result_event: AgentResultEvent | None = None
@@ -284,8 +245,5 @@ def test_run_stream_with_result_raises_when_salvage_also_empty() -> None:
     result_event = run(_drain())
 
     assert result_event.result.stop_reason == "max_iterations"
-    assert len(provider.calls) == max_iterations + 1
-    assert provider.calls[-1]["tools"] is None
-    assert len(stopped) == 1
-    assert stopped[0].stop_reason == "max_iterations"
-    assert stopped[0].budget_exhausted is True
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "max_iterations", True)

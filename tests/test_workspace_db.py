@@ -42,6 +42,25 @@ def _insert_file(
     return file_id
 
 
+def _write_stale_schema_db(tmp_path: Path) -> None:
+    # DB exists with an older schema_version — ensure()/handle_db_upgrade() rebuild
+    # files/file_keywords rather than migrating: the cache is disposable, stale rows are dropped
+    db_path = tmp_path / ".gekai" / "workspace.db"
+    (tmp_path / ".gekai").mkdir()
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE)")
+    conn.execute(
+        "CREATE TABLE file_keywords ("
+        "file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, "
+        "keyword TEXT NOT NULL, UNIQUE(file_id, keyword))"
+    )
+    conn.execute("INSERT INTO _meta VALUES ('schema_version', 'old-version')")
+    conn.execute("INSERT INTO files(path) VALUES ('existing/file.py')")
+    conn.commit()
+    conn.close()
+
+
 def test_ensure_creates_schema(tmp_path: Path) -> None:
     conn = ensure(tmp_path)
     tables = _tables(conn)
@@ -81,22 +100,7 @@ def test_ensure_idempotent(tmp_path: Path) -> None:
 
 
 def test_ensure_rebuilds_on_version_mismatch(tmp_path: Path) -> None:
-    # DB exists with an older schema_version — ensure() rebuilds files/file_keywords
-    # rather than migrating: the cache is disposable, stale rows are dropped
-    db_path = tmp_path / ".gekai" / "workspace.db"
-    (tmp_path / ".gekai").mkdir()
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    conn.execute("CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE)")
-    conn.execute(
-        "CREATE TABLE file_keywords ("
-        "file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, "
-        "keyword TEXT NOT NULL, UNIQUE(file_id, keyword))"
-    )
-    conn.execute("INSERT INTO _meta VALUES ('schema_version', 'old-version')")
-    conn.execute("INSERT INTO files(path) VALUES ('existing/file.py')")
-    conn.commit()
-    conn.close()
+    _write_stale_schema_db(tmp_path)
 
     conn = ensure(tmp_path)
     row = conn.execute(
@@ -114,20 +118,7 @@ def test_ensure_rebuilds_on_version_mismatch(tmp_path: Path) -> None:
 
 
 def test_handle_db_upgrade_rebuilds_on_version_mismatch(tmp_path: Path) -> None:
-    db_path = tmp_path / ".gekai" / "workspace.db"
-    (tmp_path / ".gekai").mkdir()
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    conn.execute("CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE)")
-    conn.execute(
-        "CREATE TABLE file_keywords ("
-        "file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, "
-        "keyword TEXT NOT NULL, UNIQUE(file_id, keyword))"
-    )
-    conn.execute("INSERT INTO _meta VALUES ('schema_version', 'old-version')")
-    conn.execute("INSERT INTO files(path) VALUES ('existing/file.py')")
-    conn.commit()
-    conn.close()
+    _write_stale_schema_db(tmp_path)
 
     handle_db_upgrade(tmp_path)
 

@@ -39,19 +39,20 @@ class TestShellSpec:
 # ---------------------------------------------------------------------------
 
 class TestResolveShell:
-    def test_windows_prefers_pwsh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.fixture(autouse=True)
+    def _clear_shell_cache(self):
         resolve_shell.cache_clear()
+        yield
+        resolve_shell.cache_clear()
+
+    def test_windows_prefers_pwsh(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pwsh" if name == "pwsh" else None)
-        try:
-            spec = resolve_shell()
-            assert spec.kind == "powershell"
-            assert spec.path == "/usr/bin/pwsh"
-        finally:
-            resolve_shell.cache_clear()
+        spec = resolve_shell()
+        assert spec.kind == "powershell"
+        assert spec.path == "/usr/bin/pwsh"
 
     def test_windows_falls_back_to_powershell_exe(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        resolve_shell.cache_clear()
         monkeypatch.setattr(sys, "platform", "win32")
 
         def _which(name: str) -> str | None:
@@ -62,36 +63,24 @@ class TestResolveShell:
             return None
 
         monkeypatch.setattr(shutil, "which", _which)
-        try:
-            spec = resolve_shell()
-            assert spec.kind == "powershell"
-            assert spec.path == r"C:\Windows\System32\powershell.exe"
-        finally:
-            resolve_shell.cache_clear()
+        spec = resolve_shell()
+        assert spec.kind == "powershell"
+        assert spec.path == r"C:\Windows\System32\powershell.exe"
 
     def test_windows_raises_if_no_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        resolve_shell.cache_clear()
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setattr(shutil, "which", lambda name: None)
-        try:
-            with pytest.raises(ValueError):
-                resolve_shell()
-        finally:
-            resolve_shell.cache_clear()
+        with pytest.raises(ValueError):
+            resolve_shell()
 
     def test_posix_uses_shell_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        resolve_shell.cache_clear()
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("SHELL", "/bin/zsh")
-        try:
-            spec = resolve_shell()
-            assert spec.kind == "sh"
-            assert spec.path == "/bin/zsh"
-        finally:
-            resolve_shell.cache_clear()
+        spec = resolve_shell()
+        assert spec.kind == "sh"
+        assert spec.path == "/bin/zsh"
 
     def test_posix_falls_back_to_bash(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        resolve_shell.cache_clear()
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("SHELL", raising=False)
 
@@ -101,15 +90,11 @@ class TestResolveShell:
             return None
 
         monkeypatch.setattr(shutil, "which", _which)
-        try:
-            spec = resolve_shell()
-            assert spec.kind == "bash"
-            assert spec.path == "/usr/bin/bash"
-        finally:
-            resolve_shell.cache_clear()
+        spec = resolve_shell()
+        assert spec.kind == "bash"
+        assert spec.path == "/usr/bin/bash"
 
     def test_posix_falls_back_to_sh(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        resolve_shell.cache_clear()
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("SHELL", raising=False)
 
@@ -119,23 +104,16 @@ class TestResolveShell:
             return None
 
         monkeypatch.setattr(shutil, "which", _which)
-        try:
-            spec = resolve_shell()
-            assert spec.kind == "sh"
-            assert spec.path == "/bin/sh"
-        finally:
-            resolve_shell.cache_clear()
+        spec = resolve_shell()
+        assert spec.kind == "sh"
+        assert spec.path == "/bin/sh"
 
     def test_posix_raises_if_no_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        resolve_shell.cache_clear()
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("SHELL", raising=False)
         monkeypatch.setattr(shutil, "which", lambda name: None)
-        try:
-            with pytest.raises(ValueError):
-                resolve_shell()
-        finally:
-            resolve_shell.cache_clear()
+        with pytest.raises(ValueError):
+            resolve_shell()
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +122,6 @@ class TestResolveShell:
 
 def _echo_cmd() -> str:
     return "echo hello" if sys.platform != "win32" else "Write-Host hello"
-
-
-def _exit1_cmd() -> str:
-    return "exit 1"
 
 
 def _sleep_cmd() -> str:
@@ -164,7 +138,7 @@ class TestRunCommand:
         assert "hello" in result
 
     def test_nonzero_exit(self, tmp_path: Path) -> None:
-        result = run(_run_command(_exit1_cmd(), working_dir=tmp_path))
+        result = run(_run_command("exit 1", working_dir=tmp_path))
         assert "exit: 1" in result
 
     def test_timeout(self, tmp_path: Path) -> None:
@@ -181,15 +155,14 @@ class TestRunCommand:
 # ---------------------------------------------------------------------------
 
 class TestForbiddenToken:
-    def test_detects_forbidden_path(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "command, expected",
+        [("echo secret.txt", "secret.txt"), ("echo hello world", None)],
+    )
+    def test_forbidden_token(self, tmp_path: Path, command: str, expected: str | None) -> None:
         (tmp_path / ".aiignore").write_text("secret.txt\n")
         rules = _load_ignore_rules(tmp_path)
-        assert _forbidden_token("echo secret.txt", tmp_path, rules) == "secret.txt"
-
-    def test_allows_normal_command(self, tmp_path: Path) -> None:
-        (tmp_path / ".aiignore").write_text("secret.txt\n")
-        rules = _load_ignore_rules(tmp_path)
-        assert _forbidden_token("echo hello world", tmp_path, rules) is None
+        assert _forbidden_token(command, tmp_path, rules) == expected
 
 
 class TestVenvEnv:

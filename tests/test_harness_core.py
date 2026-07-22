@@ -103,7 +103,7 @@ def _make_session(tmp_path: Path) -> Session:
     )
 
 
-def _make_harness() -> Harness:
+def _make_harness(estimator: ResolvedTier | None = None) -> Harness:
     """No estimator wired — `Harness.stream(subagent=None)` takes the
     "trivial (no estimator)" branch straight to the single-agent path,
     exactly as the pre-plan-27 flat behavior these tests were written
@@ -122,7 +122,12 @@ def _make_harness() -> Harness:
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         main_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        estimator=estimator,
     )
+
+
+def _only(events: list, cls: type) -> list:
+    return [e for e in events if isinstance(e, cls)]
 
 
 async def _drain(harness: Harness, session: Session, prompt: str) -> list[AgentEvent | str]:
@@ -146,7 +151,7 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_finds_text(
     harness = _make_harness()
     collected = run(_drain(harness, session, "do something"))
 
-    budget_events = [e for e in collected if isinstance(e, BudgetExhaustedEvent)]
+    budget_events = _only(collected, BudgetExhaustedEvent)
     assert len(budget_events) == 1
     assert not any(isinstance(e, MaxIterationsEvent) for e in collected)
     assert collected[-1] == "salvaged answer"
@@ -164,7 +169,7 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_also_fails(
     harness = _make_harness()
     collected = run(_drain(harness, session, "do something"))
 
-    budget_events = [e for e in collected if isinstance(e, BudgetExhaustedEvent)]
+    budget_events = _only(collected, BudgetExhaustedEvent)
     assert len(budget_events) == 1
     assert any(isinstance(e, MaxIterationsEvent) for e in collected)
 
@@ -187,7 +192,7 @@ def test_write_file_emits_diff_event(
     harness = _make_harness()
     collected = run(_drain(harness, session, "write hello.py"))
 
-    diff_events = [e for e in collected if isinstance(e, DiffEvent)]
+    diff_events = _only(collected, DiffEvent)
     assert len(diff_events) == 1
     assert diff_events[0].path == "hello.py"
 
@@ -208,25 +213,9 @@ def test_coding_prompt_emits_directive_pump_event_on_main_dispatch(
     harness = _make_harness()
     collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
 
-    pump_events = [e for e in collected if isinstance(e, DirectivePumpEvent)]
+    pump_events = _only(collected, DirectivePumpEvent)
     assert len(pump_events) == 1
     assert pump_events[0].domains == ["coding"]
-
-
-def _make_mutate_harness() -> Harness:
-    """Like `_make_harness`, but with an estimator wired so `Harness.stream`
-    can route into the "mutate" branch (`_stream_graph`) instead of the
-    no-graph path."""
-    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
-    estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
-    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
-    return Harness(
-        resolve=lambda _tier: tier,
-        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
-        main_dispatch_policy=policy,
-        subagent_dispatch_policy=policy,
-        estimator=estimator_tier,
-    )
 
 
 def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
@@ -243,7 +232,7 @@ def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
     place a real pump for the graph path would happen -- and only for
     agent_name == "main" steps), so under the fix no `DirectivePumpEvent`
     should be emitted at all for this turn."""
-    harness = _make_mutate_harness()
+    harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
         summary="fix the bug",

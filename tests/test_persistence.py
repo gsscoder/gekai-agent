@@ -27,6 +27,10 @@ def _make_session(tmp_path: Path) -> Session:
     return s
 
 
+def _first_entry(s: Session) -> dict:
+    return json.loads(session_file(s).read_text().splitlines()[0])
+
+
 # ---------------------------------------------------------------------------
 # append_message injects kind="turn"
 # ---------------------------------------------------------------------------
@@ -34,8 +38,7 @@ def _make_session(tmp_path: Path) -> Session:
 def test_append_message_has_kind_turn(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_message(s, {"role": "user", "content": "hello"})
-    lines = session_file(s).read_text().splitlines()
-    entry = json.loads(lines[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "turn"
     assert entry["role"] == "user"
     assert entry["content"] == "hello"
@@ -48,7 +51,7 @@ def test_append_message_has_kind_turn(tmp_path: Path) -> None:
 def test_append_command_round_trip(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_command(s, "/config:gate off")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "command"
     assert entry["content"] == "/config:gate off"
     assert "timestamp" in entry
@@ -57,7 +60,7 @@ def test_append_command_round_trip(tmp_path: Path) -> None:
 def test_append_event_round_trip(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_event(s, "gate blocked: 6 areas", source="gate")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "event"
     assert entry["source"] == "gate"
     assert entry["content"] == "gate blocked: 6 areas"
@@ -75,7 +78,7 @@ def test_append_diff_round_trip(tmp_path: Path) -> None:
         "src/foo.py",
         [DiffLine(kind="add", text="+ x"), DiffLine(kind="del", text="- y")],
     )
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "diff"
     assert entry["path"] == "src/foo.py"
     assert entry["lines"] == [{"k": "add", "t": "+ x"}, {"k": "del", "t": "- y"}]
@@ -86,7 +89,7 @@ def test_append_diff_round_trip(tmp_path: Path) -> None:
 def test_append_diff_with_turn_id(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_diff(s, "src/foo.py", [DiffLine(kind="context", text=" unchanged")], turn="abc123")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["turn"] == "abc123"
 
 
@@ -99,7 +102,7 @@ def test_append_subagent_start_round_trip(tmp_path: Path) -> None:
         bg_color="#3a6ea5",
         ui_label="fix the bug",
     )
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "subagent_start"
     assert entry["namespace"] == "code"
     assert entry["name"] == "code-fixer"
@@ -118,14 +121,14 @@ def test_append_subagent_start_with_turn_id(tmp_path: Path) -> None:
         ui_label="fix the bug",
         turn="abc123",
     )
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["turn"] == "abc123"
 
 
 def test_append_subagent_done_round_trip(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_subagent_done(s, "3 tools · 1.2k tokens · 4.1s", bg_color="#3a6ea5")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "subagent_done"
     assert entry["summary"] == "3 tools · 1.2k tokens · 4.1s"
     assert entry["bg_color"] == "#3a6ea5"
@@ -135,14 +138,14 @@ def test_append_subagent_done_round_trip(tmp_path: Path) -> None:
 def test_append_subagent_done_with_turn_id(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_subagent_done(s, "done", bg_color="#3a6ea5", turn="abc123")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["turn"] == "abc123"
 
 
 def test_append_operation_round_trip(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_operation(s, "* Crafted for 2.3s (3 tools)", "#00ff88")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["kind"] == "operation"
     assert entry["content"] == "* Crafted for 2.3s (3 tools)"
     assert entry["color"] == "#00ff88"
@@ -152,7 +155,7 @@ def test_append_operation_round_trip(tmp_path: Path) -> None:
 def test_append_operation_with_turn_id(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_operation(s, "* Crafted for 2.3s (3 tools)", "#00ff88", turn="abc123")
-    entry = json.loads(session_file(s).read_text().splitlines()[0])
+    entry = _first_entry(s)
     assert entry["turn"] == "abc123"
 
 

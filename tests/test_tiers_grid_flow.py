@@ -158,6 +158,15 @@ def _messages(conversation: ScrollableContainer) -> list[MessageWidget]:
     return [w for w in conversation.children if isinstance(w, MessageWidget)]
 
 
+async def _open_panel(app: GekaiApp, pilot: Pilot) -> tuple[ScrollableContainer, TiersPanel]:
+    await pilot.pause()
+    conversation = app.query_one("#conversation", ScrollableContainer)
+    await app._open_tiers_panel(conversation)
+    await pilot.pause()
+    panel = app.query_one(TiersPanel)
+    return conversation, panel
+
+
 def _goto(app: GekaiApp, panel: TiersPanel, row: int, column: str) -> None:
     """Drives the grid cursor to (row, column) via the real
     `GekaiApp.action_navigate_*` methods — exercises the actual app.py
@@ -244,11 +253,7 @@ async def test_happy_path_commits_all_three_tiers_to_disk(tmp_path: Path, monkey
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         _goto(app, panel, 0, "model")
         await app.action_confirm_or_submit()  # FAST -> model-a
@@ -311,11 +316,7 @@ async def test_shared_key_across_tiers_needs_only_one_prompt(tmp_path: Path, mon
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         _goto(app, panel, 0, "model")
         await app.action_confirm_or_submit()  # FAST -> model-a
@@ -358,11 +359,7 @@ async def test_commit_blocked_when_tiers_incomplete(tmp_path: Path, monkeypatch:
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         # Only FAST configured; SUPP/CORE left unset.
         _goto(app, panel, 0, "model")
@@ -394,11 +391,7 @@ async def test_cancel_discards_everything(tmp_path: Path, monkeypatch: pytest.Mo
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         await _configure_all_tiers_fully(app, panel, pilot, monkeypatch)
 
@@ -426,11 +419,7 @@ async def test_ok_with_no_changes_reports_kept_actual_tiers(tmp_path: Path, monk
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         await _configure_all_tiers_fully(app, panel, pilot, monkeypatch)
         _goto(app, panel, 3, "ok")
@@ -442,9 +431,7 @@ async def test_ok_with_no_changes_reports_kept_actual_tiers(tmp_path: Path, monk
 
         # Re-open /tiers on the exact configuration just saved, touch
         # nothing, and hit [ok] again.
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
         _goto(app, panel, 3, "ok")
         await app.action_confirm_or_submit()
         await pilot.pause()
@@ -488,10 +475,7 @@ async def test_commit_is_atomic_when_a_later_tier_fails_validation(
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
+        conversation, _ = await _open_panel(app, pilot)
 
         edit = app._tiers_edit
         assert edit is not None
@@ -635,11 +619,7 @@ async def test_navigating_away_discards_in_progress_key_edit(tmp_path: Path, mon
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         _goto(app, panel, 0, "model")
         await app.action_confirm_or_submit()  # FAST -> model-a
@@ -673,11 +653,7 @@ async def test_manual_typing_does_nothing_only_p_pastes(tmp_path: Path, monkeypa
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         _goto(app, panel, 0, "model")
         await app.action_confirm_or_submit()  # FAST -> model-a
@@ -718,11 +694,7 @@ async def test_paste_keeps_only_first_line_of_a_multiline_clipboard(
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         _goto(app, panel, 0, "model")
         await app.action_confirm_or_submit()  # FAST -> model-a
@@ -747,11 +719,7 @@ async def test_paste_of_empty_clipboard_shows_a_hint_and_leaves_buffer_empty(
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
-        await pilot.pause()
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        await app._open_tiers_panel(conversation)
-        await pilot.pause()
-        panel = app.query_one(TiersPanel)
+        conversation, panel = await _open_panel(app, pilot)
 
         _goto(app, panel, 0, "model")
         await app.action_confirm_or_submit()  # FAST -> model-a

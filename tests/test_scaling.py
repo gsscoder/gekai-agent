@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import itertools
 
+import pytest
+
 from agent.harness.scaling import WorkSignal, _sequencer_signal, node_signal, scale
 from agent.llm.tiers import TierName, TierPolicy
 from agent.pipeline.plan import Task
@@ -82,38 +84,29 @@ def _task(verify: str | None) -> Task:
     return Task(agent="main", instruction="do the thing", mission="do the thing quickly", verify=verify)
 
 
-def test_node_signal_promotes_on_mechanical_verify() -> None:
-    assert node_signal(_task("mechanical")) == WorkSignal(direction=1)
+@pytest.mark.parametrize(
+    "verify,expected",
+    [
+        ("mechanical", WorkSignal(direction=1)),
+        (None, WorkSignal()),
+        # a post-planning verify/repair agent name, not the literal "mechanical"
+        ("code-reviewer", WorkSignal()),
+    ],
+)
+def test_node_signal(verify: str | None, expected: WorkSignal) -> None:
+    assert node_signal(_task(verify)) == expected
 
 
-def test_node_signal_neutral_when_no_verify() -> None:
-    assert node_signal(_task(None)) == WorkSignal()
-
-
-def test_node_signal_neutral_for_other_verify_agent() -> None:
-    # a post-planning verify/repair agent name, not the literal "mechanical"
-    assert node_signal(_task("code-reviewer")) == WorkSignal()
-
-
-def test_sequencer_signal_demotes_short_simple_prompt() -> None:
-    assert _sequencer_signal("rename this variable") == WorkSignal(direction=-1)
-
-
-def test_sequencer_signal_neutral_on_multi_step_prompt() -> None:
-    assert _sequencer_signal("add a login endpoint and write tests for it") == WorkSignal()
-
-
-def test_sequencer_signal_neutral_on_long_prompt() -> None:
-    long_prompt = " ".join(["word"] * 20)
-    assert _sequencer_signal(long_prompt) == WorkSignal()
-
-
-def test_sequencer_signal_boundary_word_count_demotes() -> None:
-    # exactly at the word-count limit, with no multi-step language: demote
-    prompt = " ".join(["word"] * 15)
-    assert _sequencer_signal(prompt) == WorkSignal(direction=-1)
-
-
-def test_sequencer_signal_one_over_boundary_stays_neutral() -> None:
-    prompt = " ".join(["word"] * 16)
-    assert _sequencer_signal(prompt) == WorkSignal()
+@pytest.mark.parametrize(
+    "prompt,expected",
+    [
+        ("rename this variable", WorkSignal(direction=-1)),
+        ("add a login endpoint and write tests for it", WorkSignal()),
+        (" ".join(["word"] * 20), WorkSignal()),
+        # exactly at the word-count limit, with no multi-step language: demote
+        (" ".join(["word"] * 15), WorkSignal(direction=-1)),
+        (" ".join(["word"] * 16), WorkSignal()),
+    ],
+)
+def test_sequencer_signal(prompt: str, expected: WorkSignal) -> None:
+    assert _sequencer_signal(prompt) == expected

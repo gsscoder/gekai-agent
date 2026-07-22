@@ -9,16 +9,13 @@ ACT (not to a silent read path).
 
 from __future__ import annotations
 
-import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from agent.pipeline.gate import Gate, Route
 from agent.pipeline._directives import PIPELINE_DIRECTIVES
-
-
-def run(coro):
-    return asyncio.run(coro)
+from tests.conftest import mock_llm_response, run
 
 
 def _make_gate() -> Gate:
@@ -26,54 +23,30 @@ def _make_gate() -> Gate:
         return Gate(model="test-model", api_key="key", api_base="http://localhost")
 
 
-def _mock_response(text: str):
-    choice = SimpleNamespace(message=SimpleNamespace(content=text))
-    return SimpleNamespace(choices=[choice])
-
-
 def test_gate_system_prompt_contains_pipeline_directives() -> None:
     g = _make_gate()
     assert g._prompt.startswith(PIPELINE_DIRECTIVES)
 
 
-def test_gate_trivial() -> None:
+@pytest.mark.parametrize("response_text", ["TRIVIAL", "  TRIVIAL  "])
+def test_gate_trivial(response_text: str) -> None:
     g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("TRIVIAL"))
+    g._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(response_text))
     route = run(g.gate("hi there"))
     assert route.trivial
 
 
-def test_gate_act() -> None:
+@pytest.mark.parametrize("response_text", ["ACT", "QUERY", "nonsense-token"])
+def test_gate_act(response_text: str) -> None:
     g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("ACT"))
+    g._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(response_text))
     route = run(g.gate("create a module"))
-    assert not route.trivial
-
-
-def test_gate_unknown_token_falls_back_to_act() -> None:
-    g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("QUERY"))
-    route = run(g.gate("where is the router module?"))
-    assert not route.trivial
-
-
-def test_gate_strips_extra_whitespace() -> None:
-    g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("  TRIVIAL  "))
-    route = run(g.gate("hi"))
-    assert route.trivial
-
-
-def test_gate_nonsense_token_falls_back_to_act() -> None:
-    g = _make_gate()
-    g._client.chat.completions.create = AsyncMock(return_value=_mock_response("nonsense-token"))
-    route = run(g.gate("do something"))
     assert not route.trivial
 
 
 def test_gate_passes_history_to_model() -> None:
     g = _make_gate()
-    create_mock = AsyncMock(return_value=_mock_response("ACT"))
+    create_mock = AsyncMock(return_value=mock_llm_response("ACT"))
     g._client.chat.completions.create = create_mock
     history = [
         {"role": "system", "content": "sys"},
