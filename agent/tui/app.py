@@ -438,15 +438,35 @@ def _fmt_context_pct(prompt_tokens: int, limit: int) -> str:
     return f"{pct}% context"
 
 
-def _fmt_status_bar(
-    model: str, effort: str | None, working_dir: str, branch: str | None, prompt_tokens: int, limit: int,
+def _fmt_tokens_k(n: int) -> str:
+    return f"{n / 1000:.1f}k"
+
+
+_PATH_TRUNCATE_BUDGET = 30
+
+
+def _truncate_path_middle(path: str, budget: int = _PATH_TRUNCATE_BUDGET) -> str:
+    if len(path) <= budget:
+        return path
+    head_len = budget // 2 - 1
+    tail_len = budget - head_len - 1
+    return f"{path[:head_len]}…{path[-tail_len:]}"
+
+
+def _fmt_status_left(
+    model: str, effort: str | None, session_tokens: int, other_tokens: int, prompt_tokens: int, limit: int,
 ) -> str:
-    pct = _fmt_context_pct(prompt_tokens, limit)
-    location = f"📁 {working_dir}"
-    if branch:
-        location += f" [⎇ {branch}]"
     model_label = f"{model} ({effort})" if effort else model
-    return f"\\[{model_label}] | {location} | {pct}"
+    tokens = f"{_fmt_tokens_k(session_tokens)} · {_fmt_tokens_k(other_tokens)} tokens"
+    pct = _fmt_context_pct(prompt_tokens, limit)
+    return f"\\[{model_label}] | {tokens} | {pct}"
+
+
+def _fmt_status_right(working_dir: str, branch: str | None) -> str:
+    location = f"📁 {_truncate_path_middle(working_dir)}"
+    if branch:
+        location += f" | ⎇ {branch}"
+    return location
 
 
 def _estimate_session_tokens(session: Session) -> int:
@@ -681,8 +701,6 @@ class GekaiApp(App[None]):
         height: 1;
         background: ansi_default;
         color: grey;
-        text-align: left;
-        padding: 0 0 0 2;
     }
 
     #scroll-hint-wrap {
@@ -751,6 +769,7 @@ class GekaiApp(App[None]):
         self._esc_pending: bool = False
         self._pending_choice: asyncio.Future[str | None] | None = None
         self._context_limit: int = 128_000
+        self._other_ops_tokens: int = 0
         self._history: PromptHistory | None = None
         self._file_paths: list[str] | None = None
         self._file_at_pos: int = -1
@@ -823,9 +842,7 @@ class GekaiApp(App[None]):
 
         override = load_context_limit(self._working_dir)
         self._context_limit = override if override is not None else _context_limit(self._agent.model)
-        self.query_one("#context-bar", Static).update(
-            _fmt_status_bar(self._agent.model, self._agent.effort, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
-        )
+        self._refresh_status_bar()
 
         if self._restored_timeline:
             last_subagent_header: MessageWidget | None = None
@@ -917,6 +934,22 @@ class GekaiApp(App[None]):
         if self._restored_id is None:
             await self.mount(WelcomeOverlay(id="welcome-overlay"))
 
+    def _refresh_status_bar(self) -> None:
+        session_tokens = _estimate_session_tokens(self._session) if self._session is not None else 0
+        left = _fmt_status_left(
+            self._agent.model, self._agent.effort, session_tokens, self._other_ops_tokens,
+            session_tokens, self._context_limit,
+        )
+        right = _fmt_status_right(str(self._working_dir), self._branch)
+        left_text = Text.from_markup(left)
+        right_text = Text(right)
+        width = self.size.width or 80
+        gap = max(width - 4 - left_text.cell_len - right_text.cell_len, 1)
+        bar = Text("  ") + left_text + Text(" " * gap) + right_text + Text("  ")
+        bar.no_wrap = True
+        bar.overflow = "crop"
+        self.query_one("#context-bar", Static).update(bar)
+
     async def _maybe_warn_tiers_unconfigured(self, conversation: ScrollableContainer) -> None:
         """Nudge, not a gate: `GekaiAgent` tolerates unconfigured tiers at
         construction time (so `/tiers` itself stays reachable — see
@@ -937,9 +970,8 @@ class GekaiApp(App[None]):
         await conversation.remove_children()
         self._session = self._agent.start_session()
         self._agent.events.emit("session.start", session=self._session.id, resumed=False)
-        self.query_one("#context-bar", Static).update(
-            _fmt_status_bar(self._agent.model, self._agent.effort, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
-        )
+        self._other_ops_tokens = 0
+        self._refresh_status_bar()
         self._assistant_widget = None
         if command_text is not None:
             append_command(self._session, command_text)
@@ -1491,6 +1523,7 @@ class GekaiApp(App[None]):
                     conversation.scroll_end(animate=False)
                 elif isinstance(item, InferEndEvent):
                     active_renderer.accumulate_tokens(item)
+                    self._other_ops_tokens += (item.prompt_tokens or 0) + (item.completion_tokens or 0)
                 elif isinstance(item, ThinkingTokenEvent):
                     await active_renderer.thinking_chunk(item.text)
                 elif isinstance(item, StatusUpdateEvent):
@@ -1552,9 +1585,7 @@ class GekaiApp(App[None]):
                 outcome = "max_iterations"
 
             if self._session is not None:
-                self.query_one("#context-bar", Static).update(
-                    _fmt_status_bar(self._agent.model, self._agent.effort, self._working_dir.name, self._branch, _estimate_session_tokens(self._session), self._context_limit)
-                )
+                self._refresh_status_bar()
             if step_result.max_iter_hit and not step_result.answer:
                 await conversation.mount(MessageWidget(MessageKind.ERROR, "agent hit iteration limit without producing a response"))
             else:

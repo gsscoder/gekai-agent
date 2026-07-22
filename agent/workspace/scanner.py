@@ -50,14 +50,13 @@ def list_dirs(working_dir: Path) -> list[str]:
 def get_git_branch(path: Path) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            ["git", "symbolic-ref", "--short", "-q", "HEAD"],
             cwd=path,
             capture_output=True,
             text=True,
         )
         if result.returncode == 0:
-            branch = result.stdout.strip()
-            return branch if branch != "HEAD" else None
+            return result.stdout.strip()
     except FileNotFoundError:
         pass
     return None
