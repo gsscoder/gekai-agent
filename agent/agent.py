@@ -44,7 +44,7 @@ class GekaiAgent:
         self.effort: str | None = None
         self._api_key: str | None = None
         self._api_base: str | None = None
-        gate_model, estimator_model, sequencer_model, main_dispatch_model, subagent_dispatch_model = (
+        gate_model, estimator_model, sequencer_model, main_dispatch_model, subagent_dispatch_model, responder_model = (
             self._configure_touchpoints()
         )
         self.events = EventLogger()
@@ -57,12 +57,13 @@ class GekaiAgent:
             sequencer_model=sequencer_model,
             main_dispatch_model=main_dispatch_model,
             subagent_dispatch_model=subagent_dispatch_model,
+            responder_model=responder_model,
             tiers_configured=self._tier_error is None,
             permissions={"read": permissions.read, "write": permissions.write, "exec": permissions.exec},
             debug=self.debug,
         )
 
-    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
         """(Re)resolve every touchpoint against the *current* on-disk tier
         catalog+bindings, updating `self._gate`/`self._main`/`self.model`/
         `self._api_key`/`self._api_base` in place. A single resolve-once-at-
@@ -73,14 +74,14 @@ class GekaiAgent:
         mid-session, next prompt still reports the pre-`/tiers` error).
         Called once at construction and again lazily from `gate()`/
         `process_stream()` on every call while `self._tier_error` is set.
-        Returns the five touchpoints' resolved model names (or all-`None` on
+        Returns the six touchpoints' resolved model names (or all-`None` on
         failure) purely for the `run.start` telemetry emit.
         """
         catalog = load_model_catalog()
         bindings = load_tier_bindings()
         resolved: dict[str, ResolvedTier] = {}
         try:
-            for name in ("gate", "estimator", "sequencer", "main-dispatch", "subagent-dispatch"):
+            for name in ("gate", "estimator", "sequencer", "main-dispatch", "subagent-dispatch", "responder"):
                 resolved[name] = resolve_touchpoint(name, catalog, bindings)
         except TierResolutionError:
             # The specific failure (which tier, why) is deliberately not
@@ -91,7 +92,7 @@ class GekaiAgent:
             # missing a stored credential). A `/tiers` grid UI shows per-tier
             # detail in its own status column instead.
             self._tier_error = "tier configuration is incomplete — run /tiers"
-            return (None, None, None, None, None)
+            return (None, None, None, None, None, None)
 
         self._tier_error = None
         sequencer_cfg = resolved["sequencer"]
@@ -123,6 +124,7 @@ class GekaiAgent:
             main_dispatch_policy=touchpoint("main-dispatch").policy,
             subagent_dispatch_policy=touchpoint("subagent-dispatch").policy,
             estimator=resolved["estimator"],
+            responder=resolved["responder"],
             debug=self.debug,
         )
         return (
@@ -131,6 +133,7 @@ class GekaiAgent:
             sequencer_cfg.model,
             resolved["main-dispatch"].model,
             resolved["subagent-dispatch"].model,
+            resolved["responder"].model,
         )
 
     def start_session(

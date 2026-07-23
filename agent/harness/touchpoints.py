@@ -51,6 +51,7 @@ TOUCHPOINTS: tuple[Touchpoint, ...] = (
         TierName.SUPP,
         policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
     ),
+    Touchpoint("responder", "synthesize the turn's final answer from what actually ran", TierName.SUPP),
     Touchpoint("micro", "one-shot summaries / labels / fs-support", TierName.FAST),
 )
 

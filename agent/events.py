@@ -138,3 +138,13 @@ class DirectivePumpEvent(AgentEvent):
     harness pumps domain-craft directives into main's system prompt for one
     dispatch. Never emitted when no domain was detected (empty pump)."""
     domains: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResponderEvent(AgentEvent):
+    """Telemetry only: the responder synthesized (or failed to synthesize,
+    falling back to the mechanical recap) the turn's final answer from the
+    task graph's actual step outputs, reversing plan 27 decision 15's
+    summary-only recap for mutate turns."""
+    duration_ms: int = 0
+    fell_back: bool = False

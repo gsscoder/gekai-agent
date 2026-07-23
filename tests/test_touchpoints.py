@@ -13,7 +13,7 @@ def test_all_touchpoints_have_unique_names() -> None:
 
 def test_expected_touchpoints_are_registered() -> None:
     names = {t.name for t in TOUCHPOINTS}
-    assert names == {"gate", "estimator", "sequencer", "main-dispatch", "subagent-dispatch", "micro"}
+    assert names == {"gate", "estimator", "sequencer", "main-dispatch", "subagent-dispatch", "responder", "micro"}
 
 
 def test_gate_and_micro_are_fast() -> None:
@@ -45,4 +45,9 @@ def test_scaled_touchpoints_carry_the_expected_policy() -> None:
 def test_unscaled_touchpoints_have_no_policy() -> None:
     assert touchpoint("gate").policy is None
     assert touchpoint("estimator").policy is None
+    assert touchpoint("responder").policy is None
     assert touchpoint("micro").policy is None
+
+
+def test_responder_is_supp() -> None:
+    assert touchpoint("responder").nominal_tier is TierName.SUPP

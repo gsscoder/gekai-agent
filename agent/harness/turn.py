@@ -26,6 +26,7 @@ from ..events import (
     InferEndEvent,
     LogEvent,
     MaxIterationsEvent,
+    ResponderEvent,
     ScaleEvent,
     TaskGraphStartedEvent,
 )
@@ -124,6 +125,15 @@ async def run_step(
             events.emit(
                 "directive_pump", session=session_id, turn=turn_id,
                 domains=item.domains,
+            )
+        elif isinstance(item, ResponderEvent):
+            # Telemetry only (mirrors ScaleEvent/DirectivePumpEvent above) —
+            # the TUI's event handler doesn't recognize ResponderEvent, so
+            # nothing renders for it; the turn's actual answer text (yielded
+            # separately, right after this event) is what the user sees.
+            events.emit(
+                "responder", session=session_id, turn=turn_id,
+                duration_ms=item.duration_ms, fell_back=item.fell_back,
             )
         elif isinstance(item, LogEvent):
             if item.tool_name:

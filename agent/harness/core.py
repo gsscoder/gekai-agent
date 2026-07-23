@@ -22,6 +22,7 @@ from ..persistence import append_debug
 from ..persona import SYSTEM_PROMPT, render_tool_instruction
 from ..pipeline.estimate import Estimator
 from ..pipeline.plan import Task, TaskGraph
+from ..pipeline.responder import Responder
 from ..pipeline.sequencer import Sequencer
 from ..harness.interpreter import TaskGraphHalted, StepResult, run_task_graph
 from ..harness.scaling import WorkSignal, scale, _sequencer_signal
@@ -29,7 +30,7 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
@@ -186,6 +187,7 @@ class Harness:
         main_dispatch_policy: TierPolicy,
         subagent_dispatch_policy: TierPolicy,
         estimator: ResolvedTier | None = None,
+        responder: ResolvedTier | None = None,
         debug: bool = False,
     ) -> None:
         # Assignment-time tier scaling (plan 28 Phase 2): the 3 scaled
@@ -194,10 +196,10 @@ class Harness:
         # this resolver closure (over the current catalog+bindings) plus
         # each touchpoint's declared `TierPolicy`, so a dispatch site can
         # pick a tier per call (`scale(policy, signal)`) and resolve it fresh
-        # (`resolve(tier)`). `estimator` stays optional and still frozen: it
-        # is not one of the scaled components — tests that only care about
-        # the single-agent path (no estimator wired) get the pre-plan-27 flat
-        # "trivial" behavior.
+        # (`resolve(tier)`). `estimator`/`responder` stay optional and still
+        # frozen: neither is one of the scaled components — tests that don't
+        # wire one get the old flat behavior (estimator: pre-plan-27
+        # "trivial"; responder: the mechanical recap).
         self._resolve = resolve
         self._sequencer_policy = sequencer_policy
         self._main_dispatch_policy = main_dispatch_policy
@@ -206,6 +208,11 @@ class Harness:
         self._estimator = (
             Estimator(model=estimator.model, api_key=estimator.api_key, api_base=estimator.api_base)
             if estimator is not None
+            else None
+        )
+        self._responder = (
+            Responder(model=responder.model, api_key=responder.api_key, api_base=responder.api_base, extra_params=responder.extra_params)
+            if responder is not None
             else None
         )
         # `Sequencer` is no longer built once here: the sequencer's tier is
@@ -462,7 +469,7 @@ class Harness:
                 yield queue.get_nowait()
 
             try:
-                await graph_task
+                results = await graph_task
             except TaskGraphHalted as halted:
                 yield TaskGraphHaltedEvent(step_index=halted.index, agent=halted.step.agent, reason=halted.reason)
                 yield DoneEvent(thinking_chars=0, files_touched=files_touched)
@@ -470,9 +477,29 @@ class Harness:
                 return
 
             yield DoneEvent(thinking_chars=0, files_touched=files_touched)
-            yield _recap(graph, halted=None)
+            answer, responder_event = await self._respond(user_input, graph, results)
+            if responder_event is not None:
+                yield responder_event
+            yield answer
         finally:
             unsubscribe()
+
+    async def _respond(
+        self, user_input: str, graph: TaskGraph, results: list[StepResult],
+    ) -> tuple[str, ResponderEvent | None]:
+        """Synthesizes the turn's user-facing answer from what actually ran
+        (reverses plan 27 decision 15's mechanical-only recap for the
+        success path only — the halted path stays mechanical). Fail-soft:
+        no responder wired, or any responder error, falls back to the
+        mechanical `_recap` so a turn is never lost to its own wrap-up."""
+        if self._responder is None:
+            return _recap(graph, halted=None), None
+        t0 = time.monotonic()
+        try:
+            answer = await self._responder.respond(user_input, [r.output for r in results])
+            return answer, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=False)
+        except Exception:
+            return _recap(graph, halted=None), ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
 
 
 def _last_assistant_text(history: list[Message]) -> str:
