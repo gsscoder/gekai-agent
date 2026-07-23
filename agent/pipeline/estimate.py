@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 
 @dataclass
 class ScopeEstimate:
-    mutate: bool = False  # False = trivial (main solo); True = mutate (planner + interpreter)
+    mutate: bool = False  # False = trivial (main solo); True = mutate (sequencer + interpreter)
 
 
 _ESTIMATE_PROMPT = (

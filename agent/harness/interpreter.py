@@ -1,7 +1,7 @@
 """Fixed step-runner interpreter (plan 27, improvement 2; renamed under plan 28).
 
 Written once, engineered control flow: execute -> verify -> repair ->
-re-verify -> halt. Knows no agent by name or role — the planner populates
+re-verify -> halt. Knows no agent by name or role — the sequencer populates
 `agent`/`verify`/`repair`; this module only walks the task graph. Runs "as
 main": a `main` step is direct main-processing (handled by whatever
 `dispatch` does for that name), a subagent step is a spawn `dispatch` owns.
@@ -59,7 +59,7 @@ def _truncate(text: str, limit: int = _SIBLING_TASK_LIMIT) -> str:
 
 def _inject_request_summary(graph: TaskGraph, index: int, instruction: str) -> str:
     """Prepend a mechanical <request_summary> framing block to a step's instruction:
-    the overall ask (planner-produced `summary`) plus this step's own
+    the overall ask (sequencer-produced `summary`) plus this step's own
     boundary against sibling steps — so a subagent that runs cold, with no
     awareness of the graph around it, doesn't redo or collide with work
     another step already owns (e.g. writing its own throwaway tests when a

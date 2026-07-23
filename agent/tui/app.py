@@ -36,7 +36,6 @@ from agent.persistence import (
 from agent.pipeline import Route
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS, SUBAGENTS, Subagent
-from agent.subagents.worker import ws_manager
 from agent.settings import (
     PERMISSION_CHOICES,
     load_context_limit,
@@ -47,8 +46,8 @@ from agent.settings import (
     save_tier_binding,
     tiers_configured,
 )
-from agent.workspace import db as workspace_db, list_files, list_dirs
-from agent.tui.styles import OPERATIVE_COLOR, random_accent_color, _OPERATIVE_VERB
+from agent.workspace import list_files, list_dirs
+from agent.tui.styles import OPERATIVE_COLOR, _OPERATIVE_VERB
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
 from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
@@ -910,25 +909,6 @@ class GekaiApp(App[None]):
             self._agent.permissions = perms
             self._session.permissions = perms
 
-        conn = workspace_db.ensure(self._working_dir)
-        await self._start_status_animation("indexing workspace", random_accent_color())
-        try:
-            index_stats = await ws_manager.run("onboard", self._working_dir, conn)
-        finally:
-            await self._stop_status_animation()
-            self._clear_status()
-        conn.close()
-        self._agent.events.emit(
-            "workspace.index",
-            session=self._session.id,
-            file_count=index_stats.file_count,
-            indexed_count=index_stats.indexed_count,
-            skipped_fresh=index_stats.skipped_fresh,
-            symbols_extracted=index_stats.symbols_extracted,
-            symbol_files=index_stats.symbol_files,
-            duration_ms=index_stats.duration_ms,
-        )
-
         await self._maybe_warn_tiers_unconfigured(conversation)
 
         if self._restored_id is None:
@@ -1468,9 +1448,9 @@ class GekaiApp(App[None]):
         append_user: bool = True,
     ) -> _StepResult:
         """Render dispatch for `raw`. `seed` (case 3 — an explicit `/agent-x` or a
-        single-duty match) names the specialist the planner is seeded with;
+        single-duty match) names the specialist the sequencer is seeded with;
         it no longer means "run the whole turn as that subagent's identity"
-        (plan 27 — the planner+interpreter own every spawn, main stays main).
+        (plan 27 — the sequencer+interpreter own every spawn, main stays main).
         `stage` is a 1-element mutable holder the caller's except-block reads to attribute
         which sub-stage failed.
 

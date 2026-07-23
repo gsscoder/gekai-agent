@@ -22,7 +22,7 @@ Plan 27 note: no `supp_model` is passed to `Harness(...)` in this file, so
 `self._estimator` is None and every `Harness.stream(subagent=None)` call here
 takes the "trivial (no estimator wired)" branch straight to the single-agent
 path — exactly the pre-plan-27 flat behavior these tests were written
-against. The mutate/planner path is covered separately in
+against. The mutate/sequencer path is covered separately in
 tests/test_harness_stream_plan.py.
 
 ASSUMPTION: `_build_agent`/`Harness.__init__` expose no way to override
@@ -53,7 +53,7 @@ from agent.llm.tools import Tool
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
-from agent.pipeline.planner import Planner
+from agent.pipeline.sequencer import Sequencer
 from agent.session import Session
 from agent.settings import Permissions
 
@@ -238,7 +238,7 @@ def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
         summary="fix the bug",
         steps=[Task(agent="code-expert", instruction="fix it", mission="fix it")],
     )
-    monkeypatch.setattr(Planner, "plan", AsyncMock(return_value=graph))
+    monkeypatch.setattr(Sequencer, "sequence", AsyncMock(return_value=graph))
 
     async def fake_run_subagent(agent, task, **kwargs):
         return f"{agent} done"

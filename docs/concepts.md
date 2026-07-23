@@ -76,7 +76,7 @@ Two cheap guards, not one classifier trying to do everything: `Gate` decides chi
 `Estimator` decides — for an act turn with no specific agent named — trivial vs. mutate. Neither
 attempts to understand intent beyond its single fork, and neither ever names or reasons about a
 specific specialist. That reasoning is reserved for the one place expensive enough to afford it:
-the **planner**, which runs only on the mutation path (plan 27). Keeping the guards this narrow
+the **sequencer**, which runs only on the mutation path (plan 27). Keeping the guards this narrow
 keeps the common cases (chit-chat, a small read/edit) cheap, fast, and predictable — infrastructure
 for dispatch, not a second opinion on what the user wants.
 
@@ -86,7 +86,7 @@ judgement, which is exactly the model-dependent variable the harness thesis exis
 (see [The harness is the multiplier](#the-harness-is-the-multiplier)): switching to a stronger
 model would only mask the problem, not prove the harness. Plan 27's fix is to compile the
 step-policy — execute, verify, repair-then-reverify, halt-on-second-failure — once, into a fixed,
-engineered interpreter that knows no agent by name or role. Only the planner (the `sequencer`
+engineered interpreter that knows no agent by name or role. Only the sequencer (the `sequencer`
 touchpoint), which *does* know the roster and their interactions, produces the data — a task
 graph, v1 a flat list of steps with optional verify/repair agents — that the interpreter walks.
 Prose can no longer name a specialist either:

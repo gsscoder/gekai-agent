@@ -9,13 +9,12 @@ from ..settings import Permissions
 
 # action namespaces and their TUI badge colors — co-located so a namespace
 # cannot be declared without a color (no fallback color at render time);
-# namespaces with no user_invocable members (e.g. "generic", "worker") are
-# innate — no routable subagents, selector skipped
+# namespaces with no user_invocable members (e.g. "generic") are innate —
+# no routable subagents, selector skipped
 NAMESPACE_COLORS: dict[str, str] = {
     "coding": "#FFD700",
     "testing": "red",
     "generic": "#7FDBCA",
-    "worker": "#9E9E9E",
 }
 NAMESPACES = tuple(NAMESPACE_COLORS)
 

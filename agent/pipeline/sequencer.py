@@ -1,4 +1,4 @@
-"""Planner stage (plan 27, improvement 3; renamed under plan 28): decomposition + measurement.
+"""Sequencer stage (plan 27, improvement 3; renamed under plan 28): decomposition + measurement.
 
 CORE thinking, one call per mutation turn. Phase 1 (decomposition) assigns
 each unit of work to `main` or an auto-assignable subagent, in dependency
@@ -6,7 +6,7 @@ order. Phase 2 (measurement) is folded into the same call: the model marks
 `verify` on any step whose complexity warrants a preventive check. The
 complexity metric itself is open point 1 (plan 27) — until it is designed,
 the model's own in-prompt judgment is the mechanical placeholder, exactly as
-validated by tests/test_planner_probe.py.
+validated by tests/test_sequencer_probe.py.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from .plan import MAIN_AGENT, TaskGraph, parse_task_graph
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
-_PLANNER_PROMPT = (
+_SEQUENCER_PROMPT = (
     "you are the planning stage of a coding harness. decompose the user's request into a "
     "JSON object with keys:\n"
     '  "summary": a short 1-2 sentence gist of what the user wants, in your own words\n'
@@ -54,10 +54,10 @@ _PLANNER_PROMPT = (
 
 def _build_prompt(roster: list[Subagent]) -> str:
     menu = "\n".join(f"  {p.name} — {p.description}" for p in roster)
-    return _PLANNER_PROMPT.format(main=MAIN_AGENT, roster=menu)
+    return _SEQUENCER_PROMPT.format(main=MAIN_AGENT, roster=menu)
 
 
-class Planner:
+class Sequencer:
     def __init__(
         self,
         model: str,
@@ -76,7 +76,7 @@ class Planner:
         self._full_roster = list(SUBAGENTS)
         self._prompt = _build_prompt(roster)
 
-    async def plan(self, user_input: str, *, seed: str | None = None) -> TaskGraph:
+    async def sequence(self, user_input: str, *, seed: str | None = None) -> TaskGraph:
         """Returns a validated TaskGraph. Raises ValueError if the model's output
         fails schema/roster/phase validation (fail loud — plan 27 decision 6).
         """
@@ -92,9 +92,9 @@ class Planner:
         raw_text: str = response.choices[0].message.content or ""
         match = _JSON_OBJECT.search(raw_text)
         if not match:
-            raise ValueError(f"planner returned no JSON object: {raw_text!r}")
+            raise ValueError(f"sequencer returned no JSON object: {raw_text!r}")
         raw = json.loads(match.group(0))
         return parse_task_graph(raw, self._full_roster)
 
 
-__all__ = ["Planner"]
+__all__ = ["Sequencer"]

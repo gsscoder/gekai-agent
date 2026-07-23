@@ -1,6 +1,6 @@
 """Tests for the Estimator scope classifier (plan 27 improvement 5 —
 repurposed to the trivial-vs-mutate binary; decomposition/specialist
-assignment is now the planner's job, not the estimator's).
+assignment is now the sequencer's job, not the estimator's).
 
 The estimator outputs exactly TRIVIAL | MUTATE. Any parse failure or
 exception falls back to a trivial (all-default) ScopeEstimate — fail open,

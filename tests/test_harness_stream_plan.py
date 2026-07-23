@@ -1,6 +1,6 @@
 """Coverage for `Harness.stream`'s plan 27 improvement 4 wiring (renamed
 plan 28): chit-chat/trivial stay on the single-agent path; mutate and a
-`/agent-x` seed both route through the planner + interpreter
+`/agent-x` seed both route through the sequencer + interpreter
 (`_stream_graph`) — the "one mutation path" (decision 4).
 """
 
@@ -23,7 +23,7 @@ from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.types import CompletionResponse, StreamDone, TextBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
-from agent.pipeline.planner import Planner
+from agent.pipeline.sequencer import Sequencer
 from agent.session import Session
 from agent.settings import Permissions
 
@@ -44,7 +44,7 @@ def _make_harness() -> Harness:
     """Plan 28 Phase 2: `Harness` takes a resolver closure + a `TierPolicy`
     per scaled touchpoint instead of one frozen `ResolvedTier` each. The
     resolver here always returns `main_tier`, so every touchpoint (including
-    the sequencer's freshly-built `Planner`, now constructed inside
+    the sequencer's freshly-built `Sequencer`, now constructed inside
     `_stream_graph()` instead of `__init__`) still resolves to the exact
     same config these tests were written against."""
     return _make_scaling_harness(
@@ -52,14 +52,14 @@ def _make_harness() -> Harness:
     )
 
 
-def _patch_planner_plan(monkeypatch: pytest.MonkeyPatch, mock: AsyncMock) -> None:
-    """`Harness._stream_graph` now builds a fresh `Planner` per call (plan 28
+def _patch_sequencer_sequence(monkeypatch: pytest.MonkeyPatch, mock: AsyncMock) -> None:
+    """`Harness._stream_graph` now builds a fresh `Sequencer` per call (plan 28
     Phase 2 — the sequencer's tier is chosen per call), so a test can no
-    longer stash a mock onto a pre-built `harness._planner` instance; patch
-    `Planner.plan` at the class level instead — every `Planner()` built
+    longer stash a mock onto a pre-built `harness._sequencer` instance; patch
+    `Sequencer.sequence` at the class level instead — every `Sequencer()` built
     during the test picks it up the same way an instance-attribute override
     used to."""
-    monkeypatch.setattr(Planner, "plan", mock)
+    monkeypatch.setattr(Sequencer, "sequence", mock)
 
 
 async def _drain(harness: Harness, session: Session, prompt: str, **kwargs) -> list:
@@ -149,25 +149,25 @@ class _RecordingAdapter(ProviderAdapter):
         )
 
 
-def _capturing_planner_init(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-    """Replaces `Planner.__init__` with one that records its kwargs instead
+def _capturing_sequencer_init(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Replaces `Sequencer.__init__` with one that records its kwargs instead
     of building a real `AsyncOpenAI` client, so a test can assert which
-    resolved tier's config the sequencer's freshly-built `Planner` (built
+    resolved tier's config the sequencer's freshly-built `Sequencer` (built
     per `_stream_graph()` call, plan 28 Phase 2) actually received."""
     calls: list[dict] = []
 
     def _init(self, model, api_key=None, api_base=None, extra_params=None) -> None:
         calls.append({"model": model, "api_key": api_key, "api_base": api_base, "extra_params": extra_params})
 
-    monkeypatch.setattr(Planner, "__init__", _init)
+    monkeypatch.setattr(Sequencer, "__init__", _init)
     return calls
 
 
-def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_trivial_estimate_skips_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
-    plan_mock = AsyncMock(side_effect=AssertionError("planner must not run on trivial"))
-    _patch_planner_plan(monkeypatch, plan_mock)
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run on trivial"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn"),
     ]
@@ -180,7 +180,7 @@ def test_trivial_estimate_skips_planner(monkeypatch: pytest.MonkeyPatch, tmp_pat
     plan_mock.assert_not_awaited()
 
 
-def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_mutate_estimate_routes_through_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
@@ -190,7 +190,7 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
             Task(agent="test-expert", instruction="write tests", mission="write tests"),
         ],
     )
-    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     async def fake_run_subagent(agent, task, **kwargs):
         return f"{agent} done"
@@ -208,14 +208,14 @@ def test_mutate_estimate_routes_through_planner(monkeypatch: pytest.MonkeyPatch,
     assert collected[-1] == "build a library with tests"
 
 
-def test_seed_routes_through_planner_even_without_mutate_estimate(
+def test_seed_routes_through_sequencer_even_without_mutate_estimate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
     graph = TaskGraph(summary="add coverage", steps=[Task(agent="test-expert", instruction="add coverage", mission="add coverage")])
     plan_mock = AsyncMock(return_value=graph)
-    _patch_planner_plan(monkeypatch, plan_mock)
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
 
     async def fake_run_subagent(agent, task, **kwargs):
         return "done"
@@ -235,7 +235,7 @@ def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatc
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(summary="build something", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
-    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     async def failing_run_subagent(agent, task, **kwargs):
         return ""  # empty dispatch output -> TaskGraphHalted
@@ -277,7 +277,7 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
             Task(agent="main", instruction="step two", mission="step two", verify=None),
         ],
     )
-    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
@@ -308,12 +308,12 @@ def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPat
     # REQ: item 5 -- a short, mechanically-simple request demotes the
     # sequencer off its configured CORE default to SUPP (`_sequencer_signal`,
     # scaling.py); proven end-to-end via the actual resolved config the
-    # freshly-built `Planner` receives, plus the yielded `ScaleEvent`.
+    # freshly-built `Sequencer` receives, plus the yielded `ScaleEvent`.
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
-    planner_calls = _capturing_planner_init(monkeypatch)
+    sequencer_calls = _capturing_sequencer_init(monkeypatch)
     graph = TaskGraph(summary="renamed", steps=[Task(agent="main", instruction="rename it", mission="rename it")])
-    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
@@ -327,7 +327,7 @@ def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPat
 
     collected = run(_drain(harness, session, prompt, seed="main"))
 
-    assert planner_calls[0]["model"] == "supp-model", "Planner should be built from the SUPP-resolved config"
+    assert sequencer_calls[0]["model"] == "supp-model", "Sequencer should be built from the SUPP-resolved config"
     sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
     assert sequencer_events == [
         ScaleEvent(component="sequencer", default_tier="core", chosen_tier="supp", reason="easy-demote")
@@ -337,16 +337,16 @@ def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPat
 def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # REQ: item 5 (inverse) -- a longer, multi-clause request (contains
     # "and") keeps `_sequencer_signal` neutral, so the sequencer stays at its
-    # own configured default (CORE): the `Planner` is built from the
+    # own configured default (CORE): the `Sequencer` is built from the
     # CORE-resolved config, and no sequencer ScaleEvent is yielded.
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
-    planner_calls = _capturing_planner_init(monkeypatch)
+    sequencer_calls = _capturing_sequencer_init(monkeypatch)
     graph = TaskGraph(
         summary="login + tests",
         steps=[Task(agent="main", instruction="do it", mission="do it")],
     )
-    _patch_planner_plan(monkeypatch, AsyncMock(return_value=graph))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
@@ -356,7 +356,7 @@ def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.Mon
 
     collected = run(_drain(harness, session, prompt))
 
-    assert planner_calls[0]["model"] == "core-model", "Planner should stay on the CORE-resolved config"
+    assert sequencer_calls[0]["model"] == "core-model", "Sequencer should stay on the CORE-resolved config"
     sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
     assert sequencer_events == []
 
@@ -374,8 +374,8 @@ def test_single_agent_path_never_scales_or_emits_scale_event(
     # ScaleEvents on the graph path above.
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
-    plan_mock = AsyncMock(side_effect=AssertionError("planner must not run on trivial"))
-    _patch_planner_plan(monkeypatch, plan_mock)
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run on trivial"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
 
     _RecordingAdapter.instances = []
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)

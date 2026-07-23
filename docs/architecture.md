@@ -5,9 +5,9 @@
 **Plan 27 supersedes plans 25/26.** `delegate`-in-main (a tool main could elect to call) and NL
 agent-quoting ("use code-expert to…") are retired outright — no hybrid, no flag gate. Control
 flow for any workspace mutation now lives in engineered harness code, not in the core model's
-turn-by-turn judgement: **Gate (guard) → Estimator (guard) → Planner (CORE thinking, mutation
+turn-by-turn judgement: **Gate (guard) → Estimator (guard) → Sequencer (CORE thinking, mutation
 path only) → fixed interpreter**. The only explicit way to summon a specific agent is `/agent-x`,
-which *seeds* the planner — it does not dispatch the whole turn to that agent directly.
+which *seeds* the sequencer — it does not dispatch the whole turn to that agent directly.
 
 ```
 user input
@@ -31,13 +31,13 @@ Estimator               [supp model, non-thinking] — trivial-vs-mutate guard (
     │                    TRIVIAL | MUTATE
     │
     ├── TRIVIAL ──────────────────────────────────────────┐  no ceremony — main solo,
-    │   a single small file, a few edits, a read/query     │  no planner, deliberately loose
+    │   a single small file, a few edits, a read/query     │  no sequencer, deliberately loose
     │                                                       │
     └── MUTATE ─────────────┐                              │
         or an explicit      │                              │
         /agent-x seed       │                              │
                              ▼                              │
-                        Planner            [core model, CORE thinking — one call]
+                        Sequencer          [core model, CORE thinking — one call]
                         decomposition (main/auto-assignable steps, dependency order)
                         + measurement (preventive verify/repair placement by complexity)
                              │
@@ -320,7 +320,7 @@ naming an agent that doesn't exist.
 
 | Output token         | Route                | Notes                                          |
 |-----------------------|----------------------|------------------------------------------------|
-| `TRIVIAL`             | `Route(trivial=True)`| Harness non-thinking (`extra_params={}`), no Estimator/Planner |
+| `TRIVIAL`             | `Route(trivial=True)`| Harness non-thinking (`extra_params={}`), no Estimator/Sequencer |
 | `ACT`                 | `Route()`             | falls through to the Estimator guard            |
 | unexpected/malformed  | `Route()`             | warning logged; falls to ACT                    |
 
@@ -340,20 +340,20 @@ class ScopeEstimate:
 
 | Output   | Meaning                                                        | Next stage         |
 |----------|-----------------------------------------------------------------|---------------------|
-| `TRIVIAL`| a single small file, a few small edits, or a read/query          | main solo, no planner (case 2 — deliberately loose) |
-| `MUTATE` | implementation-sized: multiple files/modules, a distinct unit    | Planner + interpreter (case 4) |
+| `TRIVIAL`| a single small file, a few small edits, or a read/query          | main solo, no sequencer (case 2 — deliberately loose) |
+| `MUTATE` | implementation-sized: multiple files/modules, a distinct unit    | Sequencer + interpreter (case 4) |
 
 An explicit `/agent-x` seed (or a single-duty match — case 3) **bypasses the Estimator entirely**
-and always goes to the Planner, seeded with that agent's duty — one mutation path for both cases
+and always goes to the Sequencer, seeded with that agent's duty — one mutation path for both cases
 3 and 4 (plan 27 decision 4), no shortcut that skips verification.
 
 ---
 
-## Planner + Interpreter
+## Sequencer + Interpreter
 
 Plan 27 replaces `delegate`-in-main with two engineered pieces:
 
-- **Planner** (`agent/pipeline/planner.py`) — CORE thinking, one call per mutation turn. Given the
+- **Sequencer** (`agent/pipeline/sequencer.py`) — CORE thinking, one call per mutation turn. Given the
   request (and an optional `/agent-x` seed), returns a raw plan text the model itself decomposes
   into ordered steps assigned to `main` or an **auto-assignable** subagent (`code-expert`,
   `test-expert`), each carrying `verify`/`repair` when the model judges the step's complexity
@@ -390,7 +390,7 @@ that owns the assembly of its own system prompt:
 class Subagent:
     name: str
     namespace: str
-    description: str       # planner's selection signal — positive scope + "Not for…" boundary
+    description: str       # sequencer's selection signal — positive scope + "Not for…" boundary
     mandate: str = ""      # 1-2 line role-identity sentence: "you act as a …"
     directives: str = ""   # the *how* — operational specifics
     tools: list[str] | None = None        # allowlist; None = all tools
@@ -404,13 +404,13 @@ class Subagent:
                                               # <tools> appended later by the Harness
 ```
 
-`description` appears in the planner's roster string (`name: description`) and carries a "Not for…"
+`description` appears in the sequencer's roster string (`name: description`) and carries a "Not for…"
 boundary clause to sharpen decomposition decisions. `mandate` is the role-identity sentence fed
 into the agent's own context once spawned — "who you act as right now," distinct from
 `directives` ("how to do it"). `tools` is a name allowlist (mirrored against
 `agent/tools/catalog.py` to guard against drift); `permissions` lets a subagent further
 *restrict* — never escalate beyond — the session's grant. `auto_assignable` is orthogonal to
-`user_invocable`: `code-expert`/`test-expert` are both (planner may assign them, `/agent-x` can
+`user_invocable`: `code-expert`/`test-expert` are both (sequencer may assign them, `/agent-x` can
 seed them); a verify/repair agent is `user_invocable=True, auto_assignable=False` (slash-summonable,
 but never assigned by phase-1 decomposition). See [System Prompt Assembly](#system-prompt-assembly)
 for the full funnel and [Harness — Tool Loop](#harness--tool-loop) for how the allowlist and
@@ -423,30 +423,25 @@ Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) 
 `subagent.directives` at import time via `dataclasses.replace`.
 Adding a subagent = drop one file; zero other changes required.
 
-`NAMESPACES` includes `"coding"`, `"testing"`, `"generic"` (innate — no subagents; selector
-skipped), and `"worker"`. There is no fallback subagent: each subagent stands on its own `description`. `main` is the
+`NAMESPACES` includes `"coding"`, `"testing"`, and `"generic"` (innate — no subagents; selector
+skipped). There is no fallback subagent: each subagent stands on its own `description`. `main` is the
 **generalist default** — general or simple requests, reading/explaining/running code, and
 and all general/glue/scaffolding work in a plan; pick a subagent only when
 the request clearly fits its specialty. `code-expert` handles **code work by kind** —
 features, fixes, and behavior-changing rewrites where the approach is decided; it owns its assigned step's implementation in full;
 its `description` excludes general/scaffolding/glue work (that's `main`) and
-pure refactors / complexity-reduction passes with no behavior change (those go to `code-refactorer`). `worker`'s sole member, `ws-manager`
-(`agent/subagents/worker/ws_manager.py`), is `user_invocable=False` — never routed or surfaced
-in the menu/palette. It is a system-managed worker dispatched only via `run()` (currently
-`onboard` → `build_index`), bypassing the LLM/spawn path entirely.
+pure refactors / complexity-reduction passes with no behavior change (those go to `code-refactorer`).
 
 `validate_registry()` runs at startup — raises if any namespace in `NAMESPACES` has no badge
 color, a subagent has an unknown namespace, or names collide.
 
-Subagent selection is performed by the Planner (phase-1 decomposition, auto-assignable roster
-only) — see [Planner + Interpreter](#planner--interpreter) above — or explicitly via `/agent-x`
-(seeds the planner; unknown `/agent-x` rejected at the command layer).
+Subagent selection is performed by the Sequencer (phase-1 decomposition, auto-assignable roster
+only) — see [Sequencer + Interpreter](#sequencer--interpreter) above — or explicitly via `/agent-x`
+(seeds the sequencer; unknown `/agent-x` rejected at the command layer).
 
 > **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
-> intent via routing. `ws-manager` (`worker` namespace) is the first built, user-invocable example
-> of a system-flavored member, scoped to repo/filesystem scaffolding only. A separate,
-> still-unbuilt `harness-worker` category would instead serve the *system/lifecycle* directly
-> (e.g. a future workspace-scan revival) — work that runs outside any single user turn. Zero code
+> intent via routing. A separate, still-unbuilt `harness-worker` category would instead serve
+> the *system/lifecycle* directly — work that runs outside any single user turn. Zero code
 > exists for that category yet; the name marks the conceptual slot.
 
 ### Permission overlay
@@ -464,10 +459,10 @@ effective = Permissions(
 ### TUI status indicator
 
 `#input-area` container `border_title` shows the current pipeline stage as it advances
-(`route` → `main`/planner-badge names as `SubAgentStartEvent`/`DelegationStartEvent` arrive), not
+(`route` → `main`/sequencer-badge names as `SubAgentStartEvent`/`DelegationStartEvent` arrive), not
 a single per-turn label keyed on `route.subagent` (that field is gone — plan 27 improvement 4).
 A `/agent-x` seed no longer means "the whole turn runs as that subagent's identity"; it seeds the
-planner, so the top-level label stays `main`/`planner` and individual plan steps render their own
+sequencer, so the top-level label stays `main`/`sequencer` and individual plan steps render their own
 specialist badges as the interpreter dispatches them.
 
 ---
@@ -487,8 +482,8 @@ async def stream(
 ```
 
 - `subagent=None, seed=None`, trivial estimate (or no estimator wired) → single-agent path (below).
-- `subagent=None`, mutate estimate **or** `seed` given → `_stream_plan`: Planner + interpreter
-  (see [Planner + Interpreter](#planner--interpreter)).
+- `subagent=None`, mutate estimate **or** `seed` given → `_stream_plan`: Sequencer + interpreter
+  (see [Sequencer + Interpreter](#sequencer--interpreter)).
 - `subagent=<Subagent>` → single-agent path built *as* that subagent — used internally by
   `run_subagent` for a nested dispatch, not a production top-level entry point any more (that role
   moved to `seed`).
@@ -499,7 +494,7 @@ default"; an explicit `{}` means "no thinking params for this turn" (the `TRIVIA
 see [Gate](#gate)).
 
 No `delegate` tool is ever registered (plan 27 decision 11 — removed from main outright, no
-hybrid); the harness (planner + interpreter) owns all cross-agent control flow instead.
+hybrid); the harness (sequencer + interpreter) owns all cross-agent control flow instead.
 
 `stream()` delegates prompt assembly to the module-level `_build_agent(...)`, which is the
 **single point** where the effective tool set — and therefore the final `<tools>` block — is
@@ -546,7 +541,7 @@ sequenceDiagram
     participant CoreModel
 
     TUI->>Harness: stream(session, user_input, extra_params={} if route.trivial else None, seed=forced_seed)
-    Note over Harness: single-agent path (trivial estimate, or no mutate/seed) — the<br/>mutate/seeded path instead runs Planner + interpreter (_stream_plan)
+    Note over Harness: single-agent path (trivial estimate, or no mutate/seed) — the<br/>mutate/seeded path instead runs Sequencer + interpreter (_stream_plan)
     Harness->>Harness: _build_agent(...) — filter tools, render <tools>, construct Agent
     Harness->>llmstitch: agent.run(prior_messages)
     loop tool-calling

@@ -44,7 +44,7 @@ _SHARED_BODY = (
 # subagents: they assemble their own system prompt from _SHARED_BODY +
 # their own directives, independent of SYSTEM_PROMPT.
 #
-# Specialist routing/delegation is not main's job (plan 27): the planner +
+# Specialist routing/delegation is not main's job (plan 27): the sequencer +
 # fixed interpreter own all cross-agent control flow, and no `delegate` tool
 # is registered for main (harness/core.py `_build_agent`) — so this block no
 # longer instructs main to route to or name a specialist.

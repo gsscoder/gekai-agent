@@ -106,7 +106,7 @@ class EstimateEvent(AgentEvent):
 
 @dataclass
 class TaskGraphStartedEvent(AgentEvent):
-    """Telemetry: the planner produced a validated task graph (plan 27 improvement 6)."""
+    """Telemetry: the sequencer produced a validated task graph (plan 27 improvement 6)."""
     step_count: int = 0
     agents: list[str] = field(default_factory=list)
     verify_placements: int = 0

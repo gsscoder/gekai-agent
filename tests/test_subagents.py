@@ -5,7 +5,6 @@ import pytest
 from agent import subagents as subagents_module
 from agent.persona import _SHARED_BODY
 from agent.subagents import NAMESPACE_COLORS, NAMESPACES, Subagent, validate_registry
-from agent.subagents.worker.ws_manager import subagent as ws_manager_subagent
 
 
 def _subagent(mandate: str = "", directives: str = "") -> Subagent:
@@ -93,24 +92,3 @@ def test_validate_registry_raises_when_a_namespace_has_no_color(monkeypatch):
     monkeypatch.setattr(subagents_module, "NAMESPACE_COLORS", {**NAMESPACE_COLORS, "ghost": ""})
     with pytest.raises(ValueError, match="ghost"):
         validate_registry()
-
-
-# ---------------------------------------------------------------------------
-# ws-manager — the system-managed worker/onboard subagent (plan 17b context):
-# NOT user-invocable; never routed or surfaced in the menu/palette. It is
-# dispatched only via run() (onboard -> build_index), bypassing the LLM path.
-# ---------------------------------------------------------------------------
-
-def test_ws_manager_is_not_user_invocable():
-    assert ws_manager_subagent.user_invocable is False
-
-
-def test_ws_manager_namespace_is_worker():
-    assert ws_manager_subagent.namespace == "worker"
-
-
-def test_ws_manager_is_discoverable_and_registry_stays_valid():
-    # ws-manager is picked up by _discover() and keeps the real, unmodified
-    # registry valid.
-    assert ws_manager_subagent in subagents_module.SUBAGENTS
-    validate_registry()  # must not raise

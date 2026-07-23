@@ -22,7 +22,7 @@ from ..persistence import append_debug
 from ..persona import SYSTEM_PROMPT, render_tool_instruction
 from ..pipeline.estimate import Estimator
 from ..pipeline.plan import Task, TaskGraph
-from ..pipeline.planner import Planner
+from ..pipeline.sequencer import Sequencer
 from ..harness.interpreter import TaskGraphHalted, StepResult, run_task_graph
 from ..harness.scaling import WorkSignal, scale, _sequencer_signal
 from ..session import Session
@@ -173,7 +173,7 @@ def _build_agent(
     ))
 
     # No `delegate` tool is registered — main is a pure work-operator; the
-    # harness (planner + interpreter) owns all cross-agent control flow
+    # harness (sequencer + interpreter) owns all cross-agent control flow
     # (plan 27 decision 11, superseding plan 25's agents-as-tools).
     return agent
 
@@ -208,7 +208,7 @@ class Harness:
             if estimator is not None
             else None
         )
-        # `Planner` is no longer built once here: the sequencer's tier is
+        # `Sequencer` is no longer built once here: the sequencer's tier is
         # chosen per `_stream_graph()` call (pre-plan signal), so it is
         # constructed fresh there, against a freshly resolved tier.
 
@@ -331,7 +331,7 @@ class Harness:
         hidden_grant_callback: HiddenGrantCallback | None,
         bus: EventBus,
     ) -> AsyncIterator[AgentEvent | str]:
-        """Case 3/4 mutation path: planner produces a validated TaskGraph, the
+        """Case 3/4 mutation path: sequencer produces a validated TaskGraph, the
         fixed interpreter walks it (plan 27 improvements 2-3; renamed plan 28).
         `main` steps run as a direct instruction (no spawn); subagent steps
         are a cold, fire-and-forget run whose start/outcome are traced on
@@ -352,7 +352,7 @@ class Harness:
         # the TUI's per-step renderer setup relies on it, same as the
         # single-agent path; nested steps then render as delegation badges
         # underneath it via the same DelegationStart/DoneEvent bridge.
-        yield SubAgentStartEvent(name="planner", description="planning", color=_MAIN_COLOR)
+        yield SubAgentStartEvent(name="sequencer", description="sequencing", color=_MAIN_COLOR)
 
         # Sequencer pre-plan signal (plan 28 Phase 2): a cheap, engineered
         # read of the raw prompt, computed before the task graph exists (no
@@ -367,18 +367,18 @@ class Harness:
                 chosen_tier=sequencer_tier.value,
                 reason=sequencer_reason,
             )
-        planner = Planner(
+        sequencer = Sequencer(
             model=resolved_sequencer.model, api_key=resolved_sequencer.api_key,
             api_base=resolved_sequencer.api_base, extra_params=resolved_sequencer.extra_params,
         )
 
         try:
-            graph = await planner.plan(user_input, seed=seed)
+            graph = await sequencer.sequence(user_input, seed=seed)
         except ValueError as exc:
             unsubscribe()
-            yield TaskGraphHaltedEvent(step_index=-1, agent="planner", reason=str(exc))
+            yield TaskGraphHaltedEvent(step_index=-1, agent="sequencer", reason=str(exc))
             yield DoneEvent(thinking_chars=0, files_touched=[])
-            yield f"[planner failed to produce a valid task graph: {exc}]"
+            yield f"[sequencer failed to produce a valid task graph: {exc}]"
             return
 
         yield TaskGraphStartedEvent(

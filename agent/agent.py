@@ -18,13 +18,11 @@ from .logging import EventLogger
 
 from .events import MaxIterationsEvent, AgentEvent
 from .persistence import append_message, append_debug, append_event
-from .workspace import db as workspace_db
 
 
 class GekaiAgent:
     def __init__(self, *, working_dir: Path, permissions: Permissions, debug: bool = False) -> None:
         self.working_dir = working_dir
-        workspace_db.handle_db_upgrade(self.working_dir)
         self.permissions = permissions
         self.debug = debug
 

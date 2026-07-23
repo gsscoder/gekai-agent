@@ -1,11 +1,11 @@
-"""Integration probe: does the real CORE model, given a one-shot planner-style
+"""Integration probe: does the real CORE model, given a one-shot sequencer-style
 prompt, decompose a multi-part build into a rational-order step list
 (code-expert before test-expert), attach preventive verification to the
 complex steps, and thread code-expert's output into test-expert's task?
 
 Source: plan 27 ("plan gate and data plan") — "Phased tasks" step 0, the
-go/no-go probe before any planner/interpreter production code is written.
-Entirely self-contained: no agent/pipeline/plan.py, no planner module, no
+go/no-go probe before any sequencer/interpreter production code is written.
+Entirely self-contained: no agent/pipeline/plan.py, no sequencer module, no
 interpreter — just a raw one-shot completion (no tools) parsed as JSON,
 mirroring the retired tests/test_delegate_probe.py's no-production-wiring
 approach.
@@ -31,7 +31,7 @@ from agent.llm.agent import Agent
 from agent.llm.model_caps import resolve_thinking_params
 from agent.llm.providers.openai import OpenAIAdapter
 
-_PLANNER_SYSTEM = (
+_SEQUENCER_SYSTEM = (
     "You are a planning stage in a coding harness. Decompose the user's request into "
     "a JSON object with keys:\n"
     '  "summary": a short 1-2 sentence gist of what the user wants\n'
@@ -76,7 +76,7 @@ async def _run_one_trial(model_name: str, api_key: str, base_url: str | None) ->
     agent = Agent(
         provider=provider,
         model=model_name,
-        system=_PLANNER_SYSTEM,
+        system=_SEQUENCER_SYSTEM,
         max_iterations=1,
         extra_params=resolve_thinking_params(model_name, os.environ.get("GEKAI_THINKING_EFFORT")),
     )
@@ -116,7 +116,7 @@ def _check_plan(steps: list[dict]) -> str | None:
 
 
 @pytest.mark.llm
-def test_planner_decomposes_and_orders_with_verify_placement() -> None:
+def test_sequencer_decomposes_and_orders_with_verify_placement() -> None:
     model_name = os.environ.get("GEKAI_CORE_MODEL_NAME")
     api_key = os.environ.get("GEKAI_CORE_MODEL_KEY")
     if not model_name or not api_key:

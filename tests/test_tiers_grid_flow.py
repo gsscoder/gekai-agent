@@ -16,10 +16,10 @@ validate-all-before-saving-any commit fix actually hold atomically?
 
 A real `GekaiAgent` (see agent/agent.py) needs a resolvable tier
 catalog/bindings/keyring to construct without raising, and `GekaiApp`'s real
-`_init_session` (agent/tui/app.py) indexes the whole workspace on mount
-(`ws_manager.run("onboard", ...)`, `workspace_db.ensure(...)`) — slow and
-irrelevant to `/tiers`. Two shortcuts are taken instead, both scoped to this
-file only via `monkeypatch` (nothing here touches app.py/agent.py):
+`_init_session` (agent/tui/app.py) drives a first-run permissions prompt and
+history/timeline replay — irrelevant to `/tiers`. Two shortcuts are taken
+instead, both scoped to this file only via `monkeypatch` (nothing here
+touches app.py/agent.py):
 
 1. `GekaiAgent` is stubbed the same way `tests/test_agent.py::_stub_agent`
    does — `object.__new__(GekaiAgent)`, bypassing `__init__`, setting only
@@ -27,9 +27,9 @@ file only via `monkeypatch` (nothing here touches app.py/agent.py):
    `permissions`, `debug` — all `start_session()` needs).
 2. `GekaiApp._init_session` itself is monkeypatched to a trivial stub that
    just creates the session (`#conversation` is already mounted by
-   `compose()`, so no extra mounting is needed) — skipping workspace
-   indexing, the first-run permissions prompt, and history/timeline replay
-   entirely, since none of that is reachable from or relevant to `/tiers`.
+   `compose()`, so no extra mounting is needed) — skipping the first-run
+   permissions prompt and history/timeline replay entirely, since neither
+   is reachable from or relevant to `/tiers`.
 
 ## Isolating disk state
 
@@ -99,10 +99,10 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture(autouse=True)
 def _stub_init_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Real `_init_session` indexes the workspace and drives a first-run
-    # permissions prompt — neither is reachable from or relevant to /tiers.
-    # `#conversation` is already mounted by `compose()`, so all this needs
-    # to do is stand up a session.
+    # Real `_init_session` drives a first-run permissions prompt and
+    # history/timeline replay — neither reachable from or relevant to
+    # /tiers. `#conversation` is already mounted by `compose()`, so all
+    # this needs to do is stand up a session.
     async def _fake_init_session(self: GekaiApp) -> None:
         self._session = self._agent.start_session()
 

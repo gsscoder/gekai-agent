@@ -54,9 +54,9 @@ def scale(policy: TierPolicy, signal: WorkSignal) -> tuple[TierName, str]:
 
 
 def node_signal(step: Task) -> WorkSignal:
-    """Mechanical (no LLM call, decision 7): the planner already marks a
+    """Mechanical (no LLM call, decision 7): the sequencer already marks a
     step `verify == "mechanical"` when its own complexity warrants a
-    preventive check (see planner.py) — reuse that judgment as the
+    preventive check (see sequencer.py) — reuse that judgment as the
     reasoning-shaped promotion signal, rather than parsing the free-form
     `mission` prose, which has no fixed vocabulary to match against."""
     return WorkSignal(direction=1) if step.verify == "mechanical" else WorkSignal()
