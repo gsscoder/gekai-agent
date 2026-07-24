@@ -92,21 +92,34 @@ async def _run_command(
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-        except asyncio.TimeoutError:
             try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            # wait_for cancels communicate() mid-flight — drain pipes so Windows
-            # proactor transports close before the event loop shuts down
-            try:
-                await proc.communicate()
-            except ProcessLookupError:
-                pass
-            return f"error: timeout after {timeout}s"
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                # wait_for cancels communicate() mid-flight — drain pipes so Windows
+                # proactor transports close before the event loop shuts down
+                try:
+                    await proc.communicate()
+                except ProcessLookupError:
+                    pass
+                return f"error: timeout after {timeout}s"
+        finally:
+            # ponytail: Windows ProactorEventLoop closes subprocess pipe
+            # transports via a deferred loop callback; without this tick a
+            # transport can still be pending when the app's own loop shuts
+            # down (e.g. on /exit), and Python's GC finalizing it later
+            # prints a harmless "Exception ignored in __del__" to stderr.
+            # Force-close + one loop tick runs cleanup now instead of
+            # racing the app's shutdown.
+            transport = getattr(proc, "_transport", None)
+            if transport is not None:
+                transport.close()
+            await asyncio.sleep(0)
     except Exception as exc:
         return f"error: {exc or type(exc).__name__}"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from . import __version__
@@ -16,7 +17,33 @@ from .shell import resolve_shell
 from .workspace import get_git_branch
 
 
+def _silence_proactor_pipe_del() -> None:
+    """ponytail: known CPython/Windows bug (gh-83413) — ProactorEventLoop's
+    subprocess pipe transports close via a deferred loop callback; if the
+    app's own loop shuts down first (e.g. on /exit right after run_command),
+    GC finalizes the transport later and its __del__ crashes formatting its
+    own __repr__() on the already-OS-closed pipe, printed as a harmless but
+    noisy "Exception ignored in __del__". Not reliably avoidable by winning
+    the timing race per-callsite (see agent/tools/shell.py's own attempt) —
+    this is the standard fix (used by httpx, aiohttp, etc.): swallow the
+    crash in the finalizer itself so nothing prints."""
+    if sys.platform != "win32":
+        return
+    from asyncio.proactor_events import _ProactorBasePipeTransport
+
+    original_del = _ProactorBasePipeTransport.__del__
+
+    def _safe_del(self: _ProactorBasePipeTransport) -> None:
+        try:
+            original_del(self)
+        except Exception:
+            pass
+
+    _ProactorBasePipeTransport.__del__ = _safe_del
+
+
 def main() -> None:
+    _silence_proactor_pipe_del()
     bootstrap_global_settings()
     load_global_settings()
     resolve_shell()
