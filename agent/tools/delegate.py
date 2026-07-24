@@ -25,6 +25,7 @@ async def run_subagent(
     permission_callback: PermissionCallback | None,
     bus: EventBus | None,
     hidden_grant_callback: Any | None,
+    tools_override: frozenset[str] | None = None,
 ) -> str:
     """Run `agent` (any roster name, invocable or post-planning-only) on `task`
     as a cold, fire-and-forget nested run — the interpreter's `dispatch` for a
@@ -45,6 +46,7 @@ async def run_subagent(
         permissions, permission_callback, system_base, bus,
         subagent=resolved,
         hidden_grant_callback=hidden_grant_callback,
+        tools_override=tools_override,
     )
     nested_run_id = uuid.uuid4().hex
     if bus is not None:

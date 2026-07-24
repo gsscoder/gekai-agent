@@ -197,6 +197,35 @@ def test_write_file_emits_diff_event(
     assert diff_events[0].path == "hello.py"
 
 
+def test_no_graph_path_never_passes_tools_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ (plan 31 Phase 3, item 5): the no-graph, single-agent branch of
+    # `Harness.stream` has no sequencer/task-graph step to read a `scope`
+    # signal from, so it must never narrow main's tool grant -- its
+    # `_build_agent(...)` call site stays untouched, always default
+    # (`tools_override=None`), main always runs full there.
+    responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    real_build_agent = harness_core._build_agent
+    calls: list[dict[str, Any]] = []
+
+    def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real_build_agent(*args, **kwargs)
+
+    monkeypatch.setattr(harness_core, "_build_agent", _spy_build_agent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    run(_drain(harness, session, "sum 10 numbers"))
+
+    assert len(calls) == 1
+    assert calls[0].get("tools_override") is None
+
+
 def test_coding_prompt_emits_directive_pump_event_on_main_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

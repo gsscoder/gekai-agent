@@ -9,23 +9,24 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
-from unittest.mock import AsyncMock, patch
+from typing import Any, ClassVar
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import DoneEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent
+from agent.events import DoneEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
-from agent.llm.types import CompletionResponse, StreamDone, TextBlock
+from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
 from agent.session import Session
 from agent.settings import Permissions
+from agent.tools.catalog import ALL_TOOLS, RUNGS
 
 
 def run(coro):
@@ -388,3 +389,124 @@ def test_single_agent_path_never_scales_or_emits_scale_event(
     assert not any(isinstance(e, ScaleEvent) for e in collected)
     assert len(_RecordingAdapter.instances) == 1
     assert _RecordingAdapter.instances[0].calls[0]["model"] == "supp-model"
+
+
+# --- plan 31 Phase 3 (assignment-time tool scoping) end-to-end coverage ---
+#
+# These prove the wiring through the real Harness/_stream_graph/dispatch
+# path: a graph step's `scope` narrows the dispatched unit's registered
+# tools (harness/tool_scope.py's `scope()`), not just the pure function
+# already unit-tested in isolation in tests/test_tool_scope.py.
+
+_EXCLUDED_FROM_READ = ("edit_file", "write_file", "move_file", "copy_file", "delete_file", "make_dir")
+_FULL_RUNG = frozenset(RUNGS[-1])
+
+
+def _fake_history_agent() -> MagicMock:
+    fake_agent = MagicMock()
+    fake_agent.run = AsyncMock(
+        return_value=[Message(role="assistant", content=[TextBlock(text="done")])]
+    )
+    return fake_agent
+
+
+def _spy_build_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def _fake(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return _fake_history_agent()
+
+    monkeypatch.setattr(harness_core, "_build_agent", _fake)
+    return calls
+
+
+def test_graph_step_scope_read_excludes_write_tools_for_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    graph = TaskGraph(
+        summary="read only",
+        steps=[Task(agent="main", instruction="read stuff", mission="read stuff", scope="read")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    calls = _spy_build_agent(monkeypatch)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "read stuff"))
+
+    assert len(calls) == 1
+    override = calls[0]["tools_override"]
+    for name in _EXCLUDED_FROM_READ:
+        assert name not in override
+    assert override == frozenset(RUNGS[0])
+
+    scope_events = _only(collected, ToolScopeEvent)
+    assert scope_events == [ToolScopeEvent(unit="main-dispatch", chosen_rung="read", reason="narrowed to 'read'")]
+
+
+def test_graph_step_scope_fs_gets_full_tools_for_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    graph = TaskGraph(
+        summary="full access",
+        steps=[Task(agent="main", instruction="do anything", mission="do anything", scope="fs")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    calls = _spy_build_agent(monkeypatch)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "do anything"))
+
+    assert len(calls) == 1
+    assert calls[0]["tools_override"] == _FULL_RUNG == frozenset(ALL_TOOLS)
+    assert not any(isinstance(e, ToolScopeEvent) for e in collected)
+
+
+def test_graph_step_scope_none_gets_full_tools_for_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    graph = TaskGraph(
+        summary="no signal",
+        steps=[Task(agent="main", instruction="do it", mission="do it", scope=None)],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    calls = _spy_build_agent(monkeypatch)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "do it"))
+
+    assert len(calls) == 1
+    assert calls[0]["tools_override"] == _FULL_RUNG
+    assert not any(isinstance(e, ToolScopeEvent) for e in collected)
+
+
+def test_graph_step_scope_read_excludes_write_tools_for_subagent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    graph = TaskGraph(
+        summary="read only",
+        steps=[Task(agent="code-expert", instruction="read stuff", mission="read stuff", scope="read")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    calls = _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "read stuff"))
+
+    assert len(calls) == 1
+    override = calls[0]["tools_override"]
+    for name in _EXCLUDED_FROM_READ:
+        assert name not in override
+    assert override == frozenset(RUNGS[0])
+
+    scope_events = _only(collected, ToolScopeEvent)
+    assert scope_events == [ToolScopeEvent(unit="code-expert", chosen_rung="read", reason="narrowed to 'read'")]

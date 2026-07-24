@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from ..pipeline.plan import Task, TaskGraph
 from .scaling import WorkSignal, node_signal
 
-DispatchFn = Callable[[str, str, str, WorkSignal], Awaitable[str]]
+DispatchFn = Callable[[str, str, str, WorkSignal, str | None], Awaitable[str]]
 VerifyFn = Callable[[Task, str], Awaitable[bool]]
 # Structured pass/fail is a placeholder here (hard problem 3, open point 2 —
 # the verdict contract is not yet designed); a bool is enough to drive the
@@ -98,7 +98,7 @@ async def run_task_graph(
     for index, step in enumerate(graph):
         instruction = resolve_refs(step.instruction, prior_outputs)
         instruction = _inject_request_summary(graph, index, instruction)
-        out = await dispatch(step.agent, instruction, step.mission, node_signal(step))
+        out = await dispatch(step.agent, instruction, step.mission, node_signal(step), step.scope)
         if not out:
             raise TaskGraphHalted(index, step, "empty dispatch output")
 

@@ -28,6 +28,7 @@ The development documents are organized in the `memory-bank` dir:
 
 ## Output
 - Code: match the architectural and stylistic conventions of the existing codebase
+- Language: use English for all generated artifacts and symbols by default. Content in another language is allowed only in user-facing strings, messages, and labels when the application has a single localization
 - Quality: production-grade — every line will be reviewed
 - Markdown: compact, no linting compliance, formatting identical to this file
 

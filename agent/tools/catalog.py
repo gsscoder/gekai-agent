@@ -9,3 +9,8 @@ FS_TOOLS = ("move_file", "copy_file", "delete_file", "make_dir")
 SHELL_TOOLS = ("run_command",)
 
 ALL_TOOLS = READ_TOOLS + EDIT_TOOLS + FS_TOOLS + SHELL_TOOLS
+
+# Tighten-only ladder for assignment-time tool scoping (harness/tool_scope.py):
+# each rung is a superset of the previous one. Index 0="read", 1="edit", 2="fs"/full.
+FLOOR: tuple[str, ...] = READ_TOOLS + SHELL_TOOLS
+RUNGS: tuple[tuple[str, ...], ...] = (FLOOR, FLOOR + EDIT_TOOLS, ALL_TOOLS)

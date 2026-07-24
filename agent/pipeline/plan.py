@@ -27,6 +27,7 @@ class Task:
     mission: str  # short human-readable phrase (~8-10 words) describing the step's job
     verify: str | None = None  # post-planning-only agent name, or a mechanical check command
     repair: str | None = None  # post-planning-only agent name, or a mechanical check command
+    scope: str | None = None  # sequencer's per-step tool-breadth classification: "read"/"edit"/"fs", or None if the sequencer emitted no signal (assignment-time tool scoping); inert until a later phase wires it into dispatch
 
 
 @dataclass(frozen=True, eq=False)
@@ -80,6 +81,7 @@ def parse_task_graph(raw: dict, roster: list[Subagent]) -> TaskGraph:
         mission = item.get("mission")
         verify = item.get("verify")
         repair = item.get("repair")
+        scope = item.get("scope")
 
         if agent != MAIN_AGENT and not (agent in by_name and by_name[agent].auto_assignable):
             raise ValueError(
@@ -91,9 +93,12 @@ def parse_task_graph(raw: dict, roster: list[Subagent]) -> TaskGraph:
             raise ValueError(f"step {i}: mission must be a non-empty string, got {mission!r}")
         _check_post_planning_field(i, "verify", verify, by_name)
         _check_post_planning_field(i, "repair", repair, by_name)
+        _check_scope_field(i, scope)
         _check_refs(i, instruction, len(steps))
 
-        steps.append(Task(agent=agent, instruction=instruction, mission=mission, verify=verify, repair=repair))
+        steps.append(
+            Task(agent=agent, instruction=instruction, mission=mission, verify=verify, repair=repair, scope=scope)
+        )
 
     return TaskGraph(summary=summary, steps=steps)
 
@@ -110,6 +115,13 @@ def _check_post_planning_field(
             f"step {index}: {field}={value!r} is an auto-assignable agent, "
             "not a post-planning-only verify/repair agent"
         )
+
+
+def _check_scope_field(index: int, value: str | None) -> None:
+    if value is None:
+        return
+    if value not in ("read", "edit", "fs"):
+        raise ValueError(f"step {index}: scope must be 'read', 'edit', 'fs', or None, got {value!r}")
 
 
 def _check_refs(index: int, instruction: str, prior_step_count: int) -> None:

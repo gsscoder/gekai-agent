@@ -29,6 +29,7 @@ from ..events import (
     ResponderEvent,
     ScaleEvent,
     TaskGraphStartedEvent,
+    ToolScopeEvent,
 )
 from ..permissions import PermissionCallback
 from ..pipeline import Route
@@ -118,6 +119,13 @@ async def run_step(
                 "scale", session=session_id, turn=turn_id,
                 component=item.component, default_tier=item.default_tier,
                 chosen_tier=item.chosen_tier, reason=item.reason,
+            )
+        elif isinstance(item, ToolScopeEvent):
+            # Telemetry only (plan 31 Phase 3) — same not-TUI-visible
+            # treatment as ScaleEvent above.
+            events.emit(
+                "tool_scope", session=session_id, turn=turn_id,
+                unit=item.unit, chosen_rung=item.chosen_rung, reason=item.reason,
             )
         elif isinstance(item, DirectivePumpEvent):
             # Telemetry only (plan 28 Phase 3, hard problem 3) — same

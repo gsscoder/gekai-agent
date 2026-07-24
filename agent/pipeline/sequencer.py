@@ -34,6 +34,10 @@ _SEQUENCER_PROMPT = (
     '    "verify": null, or the string "mechanical" if this step\'s change is complex enough to '
     "warrant a preventive check before moving on (no dedicated verify agent exists yet — "
     '"mechanical" is the placeholder check)\n'
+    '    "scope": optional, one of "read" (pure investigation/no file changes), "edit" (only '
+    'edits existing files), "fs" (also creates/moves/deletes files or needs shell) — omit '
+    "entirely if the step's tool breadth is unclear or doesn't matter; this narrows the step's "
+    "tool grant, it never widens beyond the agent's normal set\n"
     "order steps by dependency (scaffolding/logic before tests), regardless of the order "
     "mentioned in the request. never fragment one artifact across steps. "
     "when the request builds something new from scratch (greenfield, not editing an existing "

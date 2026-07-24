@@ -130,6 +130,52 @@ def test_tools_block_narrows_with_permissions(tmp_path: Path):
     assert "use run_command for build, test, and git operations" not in system
 
 
+# ---------------------------------------------------------------------------
+# _build_agent: tools_override (plan 31 Phase 3, assignment-time tool
+# scoping) — a second, narrower filter applied on top of the existing
+# subagent.tools/permission filtering, not a replacement for it.
+# ---------------------------------------------------------------------------
+
+
+def test_build_agent_tools_override_narrows_selected(tmp_path: Path):
+    agent = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, _FULL_PERMS, None, "base prompt", None,
+        tools_override=frozenset(READ_TOOLS),
+    )
+    registered = {t.name for t in agent.tools._tools.values()}
+    assert registered == set(READ_TOOLS)
+
+
+def test_build_agent_tools_override_none_leaves_selected_unchanged(tmp_path: Path):
+    agent_default = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, _FULL_PERMS, None, "base prompt", None,
+    )
+    agent_explicit_none = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, _FULL_PERMS, None, "base prompt", None,
+        tools_override=None,
+    )
+    registered_default = {t.name for t in agent_default.tools._tools.values()}
+    registered_explicit_none = {t.name for t in agent_explicit_none.tools._tools.values()}
+    assert registered_default == registered_explicit_none == set(ALL_TOOLS)
+
+
+def test_build_agent_tools_override_still_respects_subagent_allowlist(tmp_path: Path):
+    # tools_override is a second, narrower filter on top of subagent.tools —
+    # it must not widen the grant back past the subagent's own allowlist.
+    sub = Subagent(name="t", namespace="coding", description="d", tools=list(READ_TOOLS))
+    agent = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
+        subagent=sub,
+        tools_override=frozenset(ALL_TOOLS),  # wider than the subagent's own allowlist
+    )
+    registered = {t.name for t in agent.tools._tools.values()}
+    assert registered == set(READ_TOOLS)
+
+
 def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
     sub = Subagent(name="t", namespace="coding", description="d")  # tools=None -> all
     system, registered = _build(tmp_path, sub)

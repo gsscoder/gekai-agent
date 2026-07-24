@@ -133,6 +133,17 @@ class ScaleEvent(AgentEvent):
 
 
 @dataclass
+class ToolScopeEvent(AgentEvent):
+    """Telemetry only (plan 31 Phase 1): emitted to events-*.jsonl when
+    assignment-time tool scoping (`harness/tool_scope.py`) narrows a unit's
+    tool grant below its `ToolPolicy` ceiling for one dispatch. Never
+    emitted on a no-op (chosen_rung == "default")."""
+    unit: str = ""            # e.g. "main" | "subagent-dispatch"
+    chosen_rung: str = ""     # e.g. "read" | "edit" | "fs"
+    reason: str = ""
+
+
+@dataclass
 class DirectivePumpEvent(AgentEvent):
     """Telemetry only (plan 28 Phase 3, hard problem 3): emitted when the
     harness pumps domain-craft directives into main's system prompt for one

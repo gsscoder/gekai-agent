@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..persona import _IDENTITY_SUB, _SHARED_BODY
 from ..settings import Permissions
+from ..tools.catalog import RUNGS
 
 # action namespaces and their TUI badge colors — co-located so a namespace
 # cannot be declared without a color (no fallback color at render time);
@@ -20,6 +21,21 @@ NAMESPACES = tuple(NAMESPACE_COLORS)
 
 
 @dataclass(frozen=True)
+class ToolPolicy:
+    """A unit's tool ceiling for assignment-time scoping (plan 31 Phase 1):
+    an index into `agent.tools.catalog.RUNGS`, the highest rung it may ever
+    be granted. Tighten-only — `harness/tool_scope.py` narrows a unit's
+    grant per task-graph step but never widens it past this ceiling."""
+    ceiling: int
+
+    def __post_init__(self) -> None:
+        if not (0 <= self.ceiling < len(RUNGS)):
+            raise ValueError(
+                f"tool policy ceiling {self.ceiling!r} out of range: must be 0 <= ceiling < {len(RUNGS)}"
+            )
+
+
+@dataclass(frozen=True)
 class Subagent:
     name: str  # unique subagent id, e.g. "code-refactorer"
     namespace: str  # one of NAMESPACES
@@ -28,6 +44,7 @@ class Subagent:
     mandate: str = ""  # 1-2 line activation hook: "your specialization is…"
     directives: str = ""  # system-prompt fragment injected after the mandate
     tools: list[str] | None = None  # tool-name allowlist; None = all tools
+    tool_policy: ToolPolicy | None = None  # assignment-time tool ceiling (plan 31 Phase 1); None = no ceiling declared, unit runs full
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
     auto_assignable: bool = False  # phase-1 decomposition may assign it; False = post-planning-only (verify/repair)
@@ -96,3 +113,5 @@ def validate_registry() -> None:
         if p.name in seen:
             raise ValueError(f"duplicate subagent name: {p.name!r}")
         seen.add(p.name)
+        if p.tool_policy is not None and not (0 <= p.tool_policy.ceiling < len(RUNGS)):
+            raise ValueError(f"subagent {p.name!r} has out-of-range tool policy ceiling: {p.tool_policy.ceiling!r}")

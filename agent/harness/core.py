@@ -30,11 +30,12 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent, ToolScopeEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
 from ..tools.delegate import run_subagent
+from .tool_scope import scope as tool_scope, MAIN_TOOL_POLICY
 
 if TYPE_CHECKING:
     # deferred: agent.llm.resolve imports agent.harness.touchpoints, which
@@ -137,6 +138,7 @@ def _build_agent(
     bus: EventBus | None = None,
     subagent: Subagent | None = None,
     hidden_grant_callback: HiddenGrantCallback | None = None,
+    tools_override: frozenset[str] | None = None,
 ) -> Agent:
     if subagent and subagent.permissions is not None:
         effective = Permissions(
@@ -155,6 +157,9 @@ def _build_agent(
         if perm != "none" and not getattr(effective, perm, False) and permission_callback is None:
             continue
         selected.append(t)
+
+    if tools_override is not None:
+        selected = [t for t in selected if t.name in tools_override]
 
     system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)}"
 
@@ -408,6 +413,7 @@ class Harness:
 
         async def dispatch(
             agent_name: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(),
+            step_scope: str | None = None,
         ) -> str:
             if agent_name == "main":
                 resolved = _scale_and_resolve(self._main_dispatch_policy, "main-dispatch", signal)
@@ -415,11 +421,15 @@ class Harness:
                 main_system = _enrich_system_base(main_system, working_dir)
                 if pumped_domains:
                     queue.put_nowait(DirectivePumpEvent(domains=pumped_domains))
+                tools_override, scope_reason = tool_scope(MAIN_TOOL_POLICY, step_scope)
+                if scope_reason != "default":
+                    queue.put_nowait(ToolScopeEvent(unit="main-dispatch", chosen_rung=step_scope, reason=scope_reason))
                 agent_obj = _build_agent(
                     resolved.model, resolved.api_key, resolved.api_base,
                     resolved.extra_params,
                     working_dir, permissions, permission_callback, main_system, bus,
                     subagent=None, hidden_grant_callback=hidden_grant_callback,
+                    tools_override=tools_override,
                 )
                 run_id = uuid.uuid4().hex
                 bus.emit(DelegationStarted(agent="main", task=instruction, mission=mission, run_id=run_id))
@@ -429,6 +439,10 @@ class Harness:
                     bus.emit(DelegationCompleted(agent="main", run_id=run_id))
                 return _last_assistant_text(history)
             resolved = _scale_and_resolve(self._subagent_dispatch_policy, "subagent-dispatch", signal)
+            matched = next((s for s in SUBAGENTS if s.name == agent_name), None)
+            tools_override, scope_reason = tool_scope(matched.tool_policy if matched else None, step_scope)
+            if scope_reason != "default":
+                queue.put_nowait(ToolScopeEvent(unit=agent_name, chosen_rung=step_scope, reason=scope_reason))
             return await run_subagent(
                 agent_name, instruction,
                 mission=mission,
@@ -437,6 +451,7 @@ class Harness:
                 extra_params=resolved.extra_params, working_dir=working_dir,
                 permissions=permissions, permission_callback=permission_callback,
                 bus=bus, hidden_grant_callback=hidden_grant_callback,
+                tools_override=tools_override,
             )
 
         async def verify_agent(step: Task, out: str) -> bool:

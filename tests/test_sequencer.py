@@ -76,6 +76,31 @@ def test_post_planning_only_agent_in_phase1_raises() -> None:
         run(sequencer.sequence("review this"))
 
 
+def test_prompt_describes_scope_key() -> None:
+    sequencer = _make_sequencer()
+    assert '"scope"' in sequencer._prompt
+
+
+def test_scope_field_from_model_parses_into_plain_string() -> None:
+    sequencer = _make_sequencer()
+    raw = json.dumps({
+        "summary": "edit a config file",
+        "steps": [
+            {
+                "agent": "code-expert",
+                "instruction": "edit the config",
+                "mission": "edit the config",
+                "scope": "edit",
+            }
+        ],
+    })
+    sequencer._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
+
+    graph = run(sequencer.sequence("edit a config file"))
+
+    assert graph[0].scope == "edit"
+
+
 def test_no_json_object_in_output_raises() -> None:
     sequencer = _make_sequencer()
     sequencer._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("not json at all"))

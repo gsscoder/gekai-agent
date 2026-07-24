@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+import dataclasses
+
 from agent import subagents as subagents_module
 from agent.persona import _SHARED_BODY
-from agent.subagents import NAMESPACE_COLORS, NAMESPACES, Subagent, validate_registry
+from agent.subagents import NAMESPACE_COLORS, NAMESPACES, Subagent, ToolPolicy, validate_registry
+from agent.tools.catalog import RUNGS
 
 
 def _subagent(mandate: str = "", directives: str = "") -> Subagent:
@@ -91,4 +94,22 @@ def test_validate_registry_raises_when_a_namespace_has_no_color(monkeypatch):
     monkeypatch.setattr(subagents_module, "NAMESPACES", (*NAMESPACES, "ghost"))
     monkeypatch.setattr(subagents_module, "NAMESPACE_COLORS", {**NAMESPACE_COLORS, "ghost": ""})
     with pytest.raises(ValueError, match="ghost"):
+        validate_registry()
+
+
+# ---------------------------------------------------------------------------
+# Tool policy ceiling — validated both at construction (__post_init__) and
+# at startup (validate_registry), matching its existing style
+# ---------------------------------------------------------------------------
+
+def test_validate_registry_rejects_out_of_range_ceiling(monkeypatch):
+    # ToolPolicy.__post_init__ already forbids constructing an out-of-range
+    # ceiling directly, so bypass __init__ to simulate a registry entry that
+    # slipped past construction-time validation, matching what
+    # validate_registry()'s redundant check is meant to catch.
+    bad_policy = object.__new__(ToolPolicy)
+    object.__setattr__(bad_policy, "ceiling", len(RUNGS))
+    bad = dataclasses.replace(_subagent(), tool_policy=bad_policy)
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
+    with pytest.raises(ValueError, match="out-of-range tool policy ceiling"):
         validate_registry()

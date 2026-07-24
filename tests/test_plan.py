@@ -70,3 +70,55 @@ def test_well_formed_graph_parses() -> None:
 def test_unknown_agent_rejects_whole_graph(raw, match) -> None:
     with pytest.raises(ValueError, match=match):
         parse_task_graph(raw, _ROSTER)
+
+
+@pytest.mark.parametrize("scope", ["read", "edit", "fs"])
+def test_scope_field_parses_into_plain_string(scope) -> None:
+    raw = {
+        "summary": "edit a file with narrow tools",
+        "steps": [
+            {
+                "agent": "code-expert",
+                "instruction": "edit config",
+                "mission": "edit the config file",
+                "scope": scope,
+            }
+        ],
+    }
+    graph = parse_task_graph(raw, _ROSTER)
+    assert graph == [
+        Task(
+            agent="code-expert",
+            instruction="edit config",
+            mission="edit the config file",
+            scope=scope,
+        ),
+    ]
+
+
+def test_scope_field_omitted_defaults_to_none() -> None:
+    raw = {
+        "summary": "s",
+        "steps": [{"agent": "main", "instruction": "do it", "mission": "do it"}],
+    }
+    graph = parse_task_graph(raw, _ROSTER)
+    assert graph[0].scope is None
+
+
+@pytest.mark.parametrize(
+    "scope, match",
+    [
+        ("bogus", "scope must be"),
+        (123, "scope must be"),
+        ([], "scope must be"),
+        ({}, "scope must be"),
+        ("mechanical", "scope must be"),
+    ],
+)
+def test_malformed_scope_rejects_whole_graph(scope, match) -> None:
+    raw = {
+        "summary": "s",
+        "steps": [{"agent": "main", "instruction": "do it", "mission": "do it", "scope": scope}],
+    }
+    with pytest.raises(ValueError, match=match):
+        parse_task_graph(raw, _ROSTER)
