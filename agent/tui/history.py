@@ -9,9 +9,6 @@ class PromptHistory:
     def __init__(self, path: Path, max_entries: int = 100) -> None:
         self._path = path
         self._max_entries = max_entries
-        self._entries: list[dict] = []
-        self._index: int | None = None
-        self._draft: str = ""
 
     def append(self, text: str) -> None:
         entries = self.load()
@@ -44,42 +41,3 @@ class PromptHistory:
         # Sort oldest to newest by timestamp
         entries.sort(key=lambda e: e.get("timestamp", 0))
         return entries
-
-    def _ensure_loaded(self) -> None:
-        if not self._entries:
-            self._entries = self.load()
-
-    def start_browse(self, current_input: str) -> None:
-        self._ensure_loaded()
-        self._draft = current_input
-        self._index = len(self._entries)
-
-    def browse_up(self) -> str | None:
-        self._ensure_loaded()
-        if not self._entries:
-            return None
-        if self._index is None:
-            self._index = len(self._entries)
-        self._index -= 1
-        if self._index < 0:
-            self._index = 0
-        return self._entries[self._index]["text"]
-
-    def browse_down(self) -> str | None:
-        self._ensure_loaded()
-        if self._index is None:
-            return None
-        self._index += 1
-        if self._index >= len(self._entries):
-            self._index = len(self._entries)
-            return self._draft
-        return self._entries[self._index]["text"]
-
-    def reset(self) -> None:
-        self._index = None
-        self._draft = ""
-        self._entries = []
-
-    @property
-    def is_browsing(self) -> bool:
-        return self._index is not None

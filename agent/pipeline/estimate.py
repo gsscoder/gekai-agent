@@ -39,7 +39,6 @@ class Estimator:
             base_url=api_base,
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
         )
-        self._prompt = _ESTIMATE_PROMPT
 
     async def estimate(self, user_input: str) -> ScopeEstimate:
         try:
@@ -47,7 +46,7 @@ class Estimator:
                 model=self._model,
                 temperature=0,
                 messages=[
-                    {"role": "system", "content": self._prompt},
+                    {"role": "system", "content": _ESTIMATE_PROMPT},
                     {"role": "user", "content": user_input},
                 ],
             )

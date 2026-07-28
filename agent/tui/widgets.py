@@ -194,9 +194,6 @@ class MessageWidget(Widget):
         else:
             self.query_one(Static).update(self._as_markup())
 
-    def append_text(self, chunk: str) -> None:
-        self.update(self._text + chunk)
-
 
 def _fmt_ago(ts: float) -> str:
     delta = time.time() - ts

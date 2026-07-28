@@ -35,6 +35,7 @@ The development documents are organized in the `memory-bank` dir:
 ## Operational Rules:
 - Read a language-specific file in `gen-directives` only when a coding task is requested
 - Read files in `detailed-spec` only when required by the current task; scan filenames first and read file contents only if they are relevant to the task
+- Review/audit/report requests end at the report; fixing findings needs its own separate request — authorization never carries across turns
 - NEVER update this file
 - NEVER modify `*.md` files in `memory-bank` (at any depth in the dir tree) without an explicit request
 - NEVER initiate any codebase modifications without an explicit request

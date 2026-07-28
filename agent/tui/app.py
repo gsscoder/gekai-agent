@@ -55,9 +55,6 @@ from .palette import CommandPalette
 from .history import PromptHistory
 from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, TierRowView, TiersPanel, WelcomeOverlay
 
-_DEFAULT_ROUTE_COLOR = "#3a3a3a"
-_PIPELINE_COLOR = "#ffffff"  # pure-white bg marks active pre-harness pipeline step
-
 
 class ConversationContainer(ScrollableContainer):
     class Scrolled(Message):
@@ -1166,7 +1163,6 @@ class GekaiApp(App[None]):
             return
         if self._history is not None:
             self._history.append(stripped)
-            self._history.reset()
         history_panel = self.query_one("#history-panel", HistoryPanel)
         if history_panel.display:
             history_panel.hide()
