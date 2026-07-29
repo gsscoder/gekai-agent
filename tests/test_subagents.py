@@ -6,7 +6,14 @@ import dataclasses
 
 from agent import subagents as subagents_module
 from agent.persona import _SHARED_BODY
-from agent.subagents import NAMESPACE_COLORS, NAMESPACES, Subagent, ToolPolicy, validate_registry
+from agent.subagents import (
+    NAMESPACE_COLORS,
+    NAMESPACES,
+    Subagent,
+    ToolPolicy,
+    _compose_directives,
+    validate_registry,
+)
 from agent.tools.catalog import RUNGS
 
 
@@ -112,4 +119,73 @@ def test_validate_registry_rejects_out_of_range_ceiling(monkeypatch):
     bad = dataclasses.replace(_subagent(), tool_policy=bad_policy)
     monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
     with pytest.raises(ValueError, match="out-of-range tool policy ceiling"):
+        validate_registry()
+
+
+# ---------------------------------------------------------------------------
+# _compose_directives — cross-domain directive composition (directive_domains)
+# own namespace is always included unconditionally; directive_domains lists
+# ADDITIONAL domains; "*" pulls in every other domain, ranked
+# ---------------------------------------------------------------------------
+
+def test_compose_directives_with_no_extra_domains_uses_own_namespace_and_own_directives_only():
+    p = _subagent(directives="own mandate text")
+    ns_directives = {"coding": "coding domain text", "testing": "testing domain text"}
+    result = _compose_directives(p, ns_directives, {})
+    assert result == "coding domain text\nown mandate text"
+    assert "testing domain text" not in result
+
+
+def test_compose_directives_with_explicit_extra_domains_preserves_array_order():
+    p = dataclasses.replace(
+        _subagent(directives="own mandate text"),
+        directive_domains=("beta_domain", "alpha_domain"),
+    )
+    ns_directives = {
+        "coding": "coding domain text",
+        "alpha_domain": "alpha domain text",
+        "beta_domain": "beta domain text",
+    }
+    result = _compose_directives(p, ns_directives, {})
+    # array order (beta, then alpha) must be preserved, not alphabetically re-sorted
+    assert result == "coding domain text\nbeta domain text\nalpha domain text\nown mandate text"
+
+
+def test_compose_directives_star_pulls_every_other_domain_ordered_by_rank_not_alphabet():
+    p = dataclasses.replace(_subagent(directives="own mandate text"), directive_domains=("*",))
+    ns_directives = {
+        "coding": "coding domain text",
+        "alpha_domain": "alpha domain text",
+        "zeta_domain": "zeta domain text",
+    }
+    # zeta_domain alphabetically last, but ranked first — proves ordering is
+    # rank-driven, not alphabetical
+    ns_rank = {"zeta_domain": 1, "alpha_domain": 2}
+    result = _compose_directives(p, ns_directives, ns_rank)
+    assert result == "coding domain text\nzeta domain text\nalpha domain text\nown mandate text"
+
+
+def test_compose_directives_domain_with_no_entry_contributes_nothing_and_no_stray_whitespace():
+    # simulates "generic": a domain that defines no namespace_directives
+    p = dataclasses.replace(
+        _subagent(directives="own mandate text"),
+        directive_domains=("generic_domain",),
+    )
+    ns_directives = {"coding": "coding domain text"}
+    result = _compose_directives(p, ns_directives, {})
+    assert result == "coding domain text\nown mandate text"
+    assert "\n\n" not in result
+
+
+def test_validate_registry_raises_on_unknown_directive_domain(monkeypatch):
+    bad = dataclasses.replace(_subagent(), directive_domains=("no_such_domain",))
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
+    with pytest.raises(ValueError, match="no_such_domain"):
+        validate_registry()
+
+
+def test_validate_registry_raises_when_star_mixed_with_explicit_domain(monkeypatch):
+    bad = dataclasses.replace(_subagent(), directive_domains=("*", "testing"))
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
+    with pytest.raises(ValueError, match="directive_domains"):
         validate_registry()

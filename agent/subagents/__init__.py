@@ -48,6 +48,14 @@ class Subagent:
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
     auto_assignable: bool = False  # phase-1 decomposition may assign it; False = post-planning-only (verify/repair)
+    # ADDITIONAL namespaces (beyond this subagent's own, which is always
+    # auto-inherited unconditionally — never needs listing itself here) whose
+    # directives should also be composed into this subagent's directives.
+    # () = own namespace only (today's behavior, unchanged). ("*",) = own
+    # namespace + every other registered domain, ranked by
+    # NAMESPACE_DIRECTIVE_RANK then name. A domain with no directives
+    # (e.g. "generic") silently contributes nothing.
+    directive_domains: tuple[str, ...] = ()
 
     def build_system_base(self) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body
@@ -60,6 +68,31 @@ class Subagent:
         if self.directives:
             system += f"\n<directives>\n{self.directives}"
         return system
+
+
+def _compose_directives(p: Subagent, ns_directives: dict[str, str], ns_rank: dict[str, int]) -> str:
+    """Compose a subagent's effective directives: own namespace, then any
+    additional domains from `p.directive_domains` (in resolved order), then
+    the subagent's own mandate-level directives. Empty parts are skipped;
+    parts are joined with a single "\n" (no double newlines)."""
+    own = ns_directives.get(p.namespace, "")
+
+    if "*" in p.directive_domains:
+        extra_domains = sorted(
+            (d for d in ns_directives if d != p.namespace),
+            key=lambda d: (ns_rank.get(d, 100), d),
+        )
+    else:
+        seen: set[str] = set()
+        extra_domains = []
+        for d in p.directive_domains:
+            if d == p.namespace or d in seen:
+                continue
+            seen.add(d)
+            extra_domains.append(d)
+
+    parts = [own] + [ns_directives.get(d, "") for d in extra_domains] + [p.directives]
+    return "\n".join(part for part in parts if part)
 
 
 def _discover() -> tuple[list[Subagent], dict[str, str], dict[str, int]]:
@@ -86,9 +119,8 @@ def _discover() -> tuple[list[Subagent], dict[str, str], dict[str, int]]:
 
     result: list[Subagent] = []
     for p in raw_subagents:
-        nd = ns_directives.get(p.namespace, "")
-        if nd:
-            composed = nd + ("\n" + p.directives if p.directives else "")
+        composed = _compose_directives(p, ns_directives, ns_directive_rank)
+        if composed:
             result.append(dataclasses.replace(p, directives=composed))
         else:
             result.append(p)
@@ -115,3 +147,16 @@ def validate_registry() -> None:
         seen.add(p.name)
         if p.tool_policy is not None and not (0 <= p.tool_policy.ceiling < len(RUNGS)):
             raise ValueError(f"subagent {p.name!r} has out-of-range tool policy ceiling: {p.tool_policy.ceiling!r}")
+        if "*" in p.directive_domains and len(p.directive_domains) > 1:
+            raise ValueError(
+                f"subagent {p.name!r} mixes wildcard '*' with explicit entries in directive_domains: "
+                f"{p.directive_domains!r} — use '*' alone or list explicit domains, not both"
+            )
+        for d in p.directive_domains:
+            if d == "*" or d == p.namespace:
+                continue
+            if d not in NAMESPACE_DIRECTIVES:
+                raise ValueError(
+                    f"subagent {p.name!r} lists unknown/directive-less domain {d!r} in directive_domains "
+                    f"(not its own namespace and not a key in NAMESPACE_DIRECTIVES)"
+                )
