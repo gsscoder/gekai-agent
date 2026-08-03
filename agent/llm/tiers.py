@@ -144,8 +144,10 @@ class ModelCatalogEntry:
 class TierBinding:
     """What a tier (FAST/SUPP/CORE) currently resolves to: a model from the
     catalog plus a default effort and a thinking flag. No base_url/creds
-    here — base_url comes from the catalog entry, credentials from the
-    keyring (plan 28 decision 3b), both keyed by `model`."""
+    here — base_url comes from the catalog entry (keyed by `model`),
+    credentials from the keyring (keyed by `credentials.credential_key`:
+    tier-model-effort-thinking, so tiers sharing a model, or a tier whose
+    effort/thinking changes, still hold independent keys)."""
     model: str
     default_effort: str
     thinking: bool = False

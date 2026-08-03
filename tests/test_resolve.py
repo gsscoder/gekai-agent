@@ -126,10 +126,10 @@ def test_all_tiers_ready_false_until_every_tier_resolves(monkeypatch):
 
 def test_all_tiers_ready_false_when_binding_present_but_no_credential(monkeypatch):
     # This is the exact incoherence bug: a binding exists for every tier but
-    # one model has no stored key — old tiers_configured() (binding-only)
+    # one tier has no stored key — old tiers_configured() (binding-only)
     # would have reported True here.
     def _has_key(name: str) -> bool:
-        return name != "flash"
+        return not name.startswith("fast-")
 
     monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", _has_key)
     bindings = {

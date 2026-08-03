@@ -312,31 +312,39 @@ def _mask_key(key: str) -> str:
     return key[:2] + "*" * (len(key) - 5) + key[-3:]
 
 
-def _tiers_display_key(model: str, key_input: dict[str, str]) -> str:
+def _tier_credential_key(tier: TierName, model: str, effort: str, thinking: bool) -> str:
+    return credentials.credential_key(tier.value, model, effort, thinking)
+
+
+def _tiers_display_key(cred_key: str, key_input: dict[str, str]) -> str:
     """Non-editing display for the key cell: an in-progress edit for this
-    model (`key_input`, including an explicit clear stored as "") always
-    wins over whatever's actually in the keyring — mirrors how the model/
-    effort/thinking columns show the pending edit, not the saved value."""
-    if model in key_input:
-        value = key_input[model]
+    operating point (`key_input`, including an explicit clear stored as "")
+    always wins over whatever's actually in the keyring — mirrors how the
+    model/effort/thinking columns show the pending edit, not the saved
+    value. Keyed by `_tier_credential_key` (tier-model-effort-thinking), so a
+    key pasted for one row/operating-point is masked and displayed there
+    only, even when another row shares its model."""
+    if cred_key in key_input:
+        value = key_input[cred_key]
         return _mask_key(value) if value else "no key"
-    if credentials.has_api_key(model):
-        return _mask_key(credentials.get_api_key(model))
+    if credentials.has_api_key(cred_key):
+        return _mask_key(credentials.get_api_key(cred_key))
     return "no key"
 
 
-def _tiers_key_present(model: str, key_input: dict[str, str]) -> bool:
-    """Whether `model` currently has a usable key once this edit lands —
-    an in-progress edit (including an explicit clear) wins over the real
-    stored credential, same precedence as `_tiers_display_key`."""
-    if model in key_input:
-        return bool(key_input[model])
-    return credentials.has_api_key(model)
+def _tiers_key_present(cred_key: str, key_input: dict[str, str]) -> bool:
+    """Whether this operating point currently has a usable key once this edit
+    lands — an in-progress edit (including an explicit clear) wins over the
+    real stored credential, same precedence as `_tiers_display_key`."""
+    if cred_key in key_input:
+        return bool(key_input[cred_key])
+    return credentials.has_api_key(cred_key)
 
 
 def _pending_row_status(
     tier: TierName,
     model: str | None,
+    effort: str | None,
     thinking: bool,
     catalog: dict[str, ModelCatalogEntry],
     key_input: dict[str, str],
@@ -346,12 +354,12 @@ def _pending_row_status(
     it deliberately does not reuse `agent/llm/resolve.py::tier_status()`
     (that answers "is what's saved resolvable", which is the wrong question
     while a key has just been typed/cleared but not yet committed)."""
-    if model is None:
+    if model is None or effort is None:
         return "not configured"
     entry = catalog.get(model)
     if entry is None:
         return "stale — model missing from catalog"
-    if not _tiers_key_present(model, key_input):
+    if not _tiers_key_present(_tier_credential_key(tier, model, effort, thinking), key_input):
         return "no key"
     verdict = entry.suitability.verdict(tier, thinking)
     if verdict in ("warning", "deprecated"):
@@ -515,7 +523,7 @@ class _TiersEdit:
     model: dict[TierName, str | None]
     effort: dict[TierName, str | None]
     thinking: dict[TierName, bool]
-    key_input: dict[str, str]  # model name -> new value staged this session ("" means explicit clear); NOT yet written to keyring
+    key_input: dict[str, str]  # credential_key(tier, model, effort, thinking) -> new value staged this session ("" means explicit clear); NOT yet written to keyring
     original_bindings: dict[TierName, TierBinding | None] = field(default_factory=dict)  # what was on disk when the panel opened, for the "kept actual tiers" no-op check
     key_editing: bool = False  # the currently-selected key cell is in free-text edit mode
     key_edit_buffer: str = ""  # raw text typed/pasted so far while key_editing — always starts empty
@@ -1028,18 +1036,13 @@ class GekaiApp(App[None]):
         # "p" is the *only* way to fill the buffer — it reads the OS
         # clipboard directly (ctypes, same as `_read_clipboard_text`
         # elsewhere — no reliance on "ctrl+v"/the terminal's bracketed-paste
-        # support, which doesn't reach this app) and replaces the buffer
-        # outright (not appended — there is no manual typing to append to).
-        # "backspace" discards the pasted buffer back to empty. Must be
-        # checked before the auto-focus-and-type fallback below, which would
-        # otherwise route these keystrokes into the chat prompt instead.
+        # support, which doesn't reach this app) and commits straight into
+        # `key_input` on success (single press, like every other column —
+        # no separate confirm step to forget before navigating away). Must
+        # be checked before the auto-focus-and-type fallback below, which
+        # would otherwise route this keystroke into the chat prompt instead.
         edit = self._tiers_edit
         if edit is not None and edit.key_editing:
-            if event.key == "backspace":
-                edit.key_edit_buffer = ""
-                self._render_tiers_panel()
-                event.stop()
-                return
             if event.key == "p":
                 clipboard_text = self._read_clipboard_text()
                 # Multiple lines aren't rejected — just take the first one,
@@ -1053,7 +1056,14 @@ class GekaiApp(App[None]):
                     self.set_timer(2.0, self._clear_hint)
                     event.stop()
                     return
-                edit.key_edit_buffer = first_line
+                panel = self.query_one(TiersPanel)
+                row, _ = panel.selected_cell
+                tier = list(TierName)[row]
+                model, effort = edit.model[tier], edit.effort[tier]
+                if model is not None and effort is not None:
+                    cred_key = _tier_credential_key(tier, model, effort, edit.thinking[tier])
+                    edit.key_input[cred_key] = first_line
+                edit.key_editing = False
                 self._render_tiers_panel()
                 event.stop()
                 return
@@ -1267,21 +1277,23 @@ class GekaiApp(App[None]):
         rows: list[TierRowView] = []
         for i, tier in enumerate(TierName):
             model = edit.model[tier]
+            effort = edit.effort[tier]
             entry = edit.catalog.get(model) if model is not None else None
             thinking_supported = tier is TierName.CORE and entry is not None and entry.thinking
             if edit.key_editing and i == sel_row and sel_column == "key":
                 key_display = edit.key_edit_buffer or "press p to paste"
-            elif model is not None:
-                key_display = _tiers_display_key(model, edit.key_input)
+            elif model is not None and effort is not None:
+                cred_key = _tier_credential_key(tier, model, effort, edit.thinking[tier])
+                key_display = _tiers_display_key(cred_key, edit.key_input)
             else:
                 key_display = "no key"
             rows.append(TierRowView(
                 tier_label=tier.value.upper(),
                 model=model if model is not None else "…",
-                effort=edit.effort[tier] if edit.effort[tier] is not None else "…",
+                effort=effort if effort is not None else "…",
                 thinking=("yes" if edit.thinking[tier] else "no") if thinking_supported else "n/a",
                 key=key_display,
-                status=_pending_row_status(tier, model, edit.thinking[tier], edit.catalog, edit.key_input),
+                status=_pending_row_status(tier, model, effort, edit.thinking[tier], edit.catalog, edit.key_input),
             ))
         panel.show(rows)
 
@@ -1336,14 +1348,16 @@ class GekaiApp(App[None]):
 
         if column == "key":
             model = edit.model[tier]
-            if model is None:
+            effort = edit.effort[tier]
+            if model is None or effort is None:
                 return
             if edit.key_editing:
                 # Confirm: an empty buffer is an explicit clear, stored as
                 # "" (see `_tiers_display_key`/`_tiers_key_present`) rather
                 # than leaving `key_input` untouched, which would mean "no
                 # change — keep whatever's in the keyring".
-                edit.key_input[model] = edit.key_edit_buffer
+                cred_key = _tier_credential_key(tier, model, effort, edit.thinking[tier])
+                edit.key_input[cred_key] = edit.key_edit_buffer
                 edit.key_editing = False
                 edit.key_edit_buffer = ""
             else:
@@ -1367,7 +1381,12 @@ class GekaiApp(App[None]):
 
         def _tier_complete(tier: TierName) -> bool:
             model = edit.model.get(tier)
-            present = model is not None and _tiers_key_present(model, edit.key_input)
+            effort = edit.effort.get(tier)
+            present = (
+                model is not None
+                and effort is not None
+                and _tiers_key_present(_tier_credential_key(tier, model, effort, edit.thinking[tier]), edit.key_input)
+            )
             return _tier_edit_complete(model, present)
 
         if not all(_tier_complete(tier) for tier in TierName):
@@ -1414,11 +1433,11 @@ class GekaiApp(App[None]):
         # place `set_api_key`/`delete_api_key` are called, per the locked
         # design. "" means an explicit clear (see `_handle_tiers_enter`'s
         # confirm step); a non-empty value is a real key to store.
-        for model, value in edit.key_input.items():
+        for cred_key, value in edit.key_input.items():
             if value:
-                credentials.set_api_key(model, value)
+                credentials.set_api_key(cred_key, value)
             else:
-                credentials.delete_api_key(model)
+                credentials.delete_api_key(cred_key)
 
         summaries: list[str] = []
         for tier in TierName:
@@ -1428,6 +1447,12 @@ class GekaiApp(App[None]):
 
         self.query_one(TiersPanel).hide()
         self._tiers_edit = None
+        # Re-resolve immediately rather than waiting on gate()/process_stream()'s
+        # lazy self-heal (which only retries while resolution is still failing)
+        # — otherwise the status bar (self._agent.model/.effort) keeps showing
+        # the pre-commit CORE binding until the next restart.
+        self._agent.reconfigure_touchpoints()
+        self._refresh_status_bar()
         # First line sits right next to the "⎿" MessageWidget already
         # prepends (see agent/tui/widgets.py::MessageWidget._as_markup);
         # continuation lines are indented 2 spaces to land in that same
@@ -1446,7 +1471,7 @@ class GekaiApp(App[None]):
         """Render dispatch for `raw`. `seed` (case 3 — an explicit `/agent-x` or a
         single-duty match) names the specialist the sequencer is seeded with;
         it no longer means "run the whole turn as that subagent's identity"
-        (plan 27 — the sequencer+interpreter own every spawn, main stays main).
+        (plan 27 — the sequencer+interpreter own every spawn, root stays root).
         `stage` is a 1-element mutable holder the caller's except-block reads to attribute
         which sub-stage failed.
 

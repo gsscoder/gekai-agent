@@ -43,7 +43,7 @@ class GekaiAgent:
         self.effort: str | None = None
         self._api_key: str | None = None
         self._api_base: str | None = None
-        gate_model, estimator_model, sequencer_model, main_dispatch_model, subagent_dispatch_model, responder_model = (
+        gate_model, estimator_model, sequencer_model, root_dispatch_model, subagent_dispatch_model = (
             self._configure_touchpoints()
         )
         self.events = EventLogger()
@@ -54,15 +54,14 @@ class GekaiAgent:
             gate_model=gate_model,
             estimator_model=estimator_model,
             sequencer_model=sequencer_model,
-            main_dispatch_model=main_dispatch_model,
+            root_dispatch_model=root_dispatch_model,
             subagent_dispatch_model=subagent_dispatch_model,
-            responder_model=responder_model,
             tiers_configured=self._tier_error is None,
             permissions={"read": permissions.read, "write": permissions.write, "exec": permissions.exec},
             debug=self.debug,
         )
 
-    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
+    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None, str | None]:
         """(Re)resolve every touchpoint against the *current* on-disk tier
         catalog+bindings, updating `self._gate`/`self._main`/`self.model`/
         `self._api_key`/`self._api_base` in place. A single resolve-once-at-
@@ -73,14 +72,14 @@ class GekaiAgent:
         mid-session, next prompt still reports the pre-`/tiers` error).
         Called once at construction and again lazily from `gate()`/
         `process_stream()` on every call while `self._tier_error` is set.
-        Returns the six touchpoints' resolved model names (or all-`None` on
+        Returns the five touchpoints' resolved model names (or all-`None` on
         failure) purely for the `run.start` telemetry emit.
         """
         catalog = load_model_catalog()
         bindings = load_tier_bindings()
         resolved: dict[str, ResolvedTier] = {}
         try:
-            for name in ("gate", "estimator", "sequencer", "main-dispatch", "subagent-dispatch", "responder"):
+            for name in ("gate", "estimator", "sequencer", "root-dispatch", "subagent-dispatch"):
                 resolved[name] = resolve_touchpoint(name, catalog, bindings)
         except TierResolutionError:
             # The specific failure (which tier, why) is deliberately not
@@ -91,7 +90,7 @@ class GekaiAgent:
             # missing a stored credential). A `/tiers` grid UI shows per-tier
             # detail in its own status column instead.
             self._tier_error = "tier configuration is incomplete — run /tiers"
-            return (None, None, None, None, None, None)
+            return (None, None, None, None, None)
 
         self._tier_error = None
         sequencer_cfg = resolved["sequencer"]
@@ -120,20 +119,29 @@ class GekaiAgent:
         self._main = Harness(
             resolve=_resolve,
             sequencer_policy=touchpoint("sequencer").policy,
-            main_dispatch_policy=touchpoint("main-dispatch").policy,
+            root_dispatch_policy=touchpoint("root-dispatch").policy,
             subagent_dispatch_policy=touchpoint("subagent-dispatch").policy,
             estimator=resolved["estimator"],
-            responder=resolved["responder"],
             debug=self.debug,
         )
         return (
             resolved["gate"].model,
             resolved["estimator"].model,
             sequencer_cfg.model,
-            resolved["main-dispatch"].model,
+            resolved["root-dispatch"].model,
             resolved["subagent-dispatch"].model,
-            resolved["responder"].model,
         )
+
+    def reconfigure_touchpoints(self) -> None:
+        """Force an immediate re-resolve of every touchpoint against the
+        current on-disk tier catalog+bindings. `gate()`/`process_stream()`
+        only retry `_configure_touchpoints()` lazily while resolution is
+        still *failing* (`self._gate`/`self._main` is `None`) — a `/tiers`
+        commit that changes an already-working tier's model/effort/thinking
+        would otherwise sit stale (including `self.model`/`self.effort`,
+        which the TUI status bar reads directly) until the next process
+        restart. Called by the TUI right after a `/tiers` commit."""
+        self._configure_touchpoints()
 
     def start_session(
         self,

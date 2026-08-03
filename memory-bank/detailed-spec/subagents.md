@@ -31,31 +31,49 @@ All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
 ### Harness — `agent/harness/core.py`
 - Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None, extra_params: dict | None = None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
 - One method, two modes selected by the `subagent` param:
-  - **direct** (`subagent=None`): handles the **generalist default** — general or simple requests, reading/explaining/running code, and all general/glue/scaffolding work; owns decomposition itself, calling the `delegate` tool as many times as it judges necessary; system = `SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input; `SubAgentStartEvent(name="main", description="thinking", color="#4169E1")`
+  - **root, no-graph** (`subagent=None`, trivial/single-agent turn): system = `ROOT_SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input — root's warm session context; `SubAgentStartEvent(name="root", description="thinking", color="#4169E1")`
   - **spawn** (`subagent=<Subagent>`): handles a subagent's specialty (e.g. `code-expert` for **substantial or specialized code work** — features, fixes, behavior-changing rewrites; owns its assigned task's implementation in full); system = `subagent.build_system_base()` + `<tools>` appended by `_build_agent`; prior context = `[]` (cold — no recency, no inheritance, no async/resume); `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
 - Emits `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion when `old_str != new_str`), `InferEndEvent`, `ThinkingTokenEvent`, `MaxIterationsEvent` (iteration-limit path), and `DoneEvent`
 - After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. There is no live token-by-token text streaming; the final answer is assembled once from the completed history's `TextBlock`s
 - Uses `llmstitch` (`agent.llm.Agent`) `EventBus` to bridge tool-call events from the agent loop into the typed event stream
-- `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`), and — direct mode only — registers the `delegate` tool (see `architecture.md → Delegate Tool`)
+- `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`); no cross-agent tool is ever registered, for root or any subagent (see `architecture.md → Cross-Agent Dispatch`)
 
-> **Decomposition model:** there is no more router-level plan. `Gate` only classifies intent
-> (`TRIVIAL`/`REJECTED`/`ACT` — see `architecture.md → Gate`); once a turn reaches `Harness` in
-> direct mode, the main agent decides for itself whether the request needs a specialist, and calls
-> `delegate(agent, task)` mid-turn, as many times as needed, in dependency order (scaffold → logic
-> → tests). Example: "create a Python module that converts HTML to Markdown, scaffold a
-> conventional structure with requirements files, add minimal test coverage" — main scaffolds
-> directly, then calls `delegate("code-expert", ...)` for the converter and `delegate("test-expert",
-> ...)` for the suite, sequencing the calls itself instead of a router pre-computing steps.
+> **Sequencer → interpreter flow, not delegate-driven decomposition:** `Gate` only classifies
+> intent (`TRIVIAL`/`ACT` — see `architecture.md → Gate`). A `mutate`-estimated turn routes into
+> `Harness._stream_graph()`: `Sequencer.sequence()` makes one CORE-tier call and returns a validated
+> `TaskGraph` where every step is assigned to an `auto_assignable` roster specialist — never to
+> root (`parse_task_graph` rejects `ROOT_AGENT` as a step `agent`). `agent/harness/interpreter.py`'s
+> `run_task_graph()` then walks the graph deterministically (`execute → verify → repair → halt`),
+> calling `run_subagent()` for each step; no agent decides mid-turn whether to dispatch another
+> agent. Root owns the turn around this execution — deployed first, present the whole time via its
+> warm session context — and synthesizes the final answer from the graph's `summary` + every step's
+> output once the walk finishes (or halts). See `architecture.md → Root` for the full synthesis
+> contract (`Harness._respond()`, fail-soft to `_recap()`).
 
 > **Subagent vs harness-worker:** `Subagent` (and the streamers spawned for it) serve a
-> *user-turn* — selected via the `delegate` tool from the main agent's own judgment (or forced by a
-> `/`-slash command). `ws-manager` (`agent/subagents/worker/ws_manager.py`,
-> namespace `worker`) is a system-managed worker: `user_invocable=False`, never routed or surfaced
-> in the menu/palette. It is dispatched only via `run(task, ...)` (currently `onboard` →
-> `build_index`), a direct call that bypasses the LLM/spawn path — so its `description` exists only
-> for the registry, and it carries no mandate/directives/tools. A separate, still-unbuilt
-> `harness-worker` category would serve the system/lifecycle directly (e.g. a future workspace-scan
-> revival) — work that runs outside any single user turn; zero code exists for this category yet.
+> *user-turn* — assigned by the sequencer, walked by the interpreter (or forced by a `/`-slash
+> command). No `worker`-namespace, system-managed unit exists in the codebase today (no
+> `agent/subagents/worker/` directory, no `worker` entry in `NAMESPACE_COLORS`) — a prior draft of
+> this doc described a `ws-manager`/`ws_manager.py` unit in that role; it was never built. A
+> `harness-worker` category serving the system/lifecycle directly (e.g. a workspace-scan run
+> outside any single user turn) remains a possible future addition with zero code today.
+
+## Generic Namespace
+`agent/subagents/generic/` is no longer dormant. `namespace_directives` (rank 0,
+`agent/subagents/generic/__init__.py`) is the cold-dispatch contract every dispatched unit needs:
+never ask a clarifying question — state the assumption and proceed; stay inside the step's
+boundary; report to the next step, not a person; name the blocker plainly rather than emit a
+partial result that reads as done. `omni-worker` (`agent/subagents/generic/omni_worker.py`) is its
+one member — the residual specialist for a task-graph step nothing else owns: scaffolding, project
+layout, manifests, config/CI files, docs, data/asset files, dependency/build chores,
+investigation-that-must-produce-a-finding. `user_invocable=False` (excluded from the Gate menu and
+the palette, per the `NAMESPACE_COLORS` comment: a namespace with no invocable members is innate —
+no selector to build), `auto_assignable=True` (routable by the sequencer), full tool ceiling with a
+per-step `tool_policy` for narrowing, `directive_domains=("*",)` — the one subagent that composes
+every other namespace's directives (rank-ordered) into its own, since a step can land it in any
+domain. The four coding/testing specialists (`code-expert`, `code-refactorer`, `test-expert`,
+`test-fixer`) declare `directive_domains=("generic",)`, composing the same cold-dispatch contract
+into their own directives (`Subagent._compose_directives`, `agent/subagents/__init__.py`).
 
 ## Adding a New Subagent-Style Streamer
 There is no base class to inherit — any async generator yielding `AgentEvent`s following the

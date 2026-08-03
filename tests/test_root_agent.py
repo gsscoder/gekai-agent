@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
-from agent.harness.core import _recency_turns, _build_agent, _RECENCY_N
-from agent.llm.types import Message
+import pytest
+
+from agent.harness import core as harness_core
+from agent.harness.core import Harness, _recency_turns, _build_agent, _RECENCY_N
+from agent.llm.resolve import ResolvedTier
+from agent.llm.tiers import TierName, TierPolicy
+from agent.llm.types import Message, TextBlock
+from agent.pipeline.plan import Task, TaskGraph
+from agent.harness.interpreter import StepResult, TaskGraphHalted
+from agent.session import Session
 from agent.settings import Permissions
 from agent.subagents import Subagent
 from agent.tools.catalog import ALL_TOOLS, READ_TOOLS
+
+
+def _run(coro):
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
@@ -186,10 +200,113 @@ def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
 
 def test_direct_mode_tools_block_uses_full_set(tmp_path: Path):
     system, registered = _build(tmp_path, subagent=None)
-    # main agent has the full workspace tool set; no delegate tool (plan 27
-    # decision 11 — removed from main outright, the harness owns cross-agent
+    # root has the full workspace tool set; no delegate tool (plan 27
+    # decision 11 — removed from root outright, the harness owns cross-agent
     # control flow instead)
     assert set(ALL_TOOLS) <= registered
     assert "delegate" not in registered
     assert system.startswith("base prompt")
     assert "<tools>" in system
+
+
+# ---------------------------------------------------------------------------
+# `Harness._respond`: root absorbs the Responder (plan 32 Phase 3) — the
+# synthesis call must carry session recency, not just the current graph's
+# own summary/step outputs.
+# ---------------------------------------------------------------------------
+
+
+def _make_respond_harness() -> Harness:
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    return Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+    )
+
+
+def _spy_build_agent_capturing_run(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Replaces `_build_agent` with a fake whose `.run()` is an `AsyncMock`
+    capturing exactly what `_respond` sends the model, instead of a real
+    provider call."""
+    fake_agent = MagicMock()
+    fake_agent.run = AsyncMock(
+        return_value=[Message(role="assistant", content=[TextBlock(text="synthesized answer")])]
+    )
+    monkeypatch.setattr(harness_core, "_build_agent", lambda *a, **kw: fake_agent)
+    return fake_agent
+
+
+def test_respond_success_path_carries_session_recency(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    harness = _make_respond_harness()
+    fake_agent = _spy_build_agent_capturing_run(monkeypatch)
+
+    session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
+    session.messages = [
+        {"role": "system", "content": "workspace context"},
+        {"role": "user", "content": "the prior turn's request"},
+        {"role": "assistant", "content": "the prior turn's answer"},
+        {"role": "user", "content": "current request"},
+    ]
+    graph = TaskGraph(summary="did the thing", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])
+    results = [StepResult(step=graph[0], output="code-expert's step output")]
+
+    answer, event = _run(harness._respond(
+        "current request", session, graph, results,
+        halted=None, permission_callback=None, hidden_grant_callback=None,
+    ))
+
+    assert answer == "synthesized answer"
+    assert event is not None and event.fell_back is False
+
+    prior_messages = fake_agent.run.await_args.args[0]
+    contents = [m.content for m in prior_messages]
+    assert "the prior turn's request" in contents
+    assert "the prior turn's answer" in contents
+    # the graph's own summary/step outputs must also reach the model, not
+    # just prior-turn recency
+    assert any("did the thing" in c and "code-expert's step output" in c for c in contents)
+
+
+def test_respond_falls_back_to_recap_on_synthesis_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    harness = _make_respond_harness()
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(harness_core, "_build_agent", _raise)
+
+    session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
+    graph = TaskGraph(summary="did the thing", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])
+    results = [StepResult(step=graph[0], output="output")]
+
+    answer, event = _run(harness._respond(
+        "current request", session, graph, results,
+        halted=None, permission_callback=None, hidden_grant_callback=None,
+    ))
+
+    assert answer == "did the thing"  # mechanical `_recap` fallback (graph.summary)
+    assert event is not None and event.fell_back is True
+
+
+def test_respond_halted_path_falls_back_to_recap_on_synthesis_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    harness = _make_respond_harness()
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(harness_core, "_build_agent", _raise)
+
+    session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
+    graph = TaskGraph(summary="did the thing", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])
+    halted = TaskGraphHalted(0, graph[0], "empty dispatch output")
+
+    answer, event = _run(harness._respond(
+        "current request", session, graph, [],
+        halted=halted, permission_callback=None, hidden_grant_callback=None,
+    ))
+
+    assert "HALTED" in answer
+    assert event is not None and event.fell_back is True

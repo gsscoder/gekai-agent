@@ -1,7 +1,7 @@
 """Sequencer stage (plan 27, improvement 3; renamed under plan 28): decomposition + measurement.
 
 CORE thinking, one call per mutation turn. Phase 1 (decomposition) assigns
-each unit of work to `main` or an auto-assignable subagent, in dependency
+each unit of work to `root` or an auto-assignable subagent, in dependency
 order. Phase 2 (measurement) is folded into the same call: the model marks
 `verify` on any step whose complexity warrants a preventive check. The
 complexity metric itself is open point 1 (plan 27) — until it is designed,
@@ -18,7 +18,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from ..subagents import SUBAGENTS, Subagent
-from .plan import MAIN_AGENT, TaskGraph, parse_task_graph
+from .plan import TaskGraph, parse_task_graph
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -27,7 +27,8 @@ _SEQUENCER_PROMPT = (
     "JSON object with keys:\n"
     '  "summary": a short 1-2 sentence gist of what the user wants, in your own words\n'
     '  "steps": a JSON array of steps, each an object with keys:\n'
-    '    "agent": "{main}" or one of the auto-assignable specialists below\n'
+    '    "agent": one of the auto-assignable specialists below — every step goes to a specialist, '
+    "never to root\n"
     '    "instruction": a self-contained instruction string for that agent\n'
     '    "mission": a short human-readable phrase (~8-10 words) naming this step\'s job, '
     "distinct from the full instruction\n"
@@ -58,7 +59,7 @@ _SEQUENCER_PROMPT = (
 
 def _build_prompt(roster: list[Subagent]) -> str:
     menu = "\n".join(f"  {p.name} — {p.description}" for p in roster)
-    return _SEQUENCER_PROMPT.format(main=MAIN_AGENT, roster=menu)
+    return _SEQUENCER_PROMPT.format(roster=menu)
 
 
 class Sequencer:

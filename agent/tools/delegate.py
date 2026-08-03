@@ -30,7 +30,7 @@ async def run_subagent(
     """Run `agent` (any roster name, invocable or post-planning-only) on `task`
     as a cold, fire-and-forget nested run — the interpreter's `dispatch` for a
     subagent step (plan 27 improvement 2). The nested run's start/outcome are
-    traced on `bus` (main's own session), the run itself is isolated.
+    traced on `bus` (root's own session), the run itself is isolated.
     """
     roster = {s.name: s for s in SUBAGENTS}
     resolved = roster.get(agent)

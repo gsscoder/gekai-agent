@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from agent.persona import SYSTEM_PROMPT, _IDENTITY_MAIN, _MAIN_DIRECTIVES, _SHARED_BODY, render_tool_instruction
+from agent.persona import ROOT_SYSTEM_PROMPT, _IDENTITY_ROOT, _ROOT_DIRECTIVES, _SHARED_BODY, render_tool_instruction
 from agent.tools.catalog import ALL_TOOLS, EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 
-def test_system_prompt_is_identity_plus_shared_body_plus_main_directives():
-    # locks the main-agent prompt composition — subagents reuse _SHARED_BODY
-    # but get _IDENTITY_SUB + their own <directives> instead of _IDENTITY_MAIN
-    # + _MAIN_DIRECTIVES
-    assert SYSTEM_PROMPT == _IDENTITY_MAIN + _SHARED_BODY + "\n<directives>\n" + _MAIN_DIRECTIVES
+def test_system_prompt_is_identity_plus_shared_body_plus_root_directives():
+    # locks root's prompt composition — subagents reuse _SHARED_BODY
+    # but get _IDENTITY_SUB + their own <directives> instead of _IDENTITY_ROOT
+    # + _ROOT_DIRECTIVES
+    assert ROOT_SYSTEM_PROMPT == _IDENTITY_ROOT + _SHARED_BODY + "\n<directives>\n" + _ROOT_DIRECTIVES
 
 # The pre-refactor TOOL_INSTRUCTION constant, kept here only as a behavior
 # baseline — render_tool_instruction(ALL_TOOLS) must reproduce it verbatim.

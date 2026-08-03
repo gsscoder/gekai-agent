@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .persona import SYSTEM_PROMPT
+from .persona import ROOT_SYSTEM_PROMPT
 from .settings import Permissions
 
 
@@ -12,7 +12,7 @@ from .settings import Permissions
 class Session:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     messages: list[dict] = field(
-        default_factory=lambda: [{"role": "system", "content": SYSTEM_PROMPT}]
+        default_factory=lambda: [{"role": "system", "content": ROOT_SYSTEM_PROMPT}]
     )
     working_dir: Path = field(default_factory=Path.cwd)
     permissions: Permissions = field(default_factory=lambda: Permissions(read=True, write=False, exec=False))

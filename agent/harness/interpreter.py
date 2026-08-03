@@ -2,9 +2,9 @@
 
 Written once, engineered control flow: execute -> verify -> repair ->
 re-verify -> halt. Knows no agent by name or role — the sequencer populates
-`agent`/`verify`/`repair`; this module only walks the task graph. Runs "as
-main": a `main` step is direct main-processing (handled by whatever
-`dispatch` does for that name), a subagent step is a spawn `dispatch` owns.
+`agent`/`verify`/`repair`; this module only walks the task graph. Every step
+is a cold, fire-and-forget spawn `dispatch` owns — root is never a step
+agent (plan 32 Phase 3); it owns the graph's execution, not a place in it.
 """
 
 from __future__ import annotations

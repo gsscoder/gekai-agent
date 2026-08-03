@@ -17,12 +17,12 @@ from ..text_format import clean_output
 
 _STEP_REF = re.compile(r"\{\{step_(\d+)\}\}")
 
-MAIN_AGENT = "main"
+ROOT_AGENT = "root"
 
 
 @dataclass(frozen=True)
 class Task:
-    agent: str  # "main" or an auto-assignable subagent name
+    agent: str  # an auto-assignable subagent name (root is never a step agent)
     instruction: str
     mission: str  # short human-readable phrase (~8-10 words) describing the step's job
     verify: str | None = None  # post-planning-only agent name, or a mechanical check command
@@ -83,10 +83,8 @@ def parse_task_graph(raw: dict, roster: list[Subagent]) -> TaskGraph:
         repair = item.get("repair")
         scope = item.get("scope")
 
-        if agent != MAIN_AGENT and not (agent in by_name and by_name[agent].auto_assignable):
-            raise ValueError(
-                f"step {i}: agent {agent!r} is not {MAIN_AGENT!r} or an auto-assignable subagent"
-            )
+        if not (agent in by_name and by_name[agent].auto_assignable):
+            raise ValueError(f"step {i}: agent {agent!r} is not an auto-assignable subagent")
         if not instruction or not isinstance(instruction, str):
             raise ValueError(f"step {i}: instruction must be a non-empty string, got {instruction!r}")
         if not mission or not isinstance(mission, str):
@@ -133,4 +131,4 @@ def _check_refs(index: int, instruction: str, prior_step_count: int) -> None:
             )
 
 
-__all__ = ["Task", "TaskGraph", "parse_task_graph", "MAIN_AGENT"]
+__all__ = ["Task", "TaskGraph", "parse_task_graph", "ROOT_AGENT"]

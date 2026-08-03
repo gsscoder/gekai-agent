@@ -162,7 +162,7 @@ def load_timeline(session_id: str) -> tuple[Path, list[dict]] | None:
     """Return (working_dir, all entries ordered) for chat rebuild.
 
     Includes turns, commands, and events — everything the user saw on screen.
-    Always-fresh system turns (SYSTEM_PROMPT, workspace) are excluded.
+    Always-fresh system turns (ROOT_SYSTEM_PROMPT, workspace) are excluded.
     """
     result = _session_path(session_id)
     if result is None:

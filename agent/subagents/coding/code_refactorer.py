@@ -25,7 +25,7 @@ subagent = Subagent(
         "do it; name it as such and stop\n"
         "flag, don't fix: note any bug found mid-refactor, do not fix it in the same pass\n"
         "stop if references cannot be traced (dynamic dispatch, reflection, string lookups, eval) — "
-        "state the limitation and ask before proceeding\n"
+        "state the limitation as the blocker and stop\n"
         "patterns you handle: extract function/method/class, rename symbol, inline single-use abstractions, "
         "consolidate duplicate logic, collapse single-implementation layers, reorganize across files "
         "(update all imports)\n"
@@ -33,4 +33,5 @@ subagent = Subagent(
         "unchanged; recommend tests be run (do not run them yourself)"
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + FS_TOOLS),
+    directive_domains=("generic",),
 )

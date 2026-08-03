@@ -44,7 +44,7 @@ def _only(events: list, cls: type) -> list:
 def _make_harness() -> Harness:
     """Plan 28 Phase 2: `Harness` takes a resolver closure + a `TierPolicy`
     per scaled touchpoint instead of one frozen `ResolvedTier` each. The
-    resolver here always returns `main_tier`, so every touchpoint (including
+    resolver here always returns `root_tier`, so every touchpoint (including
     the sequencer's freshly-built `Sequencer`, now constructed inside
     `_stream_graph()` instead of `__init__`) still resolves to the exact
     same config these tests were written against."""
@@ -117,7 +117,7 @@ def _make_scaling_harness(resolve: Callable[[TierName], ResolvedTier]) -> Harnes
         harness = Harness(
             resolve=resolve,
             sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
-            main_dispatch_policy=policy,
+            root_dispatch_policy=policy,
             subagent_dispatch_policy=policy,
             estimator=estimator_tier,
         )
@@ -128,7 +128,7 @@ class _RecordingAdapter(ProviderAdapter):
     """Captures the `model` kwarg passed to `stream()` per instance
     (agent/llm/agent.py's `_provider_kwargs` threads `self.model` into every
     provider call) — lets a test tell which resolved tier's config a given
-    `main` dispatch actually used. Mirrors `_ScriptedAdapter` above /
+    `root` dispatch actually used. Mirrors `_ScriptedAdapter` above /
     test_harness_core.py's `_CapturingEventBus` class-level-list capture
     pattern; always answers with fixed, immediate text (no tool calls), since
     these tests care about *which model* a dispatch used, not its content.
@@ -266,16 +266,16 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
     # REQ/EDGE: scale() is stateless per-dispatch (scaling.py module
     # docstring, decision 6) — a step 1 mechanical-verify promotion to CORE
     # must not leak into step 2's dispatch, which has no verify and must
-    # resolve back at main-dispatch's configured default (SUPP). Also proves
+    # resolve back at root-dispatch's configured default (SUPP). Also proves
     # a ScaleEvent is yielded for the adjusted step only (core.py's
     # `dispatch()`: `if tier != policy.default: queue.put_nowait(ScaleEvent(...))`).
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
-        summary="two main steps",
+        summary="two specialist steps",
         steps=[
-            Task(agent="main", instruction="step one", mission="step one", verify="mechanical"),
-            Task(agent="main", instruction="step two", mission="step two", verify=None),
+            Task(agent="code-expert", instruction="step one", mission="step one", verify="mechanical"),
+            Task(agent="code-expert", instruction="step two", mission="step two", verify=None),
         ],
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
@@ -286,11 +286,14 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
     session = _make_session(tmp_path)
     # Contains "and"/"both" -> `_sequencer_signal` stays neutral (keeps the
     # sequencer at its own CORE default) so the only ScaleEvent in this run
-    # is the main-dispatch one under test, not a sequencer one too.
+    # is the subagent-dispatch one under test, not a sequencer one too.
     prompt = "please handle both step one and step two carefully"
     collected = run(_drain(harness, session, prompt))
 
-    assert len(_RecordingAdapter.instances) == 2
+    # 2 step dispatches + 1 trailing root-dispatch synthesis call (`_respond`,
+    # plan 32 Phase 3) -- the synthesis call resolves at root-dispatch's
+    # default (SUPP), same as instance 1 below, and is not under test here.
+    assert len(_RecordingAdapter.instances) == 3
     assert _RecordingAdapter.instances[0].calls[0]["model"] == "core-model", (
         "step 1 (verify='mechanical') should dispatch at the promoted CORE tier"
     )
@@ -301,7 +304,7 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
 
     scale_events = _only(collected, ScaleEvent)
     assert scale_events == [
-        ScaleEvent(component="main-dispatch", default_tier="supp", chosen_tier="core", reason="reasoning-shaped")
+        ScaleEvent(component="subagent-dispatch", default_tier="supp", chosen_tier="core", reason="reasoning-shaped")
     ]
 
 
@@ -313,7 +316,7 @@ def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPat
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
     sequencer_calls = _capturing_sequencer_init(monkeypatch)
-    graph = TaskGraph(summary="renamed", steps=[Task(agent="main", instruction="rename it", mission="rename it")])
+    graph = TaskGraph(summary="renamed", steps=[Task(agent="code-expert", instruction="rename it", mission="rename it")])
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
@@ -326,7 +329,7 @@ def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPat
     prompt = "rename this variable"
     assert len(prompt.split()) <= 15  # sanity: within _SEQUENCER_WORD_LIMIT
 
-    collected = run(_drain(harness, session, prompt, seed="main"))
+    collected = run(_drain(harness, session, prompt, seed="code-expert"))
 
     assert sequencer_calls[0]["model"] == "supp-model", "Sequencer should be built from the SUPP-resolved config"
     sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
@@ -345,7 +348,7 @@ def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.Mon
     sequencer_calls = _capturing_sequencer_init(monkeypatch)
     graph = TaskGraph(
         summary="login + tests",
-        steps=[Task(agent="main", instruction="do it", mission="do it")],
+        steps=[Task(agent="code-expert", instruction="do it", mission="do it")],
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
@@ -367,7 +370,7 @@ def test_single_agent_path_never_scales_or_emits_scale_event(
 ) -> None:
     # REQ: item 6 -- the non-graph, trivial-estimate single-agent path
     # (`Harness.stream`'s no-graph branch) always resolves
-    # `main_dispatch_policy.default` and structurally never calls `scale()`:
+    # `root_dispatch_policy.default` and structurally never calls `scale()`:
     # proven here by a fake `resolve` that *would* produce a distinguishable
     # config at another tier -- the dispatch still uses the SUPP (default)
     # model, and no `ScaleEvent` is ever yielded, even though this test's
@@ -421,67 +424,80 @@ def _spy_build_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
-def test_graph_step_scope_read_excludes_write_tools_for_main(
+def test_graph_step_scope_read_excludes_write_tools_for_full_ceiling_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    # omni-worker declares a full ceiling (`ToolPolicy(ceiling=len(RUNGS) - 1)`,
+    # same as root's old ROOT_TOOL_POLICY) -- root itself is never a step
+    # agent post-plan-32-Phase-3, so a full-ceiling subagent is the
+    # equivalent case for scope narrowing all the way down to "read".
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
         summary="read only",
-        steps=[Task(agent="main", instruction="read stuff", mission="read stuff", scope="read")],
+        steps=[Task(agent="omni-worker", instruction="read stuff", mission="read stuff", scope="read")],
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "read stuff"))
 
-    assert len(calls) == 1
+    # calls[0] is the step's dispatch; calls[1] is the trailing root-dispatch
+    # synthesis call (`_respond`, plan 32 Phase 3) -- not under test here.
+    assert len(calls) == 2
     override = calls[0]["tools_override"]
     for name in _EXCLUDED_FROM_READ:
         assert name not in override
     assert override == frozenset(RUNGS[0])
 
     scope_events = _only(collected, ToolScopeEvent)
-    assert scope_events == [ToolScopeEvent(unit="main-dispatch", chosen_rung="read", reason="narrowed to 'read'")]
+    assert scope_events == [ToolScopeEvent(unit="omni-worker", chosen_rung="read", reason="narrowed to 'read'")]
 
 
-def test_graph_step_scope_fs_gets_full_tools_for_main(
+def test_graph_step_scope_fs_gets_full_tools_for_full_ceiling_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
         summary="full access",
-        steps=[Task(agent="main", instruction="do anything", mission="do anything", scope="fs")],
+        steps=[Task(agent="omni-worker", instruction="do anything", mission="do anything", scope="fs")],
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "do anything"))
 
-    assert len(calls) == 1
+    # calls[0] is the step's dispatch; calls[1] is the trailing root-dispatch
+    # synthesis call (`_respond`, plan 32 Phase 3) -- not under test here.
+    assert len(calls) == 2
     assert calls[0]["tools_override"] == _FULL_RUNG == frozenset(ALL_TOOLS)
     assert not any(isinstance(e, ToolScopeEvent) for e in collected)
 
 
-def test_graph_step_scope_none_gets_full_tools_for_main(
+def test_graph_step_scope_none_gets_full_tools_for_full_ceiling_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
     graph = TaskGraph(
         summary="no signal",
-        steps=[Task(agent="main", instruction="do it", mission="do it", scope=None)],
+        steps=[Task(agent="omni-worker", instruction="do it", mission="do it", scope=None)],
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "do it"))
 
-    assert len(calls) == 1
+    # calls[0] is the step's dispatch; calls[1] is the trailing root-dispatch
+    # synthesis call (`_respond`, plan 32 Phase 3) -- not under test here.
+    assert len(calls) == 2
     assert calls[0]["tools_override"] == _FULL_RUNG
     assert not any(isinstance(e, ToolScopeEvent) for e in collected)
 
@@ -502,7 +518,9 @@ def test_graph_step_scope_read_excludes_write_tools_for_subagent(
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "read stuff"))
 
-    assert len(calls) == 1
+    # calls[0] is the step's dispatch; calls[1] is the trailing root-dispatch
+    # synthesis call (`_respond`, plan 32 Phase 3) -- not under test here.
+    assert len(calls) == 2
     override = calls[0]["tools_override"]
     for name in _EXCLUDED_FROM_READ:
         assert name not in override

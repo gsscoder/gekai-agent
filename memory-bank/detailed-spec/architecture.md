@@ -3,22 +3,22 @@ Precision-scoped AI coding agent with checkpoint-oriented design and LLM-backed 
 
 ## Package Layout
 `agent/` root: `agent.py` (`GekaiAgent` orchestration — owns `Harness` as `self._main`), `session.py` (`Session`),
-`persona.py` (`SYSTEM_PROMPT` + `_IDENTITY_MAIN`/`_IDENTITY_SUB`/`_SHARED_BODY` + `render_tool_instruction` —
+`persona.py` (`ROOT_SYSTEM_PROMPT` + `_IDENTITY_ROOT`/`_IDENTITY_SUB`/`_SHARED_BODY` + `render_tool_instruction` —
 neutral module shared by `subagents`, `pipeline`, `harness`), `settings.py` (`Permissions`),
 `permissions.py` (permission gate + callback), `persistence.py` (JSONL append), `events.py` (`AgentEvent` taxonomy),
 `diff.py` (diff rendering), `shell.py` (TUI shell helper)
 Subpackages:
-- `harness/` — `core.py` (`Harness`, formerly `MainAgent` in `handlers/main_agent.py`)
-- `pipeline/` — `gate.py` (`Route`, `Gate` — pure intent classifier)
-- `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`) + one file per subagent + `_coding.py` shared directives
+- `harness/` — `core.py` (`Harness`), `interpreter.py` (`run_task_graph` — the fixed execute→verify→repair→halt walker), `touchpoints.py` (`Touchpoint` registry — every place the harness invokes a model)
+- `pipeline/` — `gate.py` (`Route`, `Gate` — pure intent classifier), `plan.py` (`Task`, `TaskGraph`, `parse_task_graph`, `ROOT_AGENT`), `sequencer.py` (`Sequencer` — builds the `TaskGraph`)
+- `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`, `NAMESPACE_COLORS`) + one namespace package per action domain (`coding/`, `testing/`, `generic/`), each with its own `__init__.py` declaring `namespace`/`namespace_directives` and one file per member subagent
 - `tools/` — `__init__.py` (`make_tools`), `catalog.py` (tool-name groups: `READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`
-  — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`, `delegate.py` (`make_delegate_tool` — main-only tool, hands a task to a named specialist)
+  — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`, `delegate.py` (`run_subagent` — cold nested-run dispatcher used by the interpreter, see `## Cross-Agent Dispatch`)
 - `tui/` (Textual app — see tui-layout.md), `commands/` (slash command registry), `workspace/` (workspace context)
 
 ## Session
 `Session` in `session.py`; holds a GUID, `messages: list[dict]`, `working_dir`, `permissions`
 
-`messages` starts with two system entries: `SYSTEM_PROMPT` at `[0]` + workspace context at `[1]` (TOON-encoded)
+`messages` starts with two system entries: `ROOT_SYSTEM_PROMPT` at `[0]` + workspace context at `[1]` (TOON-encoded)
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
@@ -28,65 +28,93 @@ Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_language
 - appends `{"role": "assistant"}` once per turn after handler completes
 
 ## Gate
-`Gate` is a pure **intent classifier**, not a router to specialists — it makes one decision per
-turn: does this need codebase access at all (`ACT`), is it answerable without one (`TRIVIAL`), or
-did the user name an agent that doesn't exist (`REJECTED <name>`)? Specialist selection no longer
-happens here — it is the main agent's own call, made mid-turn via the `delegate` tool.
+`Gate` is a pure **intent classifier** — it makes one decision per turn: does this need codebase
+access at all (`ACT`), or is it answerable without one (`TRIVIAL`)? It does not select a specialist
+and does not reject unknown agent names; specialist selection is the sequencer's job, downstream
+(see `## Cross-Agent Dispatch`).
 
 `Gate.gate(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
 
-`Route` dataclass (`agent/pipeline/gate.py`): `subagent: Subagent | None = None`, `trivial: bool = False`,
-`rejected: bool = False`, `reason: str = ""`. `subagent` is always `None` on a `Gate` return — it is
-populated only by the `/`-slash forced-route path. `trivial`/`rejected` are mutually exclusive;
-an unrecognized token falls to `Route()` (`ACT`) rather than silently downgrading.
+`Route` dataclass (`agent/pipeline/gate.py`): `trivial: bool = False`. That is its only field —
+`ACT` is simply `Route()`.
 
 History: last 6 user/assistant turns from session messages prepended before user message.
 
-Gate prompt offers three tokens:
+Gate prompt offers two tokens:
 - `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions,
   acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `ACT` when
-  unsure (false `ACT` costs only the main agent's time; false `TRIVIAL` denies real codebase context)
-- `REJECTED <name>` — user explicitly named a specific agent not in the roster (typo, unknown
-  name); echoes the literal name, never substitutes or falls back to main; never routes to any real agent
+  unsure (false `ACT` costs only extra harness time; false `TRIVIAL` denies real codebase context)
 - `ACT` — everything else: reading, analysing, creating, editing, or deleting in the workspace;
   unknown/malformed token also falls here — fail to action, not silence
 
 Gate output token → Route mapping:
 - `"TRIVIAL"` → `Route(trivial=True)`
-- `"REJECTED <name>"` / `"REJECTED"` → `Route(rejected=True, reason=<name>)` (bare `REJECTED` → `reason=""`)
-- `"ACT"` → `Route()`
-- unknown/malformed token → warning log + `Route()` (falls to `ACT`, never silent)
+- `"ACT"` / anything else → `Route()` — an unrecognized token logs a warning and falls to `Route()`,
+  never silent
 
-Verbatim file output is handled by the `<file_handling>` rule in `SYSTEM_PROMPT`, not a dedicated route.
+Verbatim file output is handled by the `<file_handling>` rule in `ROOT_SYSTEM_PROMPT`, not a dedicated route.
 
-## Delegate Tool
-`delegate(agent, task)` (`agent/tools/delegate.py`, `make_delegate_tool`) is a tool registered
-**only on the main agent** — the recursion guard is the `if subagent is None:` check in
-`Harness._build_agent`, so subagents never receive it and can never self-spawn. It replaces the
-old router-level plan/specialist dispatch: the main agent now owns decomposition and calls
-`delegate` as many times as it judges necessary, in whatever order it judges necessary.
+## Cross-Agent Dispatch
+There is no `delegate` tool and no `Harness`-registered tool for calling another agent — root
+cannot self-spawn, and no subagent can spawn anything (plan 27 decision 11, superseding plan 25's
+agents-as-tools). All cross-agent dispatch is owned by the sequencer + the fixed interpreter, not
+by an LLM deciding mid-turn to call a tool:
 
-Execution flow:
-1. Resolve `agent` name against the roster (`SUBAGENTS` filtered to `user_invocable`); the tool's
-   `input_schema` constrains `agent` to an `"enum"` of those names.
-2. `_enrich_system_base(resolved.build_system_base(), working_dir)` — adds the workspace-root note.
-3. `_build_agent(..., subagent=resolved)` — spawn mode, cold context (`prior=[]`), no `delegate`
-   tool on the nested agent.
-4. `await nested.run(task)` — returns full message history; last assistant text block is extracted
-   and returned as a string.
-5. Any exception → `"[error] {agent} failed: {exc}"` (non-fatal to the main agent's turn).
+1. `Harness.stream()` estimates the turn (`Estimator`, or a `seed` from a forced `/`-slash route);
+   a `mutate`/`seeded` estimate routes into `Harness._stream_graph()`, everything else runs root
+   directly, cold-free, at the `root-dispatch` touchpoint (no graph).
+2. `Sequencer.sequence()` (`agent/pipeline/sequencer.py`) makes one CORE-tier LLM call and returns
+   a validated `TaskGraph` (`agent/pipeline/plan.py`, `parse_task_graph`) — every step's `agent` is
+   an `auto_assignable` roster `Subagent` name; `root` (`ROOT_AGENT = "root"`) is rejected if the
+   model names it as a step agent.
+3. `agent/harness/interpreter.py::run_task_graph()` walks the graph: `execute → verify → repair →
+   re-verify → halt`, no knowledge of any agent by name or role. Each step's execution is a call to
+   the `dispatch` closure `Harness._stream_graph()` builds, which calls
+   `agent/tools/delegate.py::run_subagent(agent, task, ...)`.
+4. `run_subagent()` resolves `agent` against `SUBAGENTS` (any roster name, invocable or
+   post-planning-only), builds a cold nested `Agent` via `Harness._build_agent(..., subagent=resolved)`
+   (`prior=[]`, no cross-agent tool of any kind registered), runs it, and returns the last
+   assistant text block as a string (`"[error] {agent} failed: {exc}"` on any exception — non-fatal
+   to the graph, handled by the interpreter's verify/repair/halt policy instead).
 
-Ordering contract: the main agent is instructed never to fragment one artifact across multiple
-`delegate` calls, and to order calls by dependency (scaffold → logic → tests).
+Ordering, tool-breadth narrowing (`Task.scope` → `harness/tool_scope.py`), and per-node tier
+scaling (`scale()`, `node_signal()`) are all sequencer/interpreter concerns — never something an
+agent decides mid-turn. See `subagents.md → Harness` for the full sequencer→interpreter walkthrough
+and `## Root` below for how root owns the turn around this execution.
 
 Pipeline (in TUI `_stream`):
-1. `Gate.gate()` → `Route`
-2. `route.rejected`: mount `MessageWidget(MessageKind.ERROR, ...)`, `append_event(source="gate")`, `outcome="rejected"`, early `return` — `Harness` never invoked; `finally:` still runs (label reset, animation stop, `turn.end` emit)
-3. else: `_run_step(user_input, route.subagent, ..., trivial=route.trivial)` dispatches straight to `Harness` — no locate/rewrite stage; the main agent calls `delegate` itself, mid-turn, if it decides a specialist step is needed
+1. `Gate.gate()` → `Route` (`trivial` or not — see `## Gate`)
+2. `_run_step(user_input, seed, ..., trivial=route.trivial)` dispatches straight to `Harness.stream()`
+   — no locate/rewrite stage, no rejection path; an unrecognized `/`-slash agent name is a CLI/palette
+   concern, not something `Gate` or `Route` handles
+
+## Root
+Root is the session-owning unit — deployed first by the harness, present for the whole turn, never
+a task-graph step (`ROOT_AGENT` fails `parse_task_graph`'s roster check by construction: it is not
+in `SUBAGENTS`, so no `agent` value equal to `"root"` can ever pass `auto_assignable` validation).
+It is not a registry `Subagent` and is not in the Gate menu, sequencer roster, or palette — it is
+special-cased in `Harness`, not filtered out of three separate lists.
+
+Root owns two things:
+- **Warm context.** `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs)
+  is passed on every root-dispatch call — the no-graph path in `Harness.stream()` and the
+  synthesis call below. Subagent (spawn-mode) runs never get this; they run cold (`prior=[]`).
+- **The turn's final answer.** `Harness._respond()` (`agent/harness/core.py`) is a real root call
+  at the `root-dispatch` touchpoint — session recency + the graph's `summary` + every
+  `StepResult.output`, prompted to write the reply the user sees. This runs after
+  `run_task_graph()` finishes (success) or raises `TaskGraphHalted` (root also narrates the halt,
+  naming the step and reason). There is no separate `Responder` unit or touchpoint — root absorbed
+  it. Fail-soft: any exception during synthesis (empty text, model/network error) falls back to
+  `_recap()`, a mechanical (no LLM call) summary built from `graph.summary` and the halt info alone,
+  so a turn is never lost to its own wrap-up.
+
+`_ROOT_DIRECTIVES` ("ask before acting on an ambiguous request") is safe specifically because root
+is never dispatched cold inside a graph — it is the only unit ever facing a human, so "ask" is
+always answerable.
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `Harness`
-Env vars (CORE — used by `Harness`, and by `delegate`'s nested agent):
+Env vars (CORE — used by `Harness`'s root-dispatch/subagent-dispatch calls, and the `Sequencer`):
 - `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
 - `GEKAI_CORE_MODEL_KEY`
 - `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
@@ -97,9 +125,11 @@ Env vars (SUPP — used by `Gate`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT
 - `GEKAI_SUPPORT_MODEL_URL`
 
 `agent/persona.py` splits identity from body so a subagent never stacks two "you are" claims:
-`_IDENTITY_MAIN` ("you are Gekai…") vs `_IDENTITY_SUB` ("you are part of Gekai… tool-neutral capability")
+`_IDENTITY_ROOT` ("you are Gekai…") vs `_IDENTITY_SUB` ("you are part of Gekai… tool-neutral capability")
 vs `_SHARED_BODY` (meta-rule + behavior/file_handling/response_style/output_format, reused verbatim).
-`SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY` (byte-identical to the pre-split constant).
+`ROOT_SYSTEM_PROMPT = _IDENTITY_ROOT + _SHARED_BODY + "\n<directives>\n" + _ROOT_DIRECTIVES`
+(root-only directives, mirroring the `<directives>` block a `Subagent` gets from
+`build_system_base()` — never reaches subagents, which assemble their own system prompt independently).
 The `<tools>` block is generated — never static — by `render_tool_instruction(assigned)`: a
 deterministic, non-LLM fragment table (`_TOOL_GUIDANCE`) keyed on tool-name groups from
 `agent/tools/catalog.py` (`READ_TOOLS`/`SHELL_TOOLS`/etc — `ALL_TOOLS` mirrors `make_tools()` output,
@@ -125,8 +155,8 @@ This guarantees the `<tools>` prompt always reflects the *effective, post-filter
 subagent's bare declared allowlist — e.g. a read-only subagent's prompt omits all shell/edit guidance.
 
 `Harness.stream(session, user_input, permission_callback=None, subagent=None, extra_params=None)`
-selects `system_base` by the `subagent` param — `SYSTEM_PROMPT` (direct) vs
-`subagent.build_system_base()` (spawn) — then calls `_build_agent`. `extra_params`: `None` (default)
+selects `system_base` by the `subagent` param — `ROOT_SYSTEM_PROMPT` (root, no-graph path) vs
+`subagent.build_system_base()` (spawn, cold nested run) — then calls `_build_agent`. `extra_params`: `None` (default)
 → use `self._extra_params` (set at construction from `resolve_thinking_params`); explicit `{}` →
 no thinking params for this turn (the `TRIVIAL`-route case, set in `GekaiAgent.process_stream` via
 `extra_params={} if route.trivial else None`). Direct mode passes
@@ -144,7 +174,7 @@ Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
 {ts, kind:"command", content:"/clear"}                        ← slash command typed by user
-{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: gate, error, interrupted, farewell, max_iterations; rejected turn → `{source:"gate", content:"'<name>' is not an available agent"}` (or `"no such agent"` when bare `REJECTED`)
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: gate, error, interrupted, farewell, max_iterations
 ```
 
 Entries without `kind` (legacy files) default to `"turn"`.
@@ -156,7 +186,7 @@ Entries without `kind` (legacy files) default to `"turn"`.
 **Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`.
 
 **Two readers:**
-- `load_session(id)` → `(session_id, working_dir, turns_only)` — only `kind=="turn"` entries (model context). Always-fresh system messages (SYSTEM_PROMPT, workspace) excluded and re-injected on startup.
+- `load_session(id)` → `(session_id, working_dir, turns_only)` — only `kind=="turn"` entries (model context). Always-fresh system messages (ROOT_SYSTEM_PROMPT, workspace) excluded and re-injected on startup.
 - `load_timeline(id)` → `(working_dir, all_entries)` — full ordered list for visual rebuild; non-persistent system turns excluded.
 
 **Max-iterations:** when handler hits limit with no text produced, `process_stream` writes `append_event(source="max_iterations")` instead of an empty assistant turn — context stays clean, rebuild shows the warning.
@@ -177,6 +207,8 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/clear` — clears chat and starts a new session (resets session ID)
 
 ## CLI Flags
-- `--debug` — prints `[router: rejected]` (`route.rejected`, checked first), `[router: main]` (no subagent), `[router: trivial]` (`route.trivial`), or `[router: <namespace>/<subagent-name>]` (subagent selected) in color `#BA55D3` (medium_orchid) as an OPERATION widget in the TUI chat, 1 line below the user prompt
+- `--debug` — writes the assembled system prompt, `extra_params`, and every tool call/result to
+  `.debug.jsonl` (`append_debug`, see `## Session Persistence`); the gate's `trivial`/`act` decision
+  is separately emitted as a `"route"` telemetry event (`agent/tui/app.py`), not rendered in the TUI
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

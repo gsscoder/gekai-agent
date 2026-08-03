@@ -16,7 +16,7 @@ def test_well_formed_graph_parses() -> None:
     raw = {
         "summary": "build a library with tests",
         "steps": [
-            {"agent": "main", "instruction": "scaffold repo", "mission": "scaffold the repo"},
+            {"agent": "code-expert", "instruction": "scaffold repo", "mission": "scaffold the repo"},
             {"agent": "code-expert", "instruction": "write code", "mission": "write the code", "verify": "fact-checker"},
             {"agent": "test-expert", "instruction": "write tests for {{step_2}}", "mission": "write tests", "repair": "fact-checker"},
         ],
@@ -24,10 +24,22 @@ def test_well_formed_graph_parses() -> None:
     graph = parse_task_graph(raw, _ROSTER)
     assert graph.summary == "build a library with tests"
     assert graph == [
-        Task(agent="main", instruction="scaffold repo", mission="scaffold the repo"),
+        Task(agent="code-expert", instruction="scaffold repo", mission="scaffold the repo"),
         Task(agent="code-expert", instruction="write code", mission="write the code", verify="fact-checker"),
         Task(agent="test-expert", instruction="write tests for {{step_2}}", mission="write tests", repair="fact-checker"),
     ]
+
+
+def test_root_agent_is_rejected_as_step_agent() -> None:
+    """Phase 3: root leaves the graph — it is never a valid step `agent`,
+    even though it is still an auto-assignable-looking string. Every step
+    must go to an auto-assignable specialist."""
+    raw = {
+        "summary": "s",
+        "steps": [{"agent": "root", "instruction": "scaffold repo", "mission": "scaffold the repo"}],
+    }
+    with pytest.raises(ValueError, match="root"):
+        parse_task_graph(raw, _ROSTER)
 
 
 @pytest.mark.parametrize(
@@ -38,11 +50,11 @@ def test_well_formed_graph_parses() -> None:
             "nonexistent-agent",
         ),
         (
-            {"summary": "s", "steps": [{"agent": "main", "instruction": ""}]},
+            {"summary": "s", "steps": [{"agent": "code-expert", "instruction": ""}]},
             "instruction",
         ),
         (
-            {"summary": "s", "steps": [{"agent": "main", "instruction": "use {{step_5}}", "mission": "use it"}]},
+            {"summary": "s", "steps": [{"agent": "code-expert", "instruction": "use {{step_5}}", "mission": "use it"}]},
             "dangling ref",
         ),
         (
@@ -50,7 +62,7 @@ def test_well_formed_graph_parses() -> None:
             "fact-checker",
         ),
         (
-            {"summary": "s", "steps": [{"agent": "main", "instruction": "scaffold", "mission": "scaffold it", "verify": "code-expert"}]},
+            {"summary": "s", "steps": [{"agent": "code-expert", "instruction": "scaffold", "mission": "scaffold it", "verify": "code-expert"}]},
             "code-expert",
         ),
         (
@@ -58,11 +70,11 @@ def test_well_formed_graph_parses() -> None:
             "at least one step",
         ),
         (
-            {"steps": [{"agent": "main", "instruction": "do it"}]},
+            {"steps": [{"agent": "code-expert", "instruction": "do it"}]},
             "summary",
         ),
         (
-            [{"agent": "main", "instruction": "do it"}],
+            [{"agent": "code-expert", "instruction": "do it"}],
             "JSON object",
         ),
     ],
@@ -99,7 +111,7 @@ def test_scope_field_parses_into_plain_string(scope) -> None:
 def test_scope_field_omitted_defaults_to_none() -> None:
     raw = {
         "summary": "s",
-        "steps": [{"agent": "main", "instruction": "do it", "mission": "do it"}],
+        "steps": [{"agent": "code-expert", "instruction": "do it", "mission": "do it"}],
     }
     graph = parse_task_graph(raw, _ROSTER)
     assert graph[0].scope is None
@@ -118,7 +130,7 @@ def test_scope_field_omitted_defaults_to_none() -> None:
 def test_malformed_scope_rejects_whole_graph(scope, match) -> None:
     raw = {
         "summary": "s",
-        "steps": [{"agent": "main", "instruction": "do it", "mission": "do it", "scope": scope}],
+        "steps": [{"agent": "code-expert", "instruction": "do it", "mission": "do it", "scope": scope}],
     }
     with pytest.raises(ValueError, match=match):
         parse_task_graph(raw, _ROSTER)

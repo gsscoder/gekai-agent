@@ -1,4 +1,4 @@
-"""Dynamic directive pump (plan 28 Phase 3): main borrows domain *expertise*
+"""Dynamic directive pump (plan 28 Phase 3): root borrows domain *expertise*
 without a cold spawn borrowing the *role* (decision 13). Only the shallow,
 mission-free `namespace_directives` groups (`agent/subagents/*/__init__.py`)
 ever reach here — a `Subagent.directives` (deep, mission-presupposing) is
@@ -45,7 +45,7 @@ _KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
     "testing": ("test", "tests", "pytest", "unittest", "assert", "coverage", "spec", "fixture"),
 }
 
-PUMP_BUDGET = 2  # cap on domains pumped into main per turn (hard problem 3)
+PUMP_BUDGET = 2  # cap on domains pumped into root per turn (hard problem 3)
 
 
 def detect_domains(prompt: str) -> set[str]:

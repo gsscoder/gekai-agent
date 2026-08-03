@@ -19,10 +19,9 @@ from ..directive_pump import pump as pump_directives
 from ..llm.tiers import TierName, TierPolicy
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
-from ..persona import SYSTEM_PROMPT, render_tool_instruction
+from ..persona import ROOT_SYSTEM_PROMPT, render_tool_instruction
 from ..pipeline.estimate import Estimator
 from ..pipeline.plan import Task, TaskGraph
-from ..pipeline.responder import Responder
 from ..pipeline.sequencer import Sequencer
 from ..harness.interpreter import TaskGraphHalted, StepResult, run_task_graph
 from ..harness.scaling import WorkSignal, scale, _sequencer_signal
@@ -35,7 +34,7 @@ from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
 from ..tools.delegate import run_subagent
-from .tool_scope import scope as tool_scope, MAIN_TOOL_POLICY
+from .tool_scope import scope as tool_scope
 
 if TYPE_CHECKING:
     # deferred: agent.llm.resolve imports agent.harness.touchpoints, which
@@ -45,14 +44,14 @@ if TYPE_CHECKING:
     # type-checking-only import safe for the annotations below.
     from ..llm.resolve import ResolvedTier
 
-_MAIN_COLOR = "#4169E1"
+_ROOT_COLOR = "#4169E1"
 _RECENCY_N = 2
 
 
 def _pumped_system_base(system_base: str, prompt: str) -> tuple[str, list[str]]:
     """Dynamic-directive pump (plan 28 Phase 3, decision 12): appends the
     escaping directives of this prompt's mechanically-detected domains, if
-    any. Never called for a subagent dispatch — pumping is main-only
+    any. Never called for a subagent dispatch — pumping is root-only
     (decision 13, the specialist already carries its own directives)."""
     text, domains = pump_directives(prompt)
     if text:
@@ -178,7 +177,7 @@ def _build_agent(
         on_request=permission_callback,
     ))
 
-    # No `delegate` tool is registered — main is a pure work-operator; the
+    # No `delegate` tool is registered — root is a pure work-operator; the
     # harness (sequencer + interpreter) owns all cross-agent control flow
     # (plan 27 decision 11, superseding plan 25's agents-as-tools).
     return agent
@@ -189,35 +188,31 @@ class Harness:
         self,
         resolve: Callable[[TierName], ResolvedTier],
         sequencer_policy: TierPolicy,
-        main_dispatch_policy: TierPolicy,
+        root_dispatch_policy: TierPolicy,
         subagent_dispatch_policy: TierPolicy,
         estimator: ResolvedTier | None = None,
-        responder: ResolvedTier | None = None,
         debug: bool = False,
     ) -> None:
         # Assignment-time tier scaling (plan 28 Phase 2): the 3 scaled
-        # touchpoints (sequencer, main-dispatch, subagent-dispatch) no longer
+        # touchpoints (sequencer, root-dispatch, subagent-dispatch) no longer
         # get one frozen `ResolvedTier` baked in at construction — they get
         # this resolver closure (over the current catalog+bindings) plus
         # each touchpoint's declared `TierPolicy`, so a dispatch site can
         # pick a tier per call (`scale(policy, signal)`) and resolve it fresh
-        # (`resolve(tier)`). `estimator`/`responder` stay optional and still
-        # frozen: neither is one of the scaled components — tests that don't
-        # wire one get the old flat behavior (estimator: pre-plan-27
-        # "trivial"; responder: the mechanical recap).
+        # (`resolve(tier)`). `estimator` stays optional and still frozen: it
+        # is not one of the scaled components — tests that don't wire one get
+        # the old flat behavior (pre-plan-27 "trivial"). Root's synthesis
+        # (`_respond`) runs at `root_dispatch_policy` like any other
+        # root-dispatch call (plan 32 Phase 3: root absorbs the Responder,
+        # which had its own separate frozen tier).
         self._resolve = resolve
         self._sequencer_policy = sequencer_policy
-        self._main_dispatch_policy = main_dispatch_policy
+        self._root_dispatch_policy = root_dispatch_policy
         self._subagent_dispatch_policy = subagent_dispatch_policy
         self._debug = debug
         self._estimator = (
             Estimator(model=estimator.model, api_key=estimator.api_key, api_base=estimator.api_base)
             if estimator is not None
-            else None
-        )
-        self._responder = (
-            Responder(model=responder.model, api_key=responder.api_key, api_base=responder.api_base, extra_params=responder.extra_params)
-            if responder is not None
             else None
         )
         # `Sequencer` is no longer built once here: the sequencer's tier is
@@ -258,22 +253,22 @@ class Harness:
             return
 
         # No-graph turn (trivial single-agent, or a cold subagent run outside
-        # a task graph): runs at main-dispatch's configured default, always —
+        # a task graph): runs at root-dispatch's configured default, always —
         # there is no per-node signal here (no verify/retry concept exists in
         # this path), so it never modulates (plan 28 Phase 2 guardrail).
         pumped_domains: list[str] = []
         if subagent is None:
-            system_base, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, user_input)
+            system_base, pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
         else:
             system_base = subagent.build_system_base()
         system_base = _enrich_system_base(system_base, session.working_dir)
         if pumped_domains:
             yield DirectivePumpEvent(domains=pumped_domains)
 
-        main_dispatch_resolved = self._resolve(self._main_dispatch_policy.default)
-        effective_extra_params = main_dispatch_resolved.extra_params if extra_params is None else extra_params
+        root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default)
+        effective_extra_params = root_dispatch_resolved.extra_params if extra_params is None else extra_params
         agent = _build_agent(
-            main_dispatch_resolved.model, main_dispatch_resolved.api_key, main_dispatch_resolved.api_base,
+            root_dispatch_resolved.model, root_dispatch_resolved.api_key, root_dispatch_resolved.api_base,
             effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
@@ -287,21 +282,21 @@ class Harness:
             | DelegationStartEvent | DelegationDoneEvent | None
         ] = asyncio.Queue()
         files_touched: list[str] = []
-        main_run_id = uuid.uuid4().hex
+        root_run_id = uuid.uuid4().hex
 
         def _on_event(event: LlmEvent) -> None:
-            _bridge_llm_event(event, queue, session, files_touched, self._debug, main_run_id)
+            _bridge_llm_event(event, queue, session, files_touched, self._debug, root_run_id)
 
         yield SubAgentStartEvent(
-            name=subagent.name if subagent else "main",
+            name=subagent.name if subagent else "root",
             description=subagent.description if subagent else "thinking",
-            color=_MAIN_COLOR,
+            color=_ROOT_COLOR,
         )
 
         prior = [] if subagent else _recency_turns(session.messages, _RECENCY_N)
         prior.append(Message(role="user", content=user_input))
         unsubscribe = bus.subscribe(_on_event)
-        agent_task: asyncio.Task = asyncio.create_task(agent.run(prior, run_id=main_run_id))
+        agent_task: asyncio.Task = asyncio.create_task(agent.run(prior, run_id=root_run_id))
 
         try:
             while True:
@@ -345,10 +340,11 @@ class Harness:
     ) -> AsyncIterator[AgentEvent | str]:
         """Case 3/4 mutation path: sequencer produces a validated TaskGraph, the
         fixed interpreter walks it (plan 27 improvements 2-3; renamed plan 28).
-        `main` steps run as a direct instruction (no spawn); subagent steps
-        are a cold, fire-and-forget run whose start/outcome are traced on
-        `bus` — the same bridge the single-agent path above uses, so
-        DiffEvent/LogEvent/Delegation* rendering is shared, not reimplemented.
+        Every step is a cold, fire-and-forget subagent run whose start/outcome
+        are traced on `bus` — the same bridge the single-agent path above
+        uses, so DiffEvent/LogEvent/Delegation* rendering is shared, not
+        reimplemented. Root never runs inside the graph (plan 32 Phase 3); it
+        synthesizes the turn's answer afterward, in `_respond`.
         """
         working_dir = session.working_dir
         permissions = session.permissions
@@ -364,7 +360,7 @@ class Harness:
         # the TUI's per-step renderer setup relies on it, same as the
         # single-agent path; nested steps then render as delegation badges
         # underneath it via the same DelegationStart/DoneEvent bridge.
-        yield SubAgentStartEvent(name="sequencer", description="sequencing", color=_MAIN_COLOR)
+        yield SubAgentStartEvent(name="sequencer", description="sequencing", color=_ROOT_COLOR)
 
         # Sequencer pre-plan signal (plan 28 Phase 2): a cheap, engineered
         # read of the raw prompt, computed before the task graph exists (no
@@ -415,29 +411,6 @@ class Harness:
             agent_name: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(),
             step_scope: str | None = None,
         ) -> str:
-            if agent_name == "main":
-                resolved = _scale_and_resolve(self._main_dispatch_policy, "main-dispatch", signal)
-                main_system, pumped_domains = _pumped_system_base(SYSTEM_PROMPT, instruction)
-                main_system = _enrich_system_base(main_system, working_dir)
-                if pumped_domains:
-                    queue.put_nowait(DirectivePumpEvent(domains=pumped_domains))
-                tools_override, scope_reason = tool_scope(MAIN_TOOL_POLICY, step_scope)
-                if scope_reason != "default":
-                    queue.put_nowait(ToolScopeEvent(unit="main-dispatch", chosen_rung=step_scope, reason=scope_reason))
-                agent_obj = _build_agent(
-                    resolved.model, resolved.api_key, resolved.api_base,
-                    resolved.extra_params,
-                    working_dir, permissions, permission_callback, main_system, bus,
-                    subagent=None, hidden_grant_callback=hidden_grant_callback,
-                    tools_override=tools_override,
-                )
-                run_id = uuid.uuid4().hex
-                bus.emit(DelegationStarted(agent="main", task=instruction, mission=mission, run_id=run_id))
-                try:
-                    history = await agent_obj.run(instruction, run_id=run_id)
-                finally:
-                    bus.emit(DelegationCompleted(agent="main", run_id=run_id))
-                return _last_assistant_text(history)
             resolved = _scale_and_resolve(self._subagent_dispatch_policy, "subagent-dispatch", signal)
             matched = next((s for s in SUBAGENTS if s.name == agent_name), None)
             tools_override, scope_reason = tool_scope(matched.tool_policy if matched else None, step_scope)
@@ -488,11 +461,20 @@ class Harness:
             except TaskGraphHalted as halted:
                 yield TaskGraphHaltedEvent(step_index=halted.index, agent=halted.step.agent, reason=halted.reason)
                 yield DoneEvent(thinking_chars=0, files_touched=files_touched)
-                yield _recap(graph, halted=halted)
+                answer, responder_event = await self._respond(
+                    user_input, session, graph, [], halted=halted,
+                    permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
+                )
+                if responder_event is not None:
+                    yield responder_event
+                yield answer
                 return
 
             yield DoneEvent(thinking_chars=0, files_touched=files_touched)
-            answer, responder_event = await self._respond(user_input, graph, results)
+            answer, responder_event = await self._respond(
+                user_input, session, graph, results, halted=None,
+                permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
+            )
             if responder_event is not None:
                 yield responder_event
             yield answer
@@ -500,21 +482,63 @@ class Harness:
             unsubscribe()
 
     async def _respond(
-        self, user_input: str, graph: TaskGraph, results: list[StepResult],
+        self,
+        user_input: str,
+        session: Session,
+        graph: TaskGraph,
+        results: list[StepResult],
+        *,
+        halted: TaskGraphHalted | None,
+        permission_callback: PermissionCallback | None,
+        hidden_grant_callback: HiddenGrantCallback | None,
     ) -> tuple[str, ResponderEvent | None]:
-        """Synthesizes the turn's user-facing answer from what actually ran
-        (reverses plan 27 decision 15's mechanical-only recap for the
-        success path only — the halted path stays mechanical). Fail-soft:
-        no responder wired, or any responder error, falls back to the
-        mechanical `_recap` so a turn is never lost to its own wrap-up."""
-        if self._responder is None:
-            return _recap(graph, halted=None), None
+        """Synthesizes the turn's user-facing answer from what actually ran —
+        a real root call (plan 32 Phase 3: root absorbs the Responder), run
+        at `root-dispatch` with session context (`_recency_turns` + the
+        graph's own summary + each step's output), the same tier-scaling/
+        resolve pattern the no-graph path in `stream()` uses. Covers both the
+        success path and the halted path (root reports the halt too). Fail-
+        soft: any exception — empty synthesis, model/network error — falls
+        back to the mechanical `_recap` so a turn is never lost to its own
+        wrap-up."""
         t0 = time.monotonic()
         try:
-            answer = await self._responder.respond(user_input, [r.output for r in results])
+            resolved = self._resolve(self._root_dispatch_policy.default)
+            system_base, _pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
+            system_base = _enrich_system_base(system_base, session.working_dir)
+            agent = _build_agent(
+                resolved.model, resolved.api_key, resolved.api_base, resolved.extra_params,
+                session.working_dir, session.permissions, permission_callback, system_base,
+                hidden_grant_callback=hidden_grant_callback,
+            )
+            outputs_block = "\n\n".join(
+                f"--- step {i + 1} output ---\n{r.output}" for i, r in enumerate(results)
+            )
+            if halted is None:
+                synthesis_prompt = (
+                    f"the task graph you planned has finished. summary: {graph.summary}\n\n"
+                    f"<step_outputs>\n{outputs_block}\n</step_outputs>\n\n"
+                    "write the reply the user will see: state what was done and answer any question "
+                    "asked, using only the step outputs above; be terse, no preamble, no markdown headers"
+                )
+            else:
+                synthesis_prompt = (
+                    f"the task graph you planned halted before finishing. summary: {graph.summary}\n"
+                    f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
+                    "prior steps' work is kept; nothing was rolled back.\n\n"
+                    "write the reply the user will see: report what was completed and name the step "
+                    "that halted and why, using only the information above; be terse, no preamble, "
+                    "no markdown headers"
+                )
+            prior = _recency_turns(session.messages, _RECENCY_N)
+            prior.append(Message(role="user", content=synthesis_prompt))
+            history = await agent.run(prior)
+            answer = _last_assistant_text(history)
+            if not answer:
+                raise ValueError("root synthesis returned empty text")
             return answer, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=False)
         except Exception:
-            return _recap(graph, halted=None), ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
+            return _recap(graph, halted=halted), ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
 
 
 def _last_assistant_text(history: list[Message]) -> str:

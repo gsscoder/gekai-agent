@@ -59,7 +59,7 @@ class Subagent:
 
     def build_system_base(self) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body
-        shared verbatim with the main agent + directives — the <tools> block is
+        shared verbatim with root + directives — the <tools> block is
         appended by the harness once the effective tool set is known."""
         system = _IDENTITY_SUB
         if self.mandate:

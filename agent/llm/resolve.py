@@ -43,13 +43,14 @@ def resolve_tier(
         validate_binding(tier, binding, catalog)
     except ValueError as exc:
         raise TierResolutionError(f"tier {tier.value!r} binding is stale: {exc}") from exc
-    if not credentials.has_api_key(binding.model):
-        raise TierResolutionError(f"no stored credential for model {binding.model!r} — run /tiers")
+    cred_key = credentials.credential_key(tier.value, binding.model, binding.default_effort, binding.thinking)
+    if not credentials.has_api_key(cred_key):
+        raise TierResolutionError(f"no stored credential for tier {tier.value!r} — run /tiers")
     entry = catalog[binding.model]
     extra_params = resolve_thinking_params(binding.model, binding.default_effort) if binding.thinking else {}
     return ResolvedTier(
         model=binding.model,
-        api_key=credentials.get_api_key(binding.model),
+        api_key=credentials.get_api_key(cred_key),
         api_base=entry.base_url,
         extra_params=extra_params,
     )
@@ -127,7 +128,9 @@ def tier_status(
         tier=tier,
         binding=binding,
         entry=entry,
-        has_credential=credentials.has_api_key(binding.model),
+        has_credential=credentials.has_api_key(
+            credentials.credential_key(tier.value, binding.model, binding.default_effort, binding.thinking)
+        ),
         verdict=entry.suitability.verdict(tier, binding.thinking),
         invalid_reason=invalid_reason,
     )

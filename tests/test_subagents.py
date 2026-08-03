@@ -189,3 +189,55 @@ def test_validate_registry_raises_when_star_mixed_with_explicit_domain(monkeypat
     monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
     with pytest.raises(ValueError, match="directive_domains"):
         validate_registry()
+
+
+# ---------------------------------------------------------------------------
+# omni-worker (plan 32 Phase 1) — the generic namespace's first member;
+# directive_domains=("*",) means its own namespace (generic) composes first,
+# then every other domain ranked, ahead of its own mandate-level directives
+# ---------------------------------------------------------------------------
+
+def test_omni_worker_registered_in_generic_namespace():
+    omni_worker = next(p for p in subagents_module.SUBAGENTS if p.name == "omni-worker")
+    assert omni_worker.namespace == "generic"
+    assert omni_worker.directive_domains == ("*",)
+
+
+def test_omni_worker_directives_lead_with_generic_block_ahead_of_coding_and_testing():
+    omni_worker = next(p for p in subagents_module.SUBAGENTS if p.name == "omni-worker")
+    generic_idx = omni_worker.directives.index(subagents_module.NAMESPACE_DIRECTIVES["generic"])
+    coding_idx = omni_worker.directives.index(subagents_module.NAMESPACE_DIRECTIVES["coding"])
+    testing_idx = omni_worker.directives.index(subagents_module.NAMESPACE_DIRECTIVES["testing"])
+    assert generic_idx == 0
+    assert generic_idx < coding_idx < testing_idx
+
+
+def test_validate_registry_passes_with_omni_worker_registered():
+    # omni-worker is part of the real, discovered registry (not injected via
+    # monkeypatch) — this asserts the actual startup state is valid
+    validate_registry()
+
+
+# ---------------------------------------------------------------------------
+# Cold-dispatch specialists inherit the generic contract (plan 32 Phase 4) —
+# code-expert, code-refactorer, test-expert, test-fixer each declare
+# directive_domains=("generic",) so their composed directives carry the
+# generic namespace's cold-run contract alongside their own craft directives
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "name",
+    ["code-expert", "code-refactorer", "test-expert", "test-fixer"],
+)
+def test_cold_dispatch_specialist_composes_generic_block(name):
+    p = next(s for s in subagents_module.SUBAGENTS if s.name == name)
+    assert p.directive_domains == ("generic",)
+    assert subagents_module.NAMESPACE_DIRECTIVES["generic"] in p.directives
+
+
+def test_code_refactorer_no_longer_instructs_asking_before_proceeding():
+    # generic's cold contract says "never ask a clarifying question" — the
+    # refactorer's own line on untraceable references must not contradict it
+    p = next(s for s in subagents_module.SUBAGENTS if s.name == "code-refactorer")
+    assert "ask before proceeding" not in p.directives
+    assert "state the limitation as the blocker and stop" in p.directives

@@ -2,7 +2,7 @@
 
 Enumerates every place the harness invokes a model — the operational
 definition of "the harness" (concept 1, plan 28): all engineered, non-LLM,
-per-turn machinery; main is one configuration of the LLM loop the harness
+per-turn machinery; root is one configuration of the LLM loop the harness
 deploys, not the harness itself. Adding a model interaction means adding an
 entry here, not scattering a new client call into a module.
 
@@ -40,8 +40,8 @@ TOUCHPOINTS: tuple[Touchpoint, ...] = (
         policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
     ),
     Touchpoint(
-        "main-dispatch",
-        "run main on a task",
+        "root-dispatch",
+        "run root on a task",
         TierName.SUPP,
         policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
     ),
@@ -51,7 +51,6 @@ TOUCHPOINTS: tuple[Touchpoint, ...] = (
         TierName.SUPP,
         policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
     ),
-    Touchpoint("responder", "synthesize the turn's final answer from what actually ran", TierName.SUPP),
     Touchpoint("micro", "one-shot summaries / labels / fs-support", TierName.FAST),
 )
 

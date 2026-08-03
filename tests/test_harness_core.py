@@ -120,7 +120,7 @@ def _make_harness(estimator: ResolvedTier | None = None) -> Harness:
     return Harness(
         resolve=lambda _tier: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
-        main_dispatch_policy=policy,
+        root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
         estimator=estimator,
     )
@@ -202,9 +202,9 @@ def test_no_graph_path_never_passes_tools_override(
 ) -> None:
     # REQ (plan 31 Phase 3, item 5): the no-graph, single-agent branch of
     # `Harness.stream` has no sequencer/task-graph step to read a `scope`
-    # signal from, so it must never narrow main's tool grant -- its
+    # signal from, so it must never narrow root's tool grant -- its
     # `_build_agent(...)` call site stays untouched, always default
-    # (`tools_override=None`), main always runs full there.
+    # (`tools_override=None`), root always runs full there.
     responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
@@ -226,12 +226,12 @@ def test_no_graph_path_never_passes_tools_override(
     assert calls[0].get("tools_override") is None
 
 
-def test_coding_prompt_emits_directive_pump_event_on_main_dispatch(
+def test_coding_prompt_emits_directive_pump_event_on_root_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Plan 28 Phase 3: a Python-file-shaped prompt on the no-graph
     (trivial, subagent=None) path pumps the coding domain's escaping
-    directives into main and reports it via `DirectivePumpEvent` —
+    directives into root and reports it via `DirectivePumpEvent` —
     `test_directive_pump.py` covers the pump function itself; this proves
     the harness wiring at the `Harness.stream` call site."""
     responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
@@ -256,10 +256,10 @@ def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
     `_stream_graph()` -- so a mutate-routed turn with a coding-shaped prompt
     emitted a phantom `DirectivePumpEvent` for a `system_base`/dispatch that
     was thrown away and never used. Here the graph's single step delegates to
-    a non-"main" subagent (`run_subagent` is monkeypatched to bypass
+    a non-"root" subagent (`run_subagent` is monkeypatched to bypass
     `_stream_graph`'s own `dispatch()` closure entirely, which is the only
     place a real pump for the graph path would happen -- and only for
-    agent_name == "main" steps), so under the fix no `DirectivePumpEvent`
+    agent_name == "root" steps), so under the fix no `DirectivePumpEvent`
     should be emitted at all for this turn."""
     harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
@@ -303,7 +303,7 @@ def test_nested_agent_stopped_with_different_run_id_does_not_end_stream(
 ) -> None:
     # REQ: Harness.stream's bridge must only terminate the outer consumer
     # loop (queue.put_nowait(None)) on an AgentStopped whose run_id matches
-    # the outer agent's own run (`main_run_id`). A stray AgentStopped carrying
+    # the outer agent's own run (`root_run_id`). A stray AgentStopped carrying
     # a *different* run_id — exactly what a nested subagent run emits on the
     # same shared bus when it finishes mid-turn — must be ignored, not
     # treated as "the whole stream is done".

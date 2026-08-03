@@ -116,7 +116,7 @@ class ScaleEvent(AgentEvent):
     """Telemetry only (plan 28 Phase 2, hard problem 4): emitted to events-*.jsonl
     when the harness moves a component off its configured default tier for one
     dispatch. Never emitted on a no-op (chosen_tier == default_tier)."""
-    component: str = ""      # e.g. "main-dispatch" | "subagent-dispatch" | "sequencer"
+    component: str = ""      # e.g. "root-dispatch" | "subagent-dispatch" | "sequencer"
     default_tier: str = ""   # e.g. "supp"
     chosen_tier: str = ""    # e.g. "core"
     reason: str = ""
@@ -128,7 +128,7 @@ class ToolScopeEvent(AgentEvent):
     assignment-time tool scoping (`harness/tool_scope.py`) narrows a unit's
     tool grant below its `ToolPolicy` ceiling for one dispatch. Never
     emitted on a no-op (chosen_rung == "default")."""
-    unit: str = ""            # e.g. "main" | "subagent-dispatch"
+    unit: str = ""            # e.g. "root" | "subagent-dispatch"
     chosen_rung: str = ""     # e.g. "read" | "edit" | "fs"
     reason: str = ""
 
@@ -136,7 +136,7 @@ class ToolScopeEvent(AgentEvent):
 @dataclass
 class DirectivePumpEvent(AgentEvent):
     """Telemetry only (plan 28 Phase 3, hard problem 3): emitted when the
-    harness pumps domain-craft directives into main's system prompt for one
+    harness pumps domain-craft directives into root's system prompt for one
     dispatch. Never emitted when no domain was detected (empty pump)."""
     domains: list[str] = field(default_factory=list)
 

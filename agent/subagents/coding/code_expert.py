@@ -14,4 +14,5 @@ subagent = Subagent(
         "implementation swaps where the interface holds but behavior may change"
     ),
     auto_assignable=True,
+    directive_domains=("generic",),
 )

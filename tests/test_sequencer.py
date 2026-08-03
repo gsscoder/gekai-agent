@@ -81,6 +81,14 @@ def test_prompt_describes_scope_key() -> None:
     assert '"scope"' in sequencer._prompt
 
 
+def test_prompt_never_offers_root_as_an_agent_choice() -> None:
+    """Phase 3: root leaves the graph — the sequencer prompt must not offer
+    it as an agent choice; every step goes to a specialist."""
+    sequencer = _make_sequencer()
+    assert '"root"' not in sequencer._prompt
+    assert "never to root" in sequencer._prompt
+
+
 def test_scope_field_from_model_parses_into_plain_string() -> None:
     sequencer = _make_sequencer()
     raw = json.dumps({

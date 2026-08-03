@@ -103,11 +103,11 @@ def test_tiers_configured_false_when_only_partially_bound(monkeypatch: pytest.Mo
 def test_tiers_configured_false_when_bound_but_missing_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     # The exact bug this fixes: all three tiers have a saved binding (the old
     # binding-only tiers_configured() would have returned True here), but one
-    # bound model has no stored keyring credential, so `resolve_tier` would
-    # still raise on first use — tiers_configured() must now agree and report
+    # tier has no stored keyring credential, so `resolve_tier` would still
+    # raise on first use — tiers_configured() must now agree and report
     # False.
     _seed_catalog_and_bindings()
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: name != "fast-model")
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: not name.startswith("fast-"))
 
     assert settings.tiers_configured() is False
 

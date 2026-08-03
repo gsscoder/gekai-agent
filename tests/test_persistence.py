@@ -252,7 +252,7 @@ def test_load_timeline_includes_new_kinds(tmp_path: Path) -> None:
 
 def test_load_timeline_excludes_non_persistent_system(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
-    # write a system message (non-persistent, like SYSTEM_PROMPT)
+    # write a system message (non-persistent, like ROOT_SYSTEM_PROMPT)
     path = session_file(s)
     path.write_text(
         json.dumps({"timestamp": "2025-01-01T00:00:00.000Z", "kind": "turn", "role": "system", "content": "you are gekai"}) + "\n" +

@@ -24,6 +24,7 @@ from agent.tui.app import (
     _cycle_choice,
     _mask_key,
     _pending_row_status,
+    _tier_credential_key,
     _tier_edit_complete,
     _tiers_display_key,
     _tiers_key_present,
@@ -95,23 +96,24 @@ def test_display_key_explicit_clear_wins_over_real_credential(monkeypatch: pytes
 
 
 def test_row_status_not_configured_when_model_unset() -> None:
-    assert _pending_row_status(TierName.FAST, None, False, _CATALOG, {}) == "not configured"
+    assert _pending_row_status(TierName.FAST, None, "low", False, _CATALOG, {}) == "not configured"
+    assert _pending_row_status(TierName.FAST, "deepseek-v4-flash", None, False, _CATALOG, {}) == "not configured"
 
 
 def test_row_status_stale_when_model_missing_from_catalog() -> None:
-    status = _pending_row_status(TierName.FAST, "ghost-model", False, _CATALOG, {})
+    status = _pending_row_status(TierName.FAST, "ghost-model", "low", False, _CATALOG, {})
     assert status == "stale — model missing from catalog"
 
 
 @pytest.mark.parametrize(
-    "has_key, tier, model, thinking, key_input, expected",
+    "has_key, tier, model, thinking, keyed, expected",
     [
-        (False, TierName.FAST, "deepseek-v4-flash", False, {}, "no key"),
-        (False, TierName.FAST, "deepseek-v4-flash", False, {"deepseek-v4-flash": "sk-123"}, "✓ ready"),
-        (True, TierName.CORE, "deepseek-v4-flash", False, {}, "warning"),
-        (True, TierName.FAST, "deepseek-v4-pro", False, {}, "deprecated"),
-        (True, TierName.CORE, "deepseek-v4-pro", True, {}, "✓ ready"),
-        (True, TierName.FAST, "deepseek-v4-flash", False, {"deepseek-v4-flash": ""}, "no key"),
+        (False, TierName.FAST, "deepseek-v4-flash", False, False, "no key"),
+        (False, TierName.FAST, "deepseek-v4-flash", False, True, "✓ ready"),
+        (True, TierName.CORE, "deepseek-v4-flash", False, False, "warning"),
+        (True, TierName.FAST, "deepseek-v4-pro", False, False, "deprecated"),
+        (True, TierName.CORE, "deepseek-v4-pro", True, False, "✓ ready"),
+        (True, TierName.FAST, "deepseek-v4-flash", False, "clear", "no key"),
     ],
 )
 def test_pending_row_status(
@@ -120,14 +122,21 @@ def test_pending_row_status(
     tier: TierName,
     model: str,
     thinking: bool,
-    key_input: dict[str, str],
+    keyed: bool | str,
     expected: str,
 ) -> None:
     # Regression covered by the last case: a real keyring credential exists,
     # but the key cell was edited to empty and confirmed — the row must show
     # "no key", not "✓ ready", until committed.
     monkeypatch.setattr("agent.tui.app.credentials.has_api_key", lambda name: has_key)
-    status = _pending_row_status(tier, model, thinking, _CATALOG, key_input)
+    cred_key = _tier_credential_key(tier, model, "low", thinking)
+    if keyed == "clear":
+        key_input = {cred_key: ""}
+    elif keyed:
+        key_input = {cred_key: "sk-123"}
+    else:
+        key_input = {}
+    status = _pending_row_status(tier, model, "low", thinking, _CATALOG, key_input)
     assert status == expected
 
 

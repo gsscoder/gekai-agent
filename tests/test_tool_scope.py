@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from agent.harness.tool_scope import MAIN_TOOL_POLICY, scope
+from agent.harness.tool_scope import ROOT_TOOL_POLICY, scope
 from agent.subagents import ToolPolicy
 from agent.tools.catalog import RUNGS
 
 
-def test_main_tool_policy_ceiling_is_full() -> None:
-    assert MAIN_TOOL_POLICY.ceiling == len(RUNGS) - 1
+def test_root_tool_policy_ceiling_is_full() -> None:
+    assert ROOT_TOOL_POLICY.ceiling == len(RUNGS) - 1
 
 
 @pytest.mark.parametrize("ceiling", list(range(len(RUNGS))))

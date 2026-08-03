@@ -4,10 +4,10 @@ from collections.abc import Sequence
 
 from .tools.catalog import READ_TOOLS, SHELL_TOOLS
 
-# Identity blocks: the main agent IS Gekai; a subagent is a scoped role
-# played within Gekai — keeping these separate avoids stacking two
-# competing "you are" identity assertions on a subagent's prompt.
-_IDENTITY_MAIN = (
+# Identity blocks: root IS Gekai; a subagent is a scoped role played within
+# Gekai — keeping these separate avoids stacking two competing "you are"
+# identity assertions on a subagent's prompt.
+_IDENTITY_ROOT = (
     "you are Gekai, a coding agent operating on a local workspace\n"
     "you can read, search, and modify files in the workspace through tool calls\n"
 )
@@ -17,8 +17,8 @@ _IDENTITY_SUB = (
     "you interact with the workspace through the tool calls listed below\n"
 )
 
-# Specialization-independent body shared verbatim by the main agent and
-# every subagent — behavior, formatting, and response-style rules.
+# Specialization-independent body shared verbatim by root and every
+# subagent — behavior, formatting, and response-style rules.
 _SHARED_BODY = (
     "follow user instructions literally — do exactly what is asked; never substitute with what you think is more helpful\n"
     "<behavior>\n"
@@ -39,20 +39,20 @@ _SHARED_BODY = (
     "no bullet lists unless the user asks or the content is naturally a list"
 )
 
-# Main-agent-only directives — appended after _SHARED_BODY, mirroring the
+# Root-only directives — appended after _SHARED_BODY, mirroring the
 # <directives> block a Subagent gets from build_system_base(). Never reaches
 # subagents: they assemble their own system prompt from _SHARED_BODY +
-# their own directives, independent of SYSTEM_PROMPT.
+# their own directives, independent of ROOT_SYSTEM_PROMPT.
 #
-# Specialist routing/delegation is not main's job (plan 27): the sequencer +
+# Specialist routing/delegation is not root's job (plan 27): the sequencer +
 # fixed interpreter own all cross-agent control flow, and no `delegate` tool
-# is registered for main (harness/core.py `_build_agent`) — so this block no
-# longer instructs main to route to or name a specialist.
-_MAIN_DIRECTIVES = (
+# is registered for root (harness/core.py `_build_agent`) — so this block no
+# longer instructs root to route to or name a specialist.
+_ROOT_DIRECTIVES = (
     "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing"
 )
 
-SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY + "\n<directives>\n" + _MAIN_DIRECTIVES
+ROOT_SYSTEM_PROMPT = _IDENTITY_ROOT + _SHARED_BODY + "\n<directives>\n" + _ROOT_DIRECTIVES
 
 # Each fragment fires when the assigned tool set intersects ("any") or
 # fully contains ("all") its trigger group — keeps the activation prompt

@@ -78,7 +78,7 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
 from agent.settings import Permissions
-from agent.tui.app import GekaiApp, _mask_key
+from agent.tui.app import GekaiApp, _mask_key, _tier_credential_key
 from agent.tui.widgets import MessageWidget, TiersPanel
 
 pytestmark = pytest.mark.asyncio
@@ -191,15 +191,13 @@ async def _set_key_via_paste(
 ) -> None:
     """Cursor must already be on the tier's "key" cell. Enters edit mode,
     stubs `_read_clipboard_text` to return `fake_key`, pastes it via a real
-    "p" keystroke, then confirms with "enter" — exercising the actual
-    `on_key`/`_handle_tiers_enter` dispatch, not just calling handlers
+    "p" keystroke — commits on the spot, no separate confirm step —
+    exercising the actual `on_key` dispatch, not just calling handlers
     directly."""
     await pilot.press("enter")  # start editing (buffer starts empty)
     await pilot.pause()
     monkeypatch.setattr(GekaiApp, "_read_clipboard_text", staticmethod(lambda: fake_key))
-    await pilot.press("p")
-    await pilot.pause()
-    await pilot.press("enter")  # confirm
+    await pilot.press("p")  # pastes and commits immediately
     await pilot.pause()
 
 
@@ -217,9 +215,9 @@ async def _configure_all_tiers_fully(
     app: GekaiApp, panel: TiersPanel, pilot: Pilot, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FAST -> model-a (key sk-fast), SUPP -> model-b (key sk-supp),
-    CORE -> model-b + thinking on (key shared with SUPP's model-b entry, no
-    second clipboard read needed). Used by both the happy-path and cancel
-    tests."""
+    CORE -> model-b + thinking on (key sk-core — keys are per tier, so CORE
+    needs its own even though it shares SUPP's model). Used by both the
+    happy-path and cancel tests."""
     _goto(app, panel, 0, "model")
     await app.action_confirm_or_submit()  # FAST -> model-a
     await pilot.pause()
@@ -240,6 +238,8 @@ async def _configure_all_tiers_fully(
     _goto(app, panel, 2, "thinking")
     await app.action_confirm_or_submit()  # toggle thinking on (model-b supports it, tier is CORE)
     await pilot.pause()
+    _goto(app, panel, 2, "key")
+    await _set_key_via_paste(app, pilot, monkeypatch, "sk-core")
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +286,10 @@ async def test_happy_path_commits_all_three_tiers_to_disk(tmp_path: Path, monkey
         _goto(app, panel, 2, "thinking")
         await app.action_confirm_or_submit()  # CORE + model-b supports thinking -> toggles on
         await pilot.pause()
-        # CORE's model is model-b, whose key is already staged from SUPP —
-        # no key-cell interaction needed here at all.
+        # Keys are per tier, so CORE needs its own even though it shares
+        # SUPP's model.
+        _goto(app, panel, 2, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-core")
 
         _goto(app, panel, 3, "ok")
         await app.action_confirm_or_submit()
@@ -297,20 +299,39 @@ async def test_happy_path_commits_all_three_tiers_to_disk(tmp_path: Path, monkey
         assert bindings[TierName.FAST] == TierBinding(model="model-a", default_effort="medium", thinking=False)
         assert bindings[TierName.SUPP] == TierBinding(model="model-b", default_effort="low", thinking=False)
         assert bindings[TierName.CORE] == TierBinding(model="model-b", default_effort="low", thinking=True)
-        assert fake_keyring == {"model-a": "sk-fast", "model-b": "sk-supp"}
+        assert fake_keyring == {
+            _tier_credential_key(TierName.FAST, "model-a", "medium", False): "sk-fast",
+            _tier_credential_key(TierName.SUPP, "model-b", "low", False): "sk-supp",
+            _tier_credential_key(TierName.CORE, "model-b", "low", True): "sk-core",
+        }
         assert panel.display is False
         assert app._tiers_edit is None
         assert any(
             w.has_class("command_result") and "FAST: model-a" in w.text for w in _messages(conversation)
         )
 
+        # Regression: the status bar reads agent.model/agent.effort directly —
+        # these must reflect the just-committed CORE binding immediately, not
+        # only after the next gate()/process_stream() call (the self-heal
+        # path only retries while resolution is still failing, which isn't
+        # the case here since tiers were already configured going in... but
+        # this is the very commit that first makes them configured, so it
+        # doubles as the "went from unconfigured to configured" case too).
+        assert app._agent.model == "model-b"
+        assert app._agent.effort == "low"
+
 
 # ---------------------------------------------------------------------------
-# Scenario 2: shared key across tiers
+# Scenario 2: a key belongs to the row it was pasted in, even when two tiers
+# share one model
 # ---------------------------------------------------------------------------
 
 
-async def test_shared_key_across_tiers_needs_only_one_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_key_is_scoped_to_the_row_it_was_pasted_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: credentials used to be keyed by *model*, so two tiers on
+    the same model shared one entry — pasting into SUPP visibly rewrote
+    FAST's key cell. Keys are per tier now: each row shows the mask of its
+    own key only."""
     _seed_catalog()
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
@@ -322,17 +343,28 @@ async def test_shared_key_across_tiers_needs_only_one_prompt(tmp_path: Path, mon
         await app.action_confirm_or_submit()  # FAST -> model-a
         await pilot.pause()
         _goto(app, panel, 0, "key")
-        await _set_key_via_paste(app, pilot, monkeypatch, "sk-shared")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-fast-aaaaaaaaa")
 
         _goto(app, panel, 1, "model")
         await app.action_confirm_or_submit()  # SUPP -> model-a (same model as FAST)
         await pilot.pause()
 
-        # The re-render triggered purely by the model cycle already shows the
-        # shared credential's mask — no key-cell interaction on SUPP's row
-        # happened yet at all.
-        assert panel._rows[1].key == _mask_key("sk-shared")
-        assert panel._rows[1].status == "✓ ready"
+        # FAST's key must not leak into SUPP's row just because the model matches.
+        assert panel._rows[0].key == _mask_key("sk-fast-aaaaaaaaa")
+        assert panel._rows[1].key == "no key"
+        assert panel._rows[1].status == "no key"
+
+        _goto(app, panel, 1, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-supp-bbbbbbbbb")
+
+        # ...and SUPP's key must not bleed back into FAST's row either.
+        assert panel._rows[0].key == _mask_key("sk-fast-aaaaaaaaa")
+        assert panel._rows[1].key == _mask_key("sk-supp-bbbbbbbbb")
+        assert app._tiers_edit is not None
+        assert app._tiers_edit.key_input == {
+            _tier_credential_key(TierName.FAST, "model-a", "low", False): "sk-fast-aaaaaaaaa",
+            _tier_credential_key(TierName.SUPP, "model-a", "low", False): "sk-supp-bbbbbbbbb",
+        }
 
         # Starting an edit on SUPP's already-filled key cell and confirming
         # with an empty buffer would clear it — but simply entering and then
@@ -343,8 +375,8 @@ async def test_shared_key_across_tiers_needs_only_one_prompt(tmp_path: Path, mon
         await pilot.press("escape")
         await pilot.pause()
 
-        assert app._tiers_edit is not None
-        assert app._tiers_edit.key_input == {"model-a": "sk-shared"}
+        supp_key = _tier_credential_key(TierName.SUPP, "model-a", "low", False)
+        assert app._tiers_edit.key_input[supp_key] == "sk-supp-bbbbbbbbb"
         assert panel.display is True  # Escape only discarded the in-progress edit, not the whole panel
 
 
@@ -446,6 +478,59 @@ async def test_ok_with_no_changes_reports_kept_actual_tiers(tmp_path: Path, monk
 
 
 # ---------------------------------------------------------------------------
+# Scenario 4c: re-committing over an already-configured CORE tier updates
+# agent.model/agent.effort (and so the status bar) immediately
+# ---------------------------------------------------------------------------
+
+
+async def test_recommitting_core_updates_agent_model_and_effort_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: `gate()`/`process_stream()` only re-resolve touchpoints
+    lazily while resolution is still *failing* (`self._gate`/`self._main` is
+    `None`) — once tiers are already configured, changing CORE's model via a
+    second `/tiers` commit used to leave `agent.model`/`agent.effort` (and so
+    the status bar) stuck on the old value until a process restart."""
+    _seed_catalog()
+    _patch_credentials(monkeypatch)
+    app = _make_app(tmp_path)
+
+    async with app.run_test() as pilot:
+        conversation, panel = await _open_panel(app, pilot)
+        await _configure_all_tiers_fully(app, panel, pilot, monkeypatch)
+        _goto(app, panel, 3, "ok")
+        await app.action_confirm_or_submit()
+        await pilot.pause()
+
+        assert app._agent.model == "model-b"
+        assert app._agent.effort == "low"
+
+        # Re-open and switch CORE from model-b to model-a (effort auto-resets
+        # to model-a's first declared effort: "low" either way here, so bump
+        # the effort column too to prove that flows through as well).
+        conversation, panel = await _open_panel(app, pilot)
+        _goto(app, panel, 2, "model")
+        await app.action_confirm_or_submit()  # -> model-a
+        await pilot.pause()
+        _goto(app, panel, 2, "effort")
+        await app.action_confirm_or_submit()  # low -> medium
+        await pilot.pause()
+        # Key is pasted last: it stages under the composite key for whatever
+        # model/effort/thinking is current *at paste time* — pasting before
+        # the effort bump would stage it under the old effort and leave the
+        # new operating point still keyless.
+        _goto(app, panel, 2, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-core-2")
+
+        _goto(app, panel, 3, "ok")
+        await app.action_confirm_or_submit()
+        await pilot.pause()
+
+        assert app._agent.model == "model-a"
+        assert app._agent.effort == "medium"
+
+
+# ---------------------------------------------------------------------------
 # Scenario 5: atomicity of the validate-all-before-saving-any commit fix
 # ---------------------------------------------------------------------------
 
@@ -483,7 +568,9 @@ async def test_commit_is_atomic_when_a_later_tier_fails_validation(
             edit.model[tier] = "model-a"
             edit.effort[tier] = "low"
             edit.thinking[tier] = False
-        edit.key_input["model-a"] = "sk-shared"
+        edit.key_input[_tier_credential_key(TierName.FAST, "model-a", "low", False)] = "sk-shared"
+        edit.key_input[_tier_credential_key(TierName.SUPP, "model-a", "low", False)] = "sk-shared"
+        edit.key_input[_tier_credential_key(TierName.CORE, "model-a", "low", True)] = "sk-shared"
         edit.model[TierName.CORE] = "model-a"
         edit.effort[TierName.CORE] = "low"
         edit.thinking[TierName.CORE] = True  # invalid: model-a.thinking is False
@@ -512,7 +599,8 @@ async def test_clearing_key_is_staged_until_commit_and_can_be_reset(
 ) -> None:
     _seed_catalog()
     fake_keyring = _patch_credentials(monkeypatch)
-    fake_keyring["model-a"] = "sk-preexisting"  # simulates a credential from an earlier /tiers session
+    fast_key = _tier_credential_key(TierName.FAST, "model-a", "low", False)
+    fake_keyring[fast_key] = "sk-preexisting"  # simulates a credential from an earlier /tiers session
     app = _make_app(tmp_path)
 
     async with app.run_test() as pilot:
@@ -533,15 +621,15 @@ async def test_clearing_key_is_staged_until_commit_and_can_be_reset(
         assert panel._rows[0].key == "no key"
         assert panel._rows[0].status == "no key"
         assert app._tiers_edit is not None
-        assert app._tiers_edit.key_input == {"model-a": ""}
-        assert fake_keyring == {"model-a": "sk-preexisting"}  # nothing deleted yet — staged, not committed
+        assert app._tiers_edit.key_input == {fast_key: ""}
+        assert fake_keyring == {fast_key: "sk-preexisting"}  # nothing deleted yet — staged, not committed
 
         # [ok] is blocked (FAST now has no key anywhere) — the deletion still
         # must not have happened, since nothing committed.
         _goto(app, panel, 3, "ok")
         await app.action_confirm_or_submit()
         await pilot.pause()
-        assert fake_keyring == {"model-a": "sk-preexisting"}
+        assert fake_keyring == {fast_key: "sk-preexisting"}
         assert panel.display is True
 
         # Re-set via edit mode — the fresh value wins over the stale clear.
@@ -552,15 +640,23 @@ async def test_clearing_key_is_staged_until_commit_and_can_be_reset(
         _goto(app, panel, 1, "model")
         await app.action_confirm_or_submit()  # SUPP -> model-a
         await pilot.pause()
+        _goto(app, panel, 1, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-supp")
         _goto(app, panel, 2, "model")
         await app.action_confirm_or_submit()  # CORE -> model-a
         await pilot.pause()
+        _goto(app, panel, 2, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-core")
 
         _goto(app, panel, 3, "ok")
         await app.action_confirm_or_submit()
         await pilot.pause()
 
-        assert fake_keyring == {"model-a": "sk-new"}
+        assert fake_keyring == {
+            fast_key: "sk-new",
+            _tier_credential_key(TierName.SUPP, "model-a", "low", False): "sk-supp",
+            _tier_credential_key(TierName.CORE, "model-a", "low", False): "sk-core",
+        }
         assert panel.display is False
 
 
@@ -609,11 +705,12 @@ async def test_prompt_is_locked_while_tiers_panel_is_open(tmp_path: Path, monkey
 
 
 # ---------------------------------------------------------------------------
-# Scenario 8: navigating away from an in-progress key edit discards the buffer
+# Scenario 8: a successful paste commits immediately — navigating away after
+# it must NOT lose the key (single press, like every other column)
 # ---------------------------------------------------------------------------
 
 
-async def test_navigating_away_discards_in_progress_key_edit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_paste_commits_immediately_and_survives_navigating_away(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_catalog()
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
@@ -632,10 +729,40 @@ async def test_navigating_away_discards_in_progress_key_edit(tmp_path: Path, mon
         await pilot.press("p")
         await pilot.pause()
         assert app._tiers_edit is not None
-        assert app._tiers_edit.key_editing is True
-        assert app._tiers_edit.key_edit_buffer == "sk-pasted"
+        # paste commits on the spot — no separate confirm step to forget
+        assert app._tiers_edit.key_editing is False
+        assert app._tiers_edit.key_edit_buffer == ""
+        assert app._tiers_edit.key_input == {_tier_credential_key(TierName.FAST, "model-a", "low", False): "sk-pasted"}
 
-        _goto(app, panel, 0, "model")  # navigating away — buffer must be discarded, nothing staged
+        _goto(app, panel, 0, "model")  # navigating away must not lose the committed key
+        await pilot.pause()
+
+        assert app._tiers_edit.key_input == {_tier_credential_key(TierName.FAST, "model-a", "low", False): "sk-pasted"}
+        assert panel._rows[0].key != "no key"
+
+
+async def test_navigating_away_before_pasting_discards_the_pending_edit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enter-to-start-editing with no paste yet must still discard cleanly on
+    navigate-away — it must never register as an explicit clear of an
+    existing key just because the cell was entered and left."""
+    _seed_catalog()
+    _patch_credentials(monkeypatch)
+    app = _make_app(tmp_path)
+
+    async with app.run_test() as pilot:
+        conversation, panel = await _open_panel(app, pilot)
+
+        _goto(app, panel, 0, "model")
+        await app.action_confirm_or_submit()  # FAST -> model-a
+        await pilot.pause()
+        _goto(app, panel, 0, "key")
+
+        await pilot.press("enter")  # start editing, no paste
+        await pilot.pause()
+        assert app._tiers_edit is not None
+        assert app._tiers_edit.key_editing is True
+
+        _goto(app, panel, 0, "model")  # navigating away — nothing was ever pasted
         await pilot.pause()
 
         assert app._tiers_edit.key_editing is False
@@ -673,13 +800,10 @@ async def test_manual_typing_does_nothing_only_p_pastes(tmp_path: Path, monkeypa
         monkeypatch.setattr(GekaiApp, "_read_clipboard_text", staticmethod(lambda: "sk-real"))
         await pilot.press("p")
         await pilot.pause()
-        assert app._tiers_edit.key_edit_buffer == "sk-real"
-
-        # Backspace discards the pasted buffer back to empty (not "delete
-        # one character").
-        await pilot.press("backspace")
-        await pilot.pause()
+        # paste commits immediately — no lingering buffer to backspace away
+        assert app._tiers_edit.key_editing is False
         assert app._tiers_edit.key_edit_buffer == ""
+        assert app._tiers_edit.key_input == {_tier_credential_key(TierName.FAST, "model-a", "low", False): "sk-real"}
 
 
 async def test_paste_keeps_only_first_line_of_a_multiline_clipboard(
@@ -708,7 +832,7 @@ async def test_paste_keeps_only_first_line_of_a_multiline_clipboard(
         await pilot.pause()
 
         assert app._tiers_edit is not None
-        assert app._tiers_edit.key_edit_buffer == "sk-real"
+        assert app._tiers_edit.key_input == {_tier_credential_key(TierName.FAST, "model-a", "low", False): "sk-real"}
 
 
 async def test_paste_of_empty_clipboard_shows_a_hint_and_leaves_buffer_empty(
@@ -735,3 +859,37 @@ async def test_paste_of_empty_clipboard_shows_a_hint_and_leaves_buffer_empty(
         assert app._tiers_edit is not None
         assert app._tiers_edit.key_edit_buffer == ""
         assert app._esc_pending is False  # a hint was shown, not the "ESC again" prompt
+
+
+async def test_setting_a_second_tiers_key_does_not_overwrite_a_different_models_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two tiers on *different* models keep independent keys — setting the
+    second must not bleed into the first."""
+    _seed_catalog()
+    _patch_credentials(monkeypatch)
+    app = _make_app(tmp_path)
+
+    async with app.run_test() as pilot:
+        conversation, panel = await _open_panel(app, pilot)
+
+        _goto(app, panel, 0, "model")
+        await app.action_confirm_or_submit()  # FAST -> model-a
+        await pilot.pause()
+        _goto(app, panel, 0, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-first-aaaaaaaa")
+
+        _goto(app, panel, 1, "model")
+        await app.action_confirm_or_submit()  # -> model-a
+        await app.action_confirm_or_submit()  # -> model-b (different model)
+        await pilot.pause()
+        _goto(app, panel, 1, "key")
+        await _set_key_via_paste(app, pilot, monkeypatch, "sk-second-bbbbbbb")
+
+        assert app._tiers_edit is not None
+        assert app._tiers_edit.key_input == {
+            _tier_credential_key(TierName.FAST, "model-a", "low", False): "sk-first-aaaaaaaa",
+            _tier_credential_key(TierName.SUPP, "model-b", "low", False): "sk-second-bbbbbbb",
+        }
+        assert panel._rows[0].key == _mask_key("sk-first-aaaaaaaa")
+        assert panel._rows[1].key == _mask_key("sk-second-bbbbbbb")

@@ -5,7 +5,7 @@ env vars.
 
 Isolation follows tests/test_resolve.py's pattern (monkeypatch
 `agent.llm.resolve.credentials.has_api_key`/`get_api_key` directly — no real
-keyring) plus monkeypatching `agent.agent.load_model_catalog`/
+keyring — keyed by the tier's full credential_key, so a stub returns `key-for-<credential_key>`) plus monkeypatching `agent.agent.load_model_catalog`/
 `load_tier_bindings` (the names imported into `agent.agent`'s namespace) —
 no real `~/.gekai/settings.json` touched. `agent.logging.Path.home` is also
 patched so `EventLogger`'s always-on log file lands in `tmp_path`, not the
@@ -90,7 +90,7 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
 
     # sequencer (CORE) is the "default model" stand-in surfaced on the agent
     assert agent.model == "core-model"
-    assert agent._api_key == "key-for-core-model"
+    assert agent._api_key == "key-for-core-core-model-high-y"
     assert agent._api_base == "https://core.example.com"
 
     # gate (FAST)
@@ -100,7 +100,7 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     assert agent._main._estimator is not None
     assert agent._main._estimator._model == "fast-model"
 
-    # sequencer/main-dispatch/subagent-dispatch (plan 28 Phase 2) are no
+    # sequencer/root-dispatch/subagent-dispatch (plan 28 Phase 2) are no
     # longer frozen `ResolvedTier`s on the Harness — they're a resolver
     # closure plus each touchpoint's `TierPolicy`; the policy default is
     # what a no-signal (unscaled) dispatch resolves to, matching Phase 1b's
@@ -108,15 +108,15 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     assert agent._main._sequencer_policy.default is TierName.CORE
     assert agent._main._resolve(agent._main._sequencer_policy.default).model == "core-model"
 
-    assert agent._main._main_dispatch_policy.default is TierName.SUPP
-    main_dispatch_resolved = agent._main._resolve(agent._main._main_dispatch_policy.default)
-    assert main_dispatch_resolved.model == "supp-model"
-    assert main_dispatch_resolved.api_key == "key-for-supp-model"
+    assert agent._main._root_dispatch_policy.default is TierName.SUPP
+    root_dispatch_resolved = agent._main._resolve(agent._main._root_dispatch_policy.default)
+    assert root_dispatch_resolved.model == "supp-model"
+    assert root_dispatch_resolved.api_key == "key-for-supp-supp-model-low-n"
 
     assert agent._main._subagent_dispatch_policy.default is TierName.SUPP
     subagent_dispatch_resolved = agent._main._resolve(agent._main._subagent_dispatch_policy.default)
     assert subagent_dispatch_resolved.model == "supp-model"
-    assert subagent_dispatch_resolved.api_key == "key-for-supp-model"
+    assert subagent_dispatch_resolved.api_key == "key-for-supp-supp-model-low-n"
 
 
 def test_gate_self_heals_after_tiers_configured_mid_session(
