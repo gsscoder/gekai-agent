@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable
 
 from agent.llm import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import AgentStopped, DelegationCompleted, DelegationStarted, Event as LlmEvent, EventBus, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
+from agent.llm.events import AgentStopped, DelegationCompleted, DelegationStarted, Event as LlmEvent, EventBus, TextChunkReceived, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
 from agent.llm.providers.openai import OpenAIAdapter
 from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..directive_pump import pump as pump_directives
+from ..llm.model_caps import resolve_thinking_params
 from ..llm.tiers import TierName, TierPolicy
 from ..permissions import PermissionCallback, PermissionGate
 from ..persistence import append_debug
@@ -29,7 +30,7 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, ThinkingTokenEvent, ToolScopeEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
@@ -211,7 +212,12 @@ class Harness:
         self._subagent_dispatch_policy = subagent_dispatch_policy
         self._debug = debug
         self._estimator = (
-            Estimator(model=estimator.model, api_key=estimator.api_key, api_base=estimator.api_base)
+            Estimator(
+                model=estimator.model,
+                api_key=estimator.api_key,
+                api_base=estimator.api_base,
+                extra_params=estimator.extra_params,
+            )
             if estimator is not None
             else None
         )
@@ -238,11 +244,11 @@ class Harness:
                 estimate_decision = "seeded"
             elif self._estimator is not None:
                 t0 = time.monotonic()
-                estimate = await self._estimator.estimate(user_input)
+                estimate = await self._estimator.estimate(user_input, history=session.messages)
                 estimate_duration_ms = round((time.monotonic() - t0) * 1000)
-                estimate_decision = "mutate" if estimate.mutate else "trivial"
+                estimate_decision = estimate.scope
             else:
-                estimate_decision = "trivial"  # no estimator wired — safest default, no planning
+                estimate_decision = "solo"  # no estimator wired — safest default, no planning
         yield EstimateEvent(decision=estimate_decision, specialists=[], duration_ms=estimate_duration_ms)
 
         if subagent is None and estimate_decision in ("mutate", "seeded"):
@@ -266,26 +272,49 @@ class Harness:
             yield DirectivePumpEvent(domains=pumped_domains)
 
         root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default)
-        effective_extra_params = root_dispatch_resolved.extra_params if extra_params is None else extra_params
+        chat_rung = estimate_decision == "chat"
+        if extra_params is not None:
+            effective_extra_params = extra_params
+        elif chat_rung:
+            # Estimator's chat rung (plan 33): strip reasoning params on
+            # chit-chat. Formerly keyed off the now-deleted Gate/Route's
+            # `trivial` flag (plan 33 Phase 2 merged that axis into the
+            # Estimator; Phase 3 deleted Gate entirely). A bare `{}` here
+            # is "unspecified", which providers like DeepSeek default to
+            # reasoning ON (plan 34 phase 1's fix, applied here too) — so
+            # this must resolve to root's model's explicit-disable payload,
+            # not an empty dict.
+            effective_extra_params = resolve_thinking_params(root_dispatch_resolved.model, enabled=False)
+        else:
+            effective_extra_params = root_dispatch_resolved.extra_params
         agent = _build_agent(
             root_dispatch_resolved.model, root_dispatch_resolved.api_key, root_dispatch_resolved.api_base,
             effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
+            # plan 34 phase 3: the chat rung carries no tool schemas — a
+            # greeting/chit-chat turn never needs them, and dropping the 9
+            # tool JSON schemas cuts root's prompt from ~2134 tokens toward
+            # a few hundred. The system prompt itself is untouched (decision
+            # 5) so a chat turn keeps solo's voice.
+            tools_override=frozenset() if chat_rung else None,
         )
         if self._debug:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
 
         queue: asyncio.Queue[
-            LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | BudgetExhaustedEvent
+            LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | TextChunkEvent | BudgetExhaustedEvent
             | DelegationStartEvent | DelegationDoneEvent | None
         ] = asyncio.Queue()
         files_touched: list[str] = []
         root_run_id = uuid.uuid4().hex
 
         def _on_event(event: LlmEvent) -> None:
-            _bridge_llm_event(event, queue, session, files_touched, self._debug, root_run_id)
+            _bridge_llm_event(
+                event, queue, session, files_touched, self._debug, root_run_id,
+                emit_text_chunks=True,
+            )
 
         yield SubAgentStartEvent(
             name=subagent.name if subagent else "root",
@@ -573,10 +602,21 @@ def _bridge_llm_event(
     files_touched: list[str],
     debug: bool,
     run_id: str | None,
+    *,
+    emit_text_chunks: bool = False,
 ) -> None:
     """Shared bus->queue bridge for both the single-agent path and the
     plan-interpreter path — tool/diff/thinking/delegation rendering is one
-    implementation, not duplicated per path."""
+    implementation, not duplicated per path.
+
+    `emit_text_chunks` (plan 34 Phase 2): only the no-graph direct-dispatch
+    caller (`Harness.stream`) passes `True` here. The graph path
+    (`_stream_graph`'s `dispatch()`) leaves it at the default `False` so a
+    graph-routed step's streamed answer text — which would otherwise
+    interleave with `LogEvent`/`DiffEvent` in a multi-step transcript — never
+    reaches the TUI as a `TextChunkEvent`. Display-only either way: the
+    persisted answer always comes from the assembled response, never from
+    these chunks."""
     _SINGLE_PATH_TOOLS = ("write_file", "edit_file", "make_dir", "delete_file")
     _DUAL_PATH_TOOLS = ("move_file", "copy_file")
 
@@ -626,6 +666,9 @@ def _bridge_llm_event(
         ))
     elif isinstance(event, ThinkingChunkReceived):
         queue.put_nowait(ThinkingTokenEvent(text=event.text))
+    elif isinstance(event, TextChunkReceived):
+        if emit_text_chunks:
+            queue.put_nowait(TextChunkEvent(text=event.text))
     elif isinstance(event, DelegationStarted):
         queue.put_nowait(DelegationStartEvent(agent_name=event.agent, task=event.task, mission=event.mission))
     elif isinstance(event, DelegationCompleted):

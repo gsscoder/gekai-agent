@@ -98,6 +98,13 @@ class ThinkingChunkReceived:
 
 
 @dataclass(frozen=True, slots=True)
+class TextChunkReceived:
+    """A chunk of answer text emitted during a streaming turn."""
+    text: str
+    run_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class DelegationStarted:
     """A `delegate` tool call is starting a nested specialist run."""
     agent: str
@@ -124,6 +131,7 @@ Event = (
     | RetryAttemptEvent
     | AgentStopped
     | ThinkingChunkReceived
+    | TextChunkReceived
     | DelegationStarted
     | DelegationCompleted
 )
@@ -196,6 +204,7 @@ __all__ = [
     "ModelResponseReceived",
     "RetryAttemptEvent",
     "StopReason",
+    "TextChunkReceived",
     "ThinkingChunkReceived",
     "ToolExecutionCompleted",
     "ToolExecutionStarted",

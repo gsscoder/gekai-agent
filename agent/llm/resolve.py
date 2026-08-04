@@ -47,7 +47,7 @@ def resolve_tier(
     if not credentials.has_api_key(cred_key):
         raise TierResolutionError(f"no stored credential for tier {tier.value!r} — run /tiers")
     entry = catalog[binding.model]
-    extra_params = resolve_thinking_params(binding.model, binding.default_effort) if binding.thinking else {}
+    extra_params = resolve_thinking_params(binding.model, binding.default_effort, enabled=binding.thinking)
     return ResolvedTier(
         model=binding.model,
         api_key=credentials.get_api_key(cred_key),

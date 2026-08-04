@@ -32,7 +32,6 @@ from ..events import (
     ToolScopeEvent,
 )
 from ..permissions import PermissionCallback
-from ..pipeline import Route
 from ..session import Session
 from ..tools import HiddenGrantCallback
 
@@ -64,7 +63,6 @@ async def run_step(
     *,
     turn_id: str,
     session_id: str,
-    trivial: bool,
     permission_callback: PermissionCallback | None,
     hidden_grant_callback: HiddenGrantCallback | None,
     append_user: bool = True,
@@ -77,13 +75,12 @@ async def run_step(
     the aggregation here.
     """
     events = agent.events
-    step_route = Route(trivial=trivial)
     result = TurnResult()
     answer_chunks: list[str] = []
     harness_start = time.monotonic()
 
     async for item in agent.process_stream(
-        session, raw, step_route,
+        session, raw,
         permission_callback=permission_callback,
         hidden_grant_callback=hidden_grant_callback,
         turn_id=turn_id,

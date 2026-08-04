@@ -210,8 +210,8 @@ def test_load_session_missing_kind_defaults_to_turn(tmp_path: Path) -> None:
 def test_load_timeline_includes_all_kinds(tmp_path: Path) -> None:
     s = _make_session(tmp_path)
     append_message(s, {"role": "user", "content": "do x"})
-    append_command(s, "/config:gate off")
-    append_event(s, "Gate disabled", source="command")
+    append_command(s, "/config:foo off")
+    append_event(s, "foo disabled", source="command")
     append_message(s, {"role": "assistant", "content": "done"})
     append_event(s, "iteration limit", source="max_iterations")
 

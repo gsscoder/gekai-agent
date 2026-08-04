@@ -31,15 +31,20 @@ All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
 ### Harness — `agent/harness/core.py`
 - Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None, extra_params: dict | None = None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
 - One method, two modes selected by the `subagent` param:
-  - **root, no-graph** (`subagent=None`, trivial/single-agent turn): system = `ROOT_SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input — root's warm session context; `SubAgentStartEvent(name="root", description="thinking", color="#4169E1")`
+  - **root, no-graph** (`subagent=None`, `chat`/`solo`-estimated single-agent turn): system = `ROOT_SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input — root's warm session context; `SubAgentStartEvent(name="root", description="thinking", color="#4169E1")`. On the `chat` rung specifically (plan 34 Phase 3), `_build_agent` is called with `tools_override=frozenset()` — no tools registered, `render_tool_instruction([])` renders nothing, so the `<tools>` block is empty; the system prompt itself is otherwise unchanged (`solo` and `mutate` still register the full tool set)
   - **spawn** (`subagent=<Subagent>`): handles a subagent's specialty (e.g. `code-expert` for **substantial or specialized code work** — features, fixes, behavior-changing rewrites; owns its assigned task's implementation in full); system = `subagent.build_system_base()` + `<tools>` appended by `_build_agent`; prior context = `[]` (cold — no recency, no inheritance, no async/resume); `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
-- Emits `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion when `old_str != new_str`), `InferEndEvent`, `ThinkingTokenEvent`, `MaxIterationsEvent` (iteration-limit path), and `DoneEvent`
-- After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. There is no live token-by-token text streaming; the final answer is assembled once from the completed history's `TextBlock`s
+- Emits `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion when `old_str != new_str`), `InferEndEvent`, `ThinkingTokenEvent`, `TextChunkEvent` (root no-graph path only — see below), `MaxIterationsEvent` (iteration-limit path), and `DoneEvent`
+- After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. This final assembly is unconditional (from the completed history's `TextBlock`s) regardless of whether chunks streamed; streaming is a display-only side channel, never the source of the persisted answer.
+- **Live text streaming is path-specific (plan 34 Phase 2), not blanket.** Root's no-graph direct-dispatch path (`Harness.stream()`'s non-graph branch) passes `emit_text_chunks=True` to `_bridge_llm_event`, so each `TextDelta` from the provider becomes a `TextChunkReceived` bus event (`agent/llm/agent.py::_run_loop`) and then a `TextChunkEvent` the TUI renders incrementally (`_run_step`'s `_on_event` in `agent/tui/app.py`
+appends each chunk's text to a running `_streamed_answer` and mounts/updates a live `MessageWidget`
+in place, reset per turn). The graph/subagent-step path (`Harness._stream_graph`) never sets `emit_text_chunks=True` — a graph-routed turn emits zero `TextChunkEvent`s (would otherwise interleave with `LogEvent`/`DiffEvent` mid-transcript), and its answer still only appears as the final assembled string.
 - Uses `llmstitch` (`agent.llm.Agent`) `EventBus` to bridge tool-call events from the agent loop into the typed event stream
 - `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`); no cross-agent tool is ever registered, for root or any subagent (see `architecture.md → Cross-Agent Dispatch`)
 
-> **Sequencer → interpreter flow, not delegate-driven decomposition:** `Gate` only classifies
-> intent (`TRIVIAL`/`ACT` — see `architecture.md → Gate`). A `mutate`-estimated turn routes into
+> **Sequencer → interpreter flow, not delegate-driven decomposition:** the `Estimator` only
+> classifies scope, on a `chat`/`solo`/`mutate` ordinal scale (see `architecture.md → Estimator`;
+> `Gate`, a separate classifier this once ran alongside, was folded into the `Estimator` and deleted,
+> plan 33). A `mutate`-estimated turn routes into
 > `Harness._stream_graph()`: `Sequencer.sequence()` makes one CORE-tier call and returns a validated
 > `TaskGraph` where every step is assigned to an `auto_assignable` roster specialist — never to
 > root (`parse_task_graph` rejects `ROOT_AGENT` as a step `agent`). `agent/harness/interpreter.py`'s
@@ -66,8 +71,8 @@ boundary; report to the next step, not a person; name the blocker plainly rather
 partial result that reads as done. `omni-worker` (`agent/subagents/generic/omni_worker.py`) is its
 one member — the residual specialist for a task-graph step nothing else owns: scaffolding, project
 layout, manifests, config/CI files, docs, data/asset files, dependency/build chores,
-investigation-that-must-produce-a-finding. `user_invocable=False` (excluded from the Gate menu and
-the palette, per the `NAMESPACE_COLORS` comment: a namespace with no invocable members is innate —
+investigation-that-must-produce-a-finding. `user_invocable=False` (excluded from the palette, per
+the `NAMESPACE_COLORS` comment: a namespace with no invocable members is innate —
 no selector to build), `auto_assignable=True` (routable by the sequencer), full tool ceiling with a
 per-step `tool_policy` for narrowing, `directive_domains=("*",)` — the one subagent that composes
 every other namespace's directives (rank-ordered) into its own, since a step can land it in any

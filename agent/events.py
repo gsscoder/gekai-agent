@@ -51,6 +51,15 @@ class ThinkingTokenEvent(AgentEvent):
 
 
 @dataclass
+class TextChunkEvent(AgentEvent):
+    """A chunk of answer text from the LLM, streamed as it generates (plan 34
+    Phase 2). Direct (no-graph) root dispatch only — display-only side
+    channel; the persisted answer still comes from the assembled response,
+    never from these chunks."""
+    text: str = ""
+
+
+@dataclass
 class DoneEvent(AgentEvent):
     """Always the last event."""
     thinking_chars: int = 0
@@ -89,7 +98,7 @@ class BudgetExhaustedEvent(AgentEvent):
 @dataclass
 class EstimateEvent(AgentEvent):
     """Result of the trivial-vs-mutate scope estimate (plan 27 improvement 5)."""
-    decision: str = ""  # "trivial" | "mutate" | "seeded" | "skipped"
+    decision: str = ""  # "chat" | "solo" | "mutate" | "seeded" | "skipped"
     specialists: list[str] = field(default_factory=list)
     duration_ms: int = 0
 

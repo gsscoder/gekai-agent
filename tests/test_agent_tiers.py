@@ -23,7 +23,6 @@ from agent import agent as agent_module
 from agent import logging as agent_logging
 from agent.agent import GekaiAgent
 from agent.llm.tiers import TierBinding, TierName
-from agent.pipeline import Route
 from agent.settings import Permissions
 from tests.conftest import TIER_BINDINGS, TIER_CATALOG
 
@@ -50,12 +49,11 @@ def test_construction_succeeds_when_tiers_unconfigured(tmp_path: Path, monkeypat
     monkeypatch.setattr(agent_module, "load_tier_bindings", lambda: {})
 
     agent = _make_agent(tmp_path)
-    assert agent._gate is None
     assert agent._main is None
     assert agent.model == "unconfigured"
 
 
-def test_gate_and_process_stream_raise_lazily_when_tiers_unconfigured(
+def test_process_stream_raises_lazily_when_tiers_unconfigured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_module, "load_model_catalog", lambda: {})
@@ -63,15 +61,9 @@ def test_gate_and_process_stream_raise_lazily_when_tiers_unconfigured(
 
     agent = _make_agent(tmp_path)
 
-    async def _drive_gate() -> None:
-        await agent.gate("hello")
-
     async def _drive_process_stream() -> None:
-        async for _ in agent.process_stream(agent.start_session(), "hello", Route(trivial=True)):
+        async for _ in agent.process_stream(agent.start_session(), "hello"):
             pass
-
-    with pytest.raises(RuntimeError, match="/tiers"):
-        asyncio.run(_drive_gate())
 
     with pytest.raises(RuntimeError, match="/tiers"):
         asyncio.run(_drive_process_stream())
@@ -85,16 +77,12 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     _stub_credentials(monkeypatch)
 
     agent = _make_agent(tmp_path)
-    assert agent._gate is not None
     assert agent._main is not None
 
     # sequencer (CORE) is the "default model" stand-in surfaced on the agent
     assert agent.model == "core-model"
     assert agent._api_key == "key-for-core-core-model-high-y"
     assert agent._api_base == "https://core.example.com"
-
-    # gate (FAST)
-    assert agent._gate._model == "fast-model"
 
     # estimator (FAST)
     assert agent._main._estimator is not None
@@ -119,7 +107,7 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     assert subagent_dispatch_resolved.api_key == "key-for-supp-supp-model-low-n"
 
 
-def test_gate_self_heals_after_tiers_configured_mid_session(
+def test_process_stream_self_heals_after_tiers_configured_mid_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Regression: a running GekaiAgent only resolved touchpoints once, at
@@ -132,31 +120,32 @@ def test_gate_self_heals_after_tiers_configured_mid_session(
     monkeypatch.setattr(agent_module, "load_model_catalog", lambda: dict(TIER_CATALOG))
     monkeypatch.setattr(agent_module, "load_tier_bindings", lambda: dict(current_bindings))
     _stub_credentials(monkeypatch)
-    # Gate.gate() would otherwise make a real network call — stub it so this
-    # test only exercises GekaiAgent's own retry/self-heal logic.
-    from agent.pipeline.gate import Gate, Route as GateRoute
+    # `Harness.stream()` would otherwise make a real network call — stub it
+    # so this test only exercises GekaiAgent's own retry/self-heal logic.
+    from agent.harness import Harness
 
-    async def _stub_gate(self, *a, **kw) -> GateRoute:
-        return GateRoute()
+    async def _stub_stream(self, *a, **kw):
+        return
+        yield  # pragma: no cover - makes this an async generator
 
-    monkeypatch.setattr(Gate, "gate", _stub_gate)
+    monkeypatch.setattr(Harness, "stream", _stub_stream)
 
     agent = _make_agent(tmp_path)
-    assert agent._gate is None
+    assert agent._main is None
 
-    async def _drive_gate() -> None:
-        await agent.gate("hello")
+    async def _drive_process_stream() -> None:
+        async for _ in agent.process_stream(agent.start_session(), "hello"):
+            pass
 
     with pytest.raises(RuntimeError, match="/tiers"):
-        asyncio.run(_drive_gate())
+        asyncio.run(_drive_process_stream())
 
     # Simulate `/tiers` saving all three bindings mid-session (disk changes
     # under the already-running agent, nothing re-constructs it).
     current_bindings.update(TIER_BINDINGS)
 
-    asyncio.run(_drive_gate())  # must NOT raise now
-    assert agent._gate is not None
-    assert agent._gate._model == "fast-model"
+    asyncio.run(_drive_process_stream())  # must NOT raise now
+    assert agent._main is not None
 
 
 def test_construction_succeeds_when_partially_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,11 +155,11 @@ def test_construction_succeeds_when_partially_configured(tmp_path: Path, monkeyp
     _stub_credentials(monkeypatch)
 
     agent = _make_agent(tmp_path)
-    assert agent._gate is None
     assert agent._main is None
 
-    async def _drive_gate() -> None:
-        await agent.gate("hello")
+    async def _drive_process_stream() -> None:
+        async for _ in agent.process_stream(agent.start_session(), "hello"):
+            pass
 
     with pytest.raises(RuntimeError, match="/tiers"):
-        asyncio.run(_drive_gate())
+        asyncio.run(_drive_process_stream())

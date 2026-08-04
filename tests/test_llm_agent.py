@@ -8,7 +8,7 @@ import pytest
 
 from agent.llm.agent import Agent
 from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import AgentStopped, Event, EventBus
+from agent.llm.events import AgentStopped, Event, EventBus, TextChunkReceived
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.result import AgentResultEvent
 from agent.llm.tools import ToolRegistry, tool
@@ -18,6 +18,7 @@ from agent.llm.types import (
     StreamDone,
     StreamEvent,
     TextBlock,
+    TextDelta,
     ToolUseBlock,
 )
 
@@ -247,3 +248,56 @@ def test_run_stream_with_result_raises_when_salvage_also_empty() -> None:
     assert result_event.result.stop_reason == "max_iterations"
     _assert_final_call_dropped_tools(provider, max_iterations)
     _assert_stopped_once(stopped, "max_iterations", True)
+
+
+class _ChunkedTextProvider(ProviderAdapter):
+    """Fake provider that streams a response as multiple `TextDelta` chunks
+    (mirrors `OpenAIAdapter.stream()`'s real shape) before the final
+    `StreamDone` — used to prove `_run_loop` forwards `TextDelta` as
+    `TextChunkReceived` (plan 34 Phase 2), in the right order, without
+    disturbing the assembled final response."""
+
+    def __init__(self, chunks: list[str], final: CompletionResponse) -> None:
+        self._chunks = chunks
+        self._final = final
+
+    async def complete(self, **kwargs: Any) -> CompletionResponse:
+        raise NotImplementedError
+
+    async def stream(self, **kwargs: Any) -> AsyncIterator[StreamEvent]:
+        for chunk in self._chunks:
+            yield TextDelta(text=chunk)
+        yield StreamDone(response=self._final)
+
+
+def test_run_loop_streams_text_chunks_and_persists_assembled_answer() -> None:
+    """The single most important test in plan 34 Phase 2: a scripted
+    multi-chunk `TextDelta` response must emit `TextChunkReceived` events in
+    delivery order, AND the text that ends up persisted in the returned
+    message history (what `Harness.stream` derives its final answer and
+    `session.jsonl` write from) must be byte-identical to what a
+    non-streamed assembly of the same chunks would produce — streaming is a
+    display-only side channel, never the source of the persisted answer."""
+    chunks = ["Hi", "! ", "What can ", "I help ", "you with?"]
+    final_text = "".join(chunks)
+    responses = [CompletionResponse(content=[TextBlock(text=final_text)], stop_reason="end_turn")]
+    provider = _ChunkedTextProvider(chunks, responses[0])
+    bus = EventBus()
+    received: list[TextChunkReceived] = []
+
+    def _on_event(event: Event) -> None:
+        if isinstance(event, TextChunkReceived):
+            received.append(event)
+
+    bus.subscribe(_on_event)
+    agent = Agent(provider=provider, model="test-model", event_bus=bus)
+
+    messages = run(agent.run("hi"))
+
+    assert [e.text for e in received] == chunks
+
+    assistant_text = "".join(
+        b.text for b in messages[-1].content if isinstance(b, TextBlock)
+    )
+    assert assistant_text == final_text
+    assert assistant_text == "".join(e.text for e in received)

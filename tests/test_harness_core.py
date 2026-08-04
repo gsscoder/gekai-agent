@@ -20,7 +20,7 @@ mirroring tests/test_llm_agent.py's `_ScriptedProvider` pattern but adapted to
 
 Plan 27 note: no `supp_model` is passed to `Harness(...)` in this file, so
 `self._estimator` is None and every `Harness.stream(subagent=None)` call here
-takes the "trivial (no estimator wired)" branch straight to the single-agent
+takes the "solo (no estimator wired)" branch straight to the single-agent
 path — exactly the pre-plan-27 flat behavior these tests were written
 against. The mutate/sequencer path is covered separately in
 tests/test_harness_stream_plan.py.
@@ -42,7 +42,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, MaxIterationsEvent
+from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, LogEvent, MaxIterationsEvent, TextChunkEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm.events import AgentStopped, EventBus
@@ -50,7 +50,7 @@ from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.tools import Tool
-from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
+from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, TextDelta, ToolUseBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
@@ -72,10 +72,12 @@ class _ScriptedAdapter(ProviderAdapter):
     """
 
     responses: list[CompletionResponse] = []
+    instances: ClassVar[list["_ScriptedAdapter"]] = []
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._responses = list(type(self).responses)
         self.calls: list[dict[str, Any]] = []
+        type(self).instances.append(self)
 
     async def complete(self, **kwargs: Any) -> CompletionResponse:
         raise NotImplementedError
@@ -83,6 +85,39 @@ class _ScriptedAdapter(ProviderAdapter):
     async def stream(self, **kwargs: Any) -> AsyncIterator[StreamEvent]:
         self.calls.append(kwargs)
         index = len(self.calls) - 1
+        yield StreamDone(response=self._responses[index])
+
+
+class _ChunkedScriptedAdapter(ProviderAdapter):
+    """Like `_ScriptedAdapter`, but each call can also replay a list of
+    `TextDelta` chunks before its `StreamDone` — mirrors `OpenAIAdapter`'s
+    real streaming shape, so a test can exercise the harness's
+    `TextChunkEvent` bridging (plan 34 Phase 2) end to end, including a
+    direct-dispatch turn that streams text and calls a tool mid-response.
+
+    `chunks[i]` is the list of `TextDelta` chunk strings replayed before the
+    `StreamDone` on the i-th call this instance makes; an index with no
+    entry (or an empty list) plays no chunks, same as `_ScriptedAdapter`.
+    """
+
+    responses: list[CompletionResponse] = []
+    chunks: list[list[str]] = []
+    instances: ClassVar[list["_ChunkedScriptedAdapter"]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._responses = list(type(self).responses)
+        self._chunks = list(type(self).chunks)
+        self.calls: list[dict[str, Any]] = []
+        type(self).instances.append(self)
+
+    async def complete(self, **kwargs: Any) -> CompletionResponse:
+        raise NotImplementedError
+
+    async def stream(self, **kwargs: Any) -> AsyncIterator[StreamEvent]:
+        self.calls.append(kwargs)
+        index = len(self.calls) - 1
+        for chunk in (self._chunks[index] if index < len(self._chunks) else []):
+            yield TextDelta(text=chunk)
         yield StreamDone(response=self._responses[index])
 
 
@@ -105,7 +140,7 @@ def _make_session(tmp_path: Path) -> Session:
 
 def _make_harness(estimator: ResolvedTier | None = None) -> Harness:
     """No estimator wired — `Harness.stream(subagent=None)` takes the
-    "trivial (no estimator)" branch straight to the single-agent path,
+    "solo (no estimator)" branch straight to the single-agent path,
     exactly as the pre-plan-27 flat behavior these tests were written
     against (see module docstring).
 
@@ -247,6 +282,239 @@ def test_coding_prompt_emits_directive_pump_event_on_root_dispatch(
     assert pump_events[0].domains == ["coding"]
 
 
+def test_estimator_receives_session_history(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan 33 Phase 1: `Harness.stream` must pass `session.messages` through
+    to `Estimator.estimate` as `history` -- without it, a history-dependent
+    follow-up ("yes", "do it") misclassifies as `chat`/`solo` and the turn
+    silently does nothing (the plan's "hard problem 1")."""
+    responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
+    mock_estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
+    harness._estimator.estimate = mock_estimate
+
+    session = _make_session(tmp_path)
+    session.messages.extend(
+        {"role": "user", "content": f"turn {i}"} for i in range(1, 5)
+    )
+    run(_drain(harness, session, "do it"))
+
+    mock_estimate.assert_awaited_once_with("do it", history=session.messages)
+
+
+def test_chat_scope_strips_extra_params(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan 33 Phase 2: the Estimator's `chat` rung now drives the
+    reasoning-param strip that used to be keyed off `Route.trivial` --
+    when the caller passes no explicit `extra_params` override and the
+    estimator resolves `scope="chat"`, `Harness.stream` must build the
+    no-graph agent with `extra_params={}`, even though the root-dispatch
+    tier's own `extra_params` is non-empty."""
+    responses = [CompletionResponse(content=[TextBlock(text="hi")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    _ScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    harness = Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
+    )
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "hi"))
+
+    assert len(_ScriptedAdapter.instances) == 1
+    call_kwargs = _ScriptedAdapter.instances[0].calls[0]
+    assert "reasoning_effort" not in call_kwargs
+
+
+def test_solo_scope_keeps_tier_extra_params(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Companion to test_chat_scope_strips_extra_params: `scope="solo"` must
+    still build the no-graph agent with the root-dispatch tier's real
+    `extra_params`, unlike `chat`."""
+    responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    _ScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    harness = Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
+    )
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "read src/app.py"))
+
+    assert len(_ScriptedAdapter.instances) == 1
+    call_kwargs = _ScriptedAdapter.instances[0].calls[0]
+    assert call_kwargs["reasoning_effort"] == "high"
+
+
+def test_explicit_extra_params_override_wins_over_chat_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The `extra_params` argument to `stream()` is an explicit override used
+    by the subagent path and existing callers -- it must win regardless of
+    what the estimator resolves, including `chat`."""
+    responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    _ScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    harness = Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
+    )
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
+
+    session = _make_session(tmp_path)
+
+    async def _drain_with_override() -> list[AgentEvent | str]:
+        collected: list[AgentEvent | str] = []
+        async for item in harness.stream(session, "hi", extra_params={"foo": "bar"}):
+            collected.append(item)
+        return collected
+
+    run(_drain_with_override())
+
+    assert len(_ScriptedAdapter.instances) == 1
+    call_kwargs = _ScriptedAdapter.instances[0].calls[0]
+    assert call_kwargs["foo"] == "bar"
+
+
+def test_chat_scope_uses_explicit_disable_payload_not_bare_dict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan 34 Phase 3 (Part B): the `chat` rung's stripped extra_params must
+    resolve through `resolve_thinking_params(model, enabled=False)`, the same
+    explicit-disable mechanism Phase 1 wired everywhere else -- a bare `{}`
+    is "unspecified" to a DeepSeek-style model, which then defaults to
+    reasoning ON. When root-dispatch resolves to a `thinking_style`-bearing
+    model, the built agent's extra_params must carry the disable payload,
+    not `{}`."""
+    responses = [CompletionResponse(content=[TextBlock(text="hi")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    _ScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    tier = ResolvedTier(model="deepseek-v4-flash", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    harness = Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
+    )
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "hi"))
+
+    assert len(_ScriptedAdapter.instances) == 1
+    call_kwargs = _ScriptedAdapter.instances[0].calls[0]
+    assert "reasoning_effort" not in call_kwargs
+    assert call_kwargs.get("extra_body") == {"thinking": {"type": "disabled"}}
+
+
+def test_chat_rung_registers_zero_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan 34 Phase 3 (Part A): a `chat`-rung dispatch must build root's
+    agent with `tools_override=frozenset()` -- no tool schemas at all -- so
+    the answer call's system prompt carries no `<tools>` JSON schemas."""
+    responses = [CompletionResponse(content=[TextBlock(text="Hi! What can I help you with?")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    real_build_agent = harness_core._build_agent
+    calls: list[dict[str, Any]] = []
+
+    def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real_build_agent(*args, **kwargs)
+
+    monkeypatch.setattr(harness_core, "_build_agent", _spy_build_agent)
+
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    harness = Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
+    )
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "hi"))
+
+    assert len(calls) == 1
+    assert calls[0].get("tools_override") == frozenset()
+
+
+def test_solo_rung_still_registers_normal_tool_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Companion to test_chat_rung_registers_zero_tools: `scope="solo"` must
+    still dispatch with `tools_override=None` (the full, unfiltered grant),
+    unlike `chat`."""
+    responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    real_build_agent = harness_core._build_agent
+    calls: list[dict[str, Any]] = []
+
+    def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real_build_agent(*args, **kwargs)
+
+    monkeypatch.setattr(harness_core, "_build_agent", _spy_build_agent)
+
+    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
+    harness = Harness(
+        resolve=lambda _tier: tier,
+        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        root_dispatch_policy=policy,
+        subagent_dispatch_policy=policy,
+        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
+    )
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "read src/app.py"))
+
+    assert len(calls) == 1
+    assert calls[0].get("tools_override") is None
+
+
 def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -262,7 +530,7 @@ def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
     agent_name == "root" steps), so under the fix no `DirectivePumpEvent`
     should be emitted at all for this turn."""
     harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="fix the bug",
         steps=[Task(agent="code-expert", instruction="fix it", mission="fix it")],
@@ -353,3 +621,103 @@ def test_nested_agent_stopped_with_different_run_id_does_not_end_stream(
         f"likely terminated early on the stray AgentStopped: {collected}"
     )
     assert collected[-1] == "final answer"
+
+
+def test_no_graph_direct_dispatch_emits_text_chunk_events_in_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan 34 Phase 2: the no-graph (direct root dispatch) path must bridge
+    `TextChunkReceived` into `TextChunkEvent`, in delivery order, and the
+    final yielded answer string must still be exactly what the assembled
+    (non-streamed) response would have produced."""
+    chunks = ["Hi", "! ", "What can ", "I help ", "you with?"]
+    final_text = "".join(chunks)
+    _ChunkedScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text=final_text)], stop_reason="end_turn")
+    ]
+    _ChunkedScriptedAdapter.chunks = [chunks]
+    _ChunkedScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ChunkedScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "hi"))
+
+    text_events = _only(collected, TextChunkEvent)
+    assert [e.text for e in text_events] == chunks
+    assert collected[-1] == final_text
+
+
+def test_graph_routed_turn_emits_zero_text_chunk_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Hard scope boundary (plan 34 Phase 2): a graph-routed turn shares
+    `_bridge_llm_event` with the direct-dispatch path, but must never surface
+    a `TextChunkEvent` — even though its dispatched subagent step streams
+    `TextDelta` chunks onto the very same bus. Only the direct-dispatch
+    caller passes `emit_text_chunks=True`; the graph path's `dispatch()`
+    leaves it at the default `False`."""
+    harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="fix the bug",
+        steps=[Task(agent="code-expert", instruction="fix it", mission="fix it")],
+    )
+    monkeypatch.setattr(Sequencer, "sequence", AsyncMock(return_value=graph))
+
+    _ChunkedScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")
+    ]
+    _ChunkedScriptedAdapter.chunks = [["streamed ", "step ", "text"]]
+    _ChunkedScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ChunkedScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
+
+    assert not any(isinstance(e, TextChunkEvent) for e in collected), (
+        f"graph-routed turn leaked a TextChunkEvent: {collected}"
+    )
+
+
+def test_no_graph_direct_dispatch_text_streams_and_tool_call_stay_in_causal_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Hard problem 2 (plan 34): a direct turn that both streams text AND
+    calls a tool mid-response must keep `TextChunkEvent`/`LogEvent` in the
+    order they actually happened — the harness bridges everything through one
+    shared `asyncio.Queue` fed by a single bus subscriber, so causal order
+    from the provider is preserved end to end, never scrambled by the
+    bridge."""
+    _ChunkedScriptedAdapter.responses = [
+        _tool_call_response("call-1"),
+        CompletionResponse(content=[TextBlock(text="Sure, done.")], stop_reason="end_turn"),
+    ]
+    _ChunkedScriptedAdapter.chunks = [
+        ["thinking about ", "the request"],  # turn 1: streamed text before the tool call
+        ["Sure, ", "done."],                 # turn 2: streamed text after the tool result
+    ]
+    _ChunkedScriptedAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ChunkedScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "read x.py then tell me"))
+
+    kinds = [type(item).__name__ for item in collected if not isinstance(item, str)]
+    text_chunk_indices = [i for i, k in enumerate(kinds) if k == "TextChunkEvent"]
+    log_indices = [i for i, k in enumerate(kinds) if k == "LogEvent"]
+    assert text_chunk_indices, f"expected TextChunkEvents; got {kinds}"
+    assert log_indices, f"expected a LogEvent for the tool call; got {kinds}"
+    # Turn 1's stream ("thinking about the request") must fully precede the
+    # tool-call LogEvent, and turn 2's stream ("Sure, done.") must fully
+    # follow it -- exactly the provider's own causal order, not scrambled by
+    # the bridge.
+    assert max(text_chunk_indices[:2]) < min(log_indices)
+    assert min(text_chunk_indices[2:]) > max(log_indices)
+
+    text_events = _only(collected, TextChunkEvent)
+    assert [e.text for e in text_events] == [
+        "thinking about ", "the request", "Sure, ", "done.",
+    ]
+    assert collected[-1] == "Sure, done."

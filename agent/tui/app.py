@@ -33,7 +33,6 @@ from agent.persistence import (
     append_operation,
     _normalize_path,
 )
-from agent.pipeline import Route
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS, SUBAGENTS, Subagent
 from agent.settings import (
@@ -48,7 +47,7 @@ from agent.settings import (
 )
 from agent.workspace import list_files, list_dirs
 from agent.tui.styles import OPERATIVE_COLOR, _OPERATIVE_VERB
-from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
+from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, TextChunkEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
 from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 from .palette import CommandPalette
@@ -118,6 +117,7 @@ class SubAgentRenderer:
         self._badge_namespace: str | None = None
         self._badge_color: str = ""
         self._tool_calls: int = 0
+        self._is_thinking: bool = False
 
     async def _animate_dot(self) -> None:
         frame = 0
@@ -140,7 +140,7 @@ class SubAgentRenderer:
         if namespace is not None:
             header_markup = _subagent_header_markup(name, bg_color, ui_label)
         else:
-            header_markup = "[bold #666666]Thinking...[/bold #666666]"
+            header_markup = "[bold #666666]Triaging...[/bold #666666]"
         widget = MessageWidget(MessageKind.HEADER, header_markup)
         await self._conversation.mount(widget)
         self._header_widget = widget
@@ -185,6 +185,10 @@ class SubAgentRenderer:
     async def thinking_chunk(self, text: str) -> None:
         if self._badge_namespace is not None:
             return  # badge header is persistent — never overwrite it with a thinking preview
+        if not self._is_thinking:
+            self._is_thinking = True
+            if self._header_widget is not None:
+                self._header_widget.update("[bold #666666]Thinking...[/bold #666666]")
         self._thinking_tail += text
         steps, self._thinking_tail = _split_thinking_steps(self._thinking_tail)
         for step in steps:
@@ -294,12 +298,6 @@ def _resolve_at_refs(text: str) -> str:
 
 def _ms(seconds: float) -> int:
     return round(seconds * 1000)
-
-
-def _route_decision(route: Route) -> str:
-    if route.trivial:
-        return "trivial"
-    return "act"
 
 
 def _mask_key(key: str) -> str:
@@ -765,6 +763,7 @@ class GekaiApp(App[None]):
         self._needs_permissions = needs_permissions
         self._worker: Worker | None = None
         self._assistant_widget: MessageWidget | None = None
+        self._streamed_answer: str = ""
         self._status_task: asyncio.Task[None] | None = None
         self._status_stop: asyncio.Event | None = None
         self._status_frame: int = 0
@@ -958,6 +957,7 @@ class GekaiApp(App[None]):
         self._other_ops_tokens = 0
         self._refresh_status_bar()
         self._assistant_widget = None
+        self._streamed_answer = ""
         if command_text is not None:
             append_command(self._session, command_text)
             await conversation.mount(MessageWidget(MessageKind.USER, command_text))
@@ -1447,7 +1447,7 @@ class GekaiApp(App[None]):
 
         self.query_one(TiersPanel).hide()
         self._tiers_edit = None
-        # Re-resolve immediately rather than waiting on gate()/process_stream()'s
+        # Re-resolve immediately rather than waiting on process_stream()'s
         # lazy self-heal (which only retries while resolution is still failing)
         # — otherwise the status bar (self._agent.model/.effort) keeps showing
         # the pre-commit CORE binding until the next restart.
@@ -1465,7 +1465,7 @@ class GekaiApp(App[None]):
     async def _run_step(
         self, raw: str, seed: str | None, *,
         turn_id: str, session_id: str, conversation: ScrollableContainer,
-        stage: list[str], trivial: bool = False,
+        stage: list[str],
         append_user: bool = True,
     ) -> _StepResult:
         """Render dispatch for `raw`. `seed` (case 3 — an explicit `/agent-x` or a
@@ -1483,6 +1483,13 @@ class GekaiApp(App[None]):
         ws_renderer: SubAgentRenderer | None = None
         active_renderer: SubAgentRenderer | None = None
         delegation_renderer: SubAgentRenderer | None = None
+        # Reset per-turn streaming state (plan 34 Phase 2): `_assistant_widget`
+        # doubles as "has a TextChunkEvent already mounted the live answer
+        # widget this turn" — stale state from a prior turn would otherwise
+        # make `_stream()`'s finalization step below (re)use last turn's
+        # widget instead of creating this turn's.
+        self._assistant_widget = None
+        self._streamed_answer = ""
 
         async def _on_event(item: AgentEvent | str) -> None:
             nonlocal ws_renderer, active_renderer, delegation_renderer
@@ -1527,6 +1534,14 @@ class GekaiApp(App[None]):
                     self._other_ops_tokens += (item.prompt_tokens or 0) + (item.completion_tokens or 0)
                 elif isinstance(item, ThinkingTokenEvent):
                     await active_renderer.thinking_chunk(item.text)
+                elif isinstance(item, TextChunkEvent):
+                    self._streamed_answer += item.text
+                    if self._assistant_widget is None:
+                        self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, self._streamed_answer)
+                        await conversation.mount(self._assistant_widget)
+                    else:
+                        self._assistant_widget.update(self._streamed_answer)
+                    conversation.scroll_end(animate=False)
                 elif isinstance(item, StatusUpdateEvent):
                     await active_renderer.status_update(item)
                 elif isinstance(item, DoneEvent):
@@ -1535,7 +1550,7 @@ class GekaiApp(App[None]):
 
         turn_result = await harness_turn.run_step(
             self._agent, self._session, raw, seed,
-            turn_id=turn_id, session_id=session_id, trivial=trivial,
+            turn_id=turn_id, session_id=session_id,
             permission_callback=self._permission_callback,
             hidden_grant_callback=self._hidden_grant_callback,
             append_user=append_user,
@@ -1557,7 +1572,7 @@ class GekaiApp(App[None]):
         session_id = self.session_id
         events.emit("turn.start", session=session_id, turn=turn_id, input_len=len(user_input))
         outcome = "ok"
-        stage = ["route"]
+        stage = ["harness"]
         verb = _OPERATIVE_VERB
         color = OPERATIVE_COLOR
         conversation = self.query_one("#conversation", ScrollableContainer)
@@ -1567,18 +1582,11 @@ class GekaiApp(App[None]):
 
         try:
             await self._start_status_animation(verb[0], color)
-            if forced_seed is not None:
-                route = Route(trivial=False)
-                events.emit("route", session=session_id, turn=turn_id, decision=f"seed/{forced_seed}", duration_ms=0)
-            else:
-                t0 = time.monotonic()
-                route = await self._agent.gate(user_input, history=self._session.messages)
-                events.emit("route", session=session_id, turn=turn_id, decision=_route_decision(route), duration_ms=_ms(time.monotonic() - t0))
 
             step_result = await self._run_step(
                 user_input, forced_seed,
                 turn_id=turn_id, session_id=session_id, conversation=conversation,
-                stage=stage, trivial=route.trivial,
+                stage=stage,
             )
             ws_renderer = step_result.ws_renderer
 
@@ -1588,11 +1596,23 @@ class GekaiApp(App[None]):
             if self._session is not None:
                 self._refresh_status_bar()
             if step_result.max_iter_hit and not step_result.answer:
+                if self._assistant_widget is not None:
+                    await self._assistant_widget.remove()
+                    self._assistant_widget = None
                 await conversation.mount(MessageWidget(MessageKind.ERROR, "agent hit iteration limit without producing a response"))
             else:
                 answer = step_result.answer
-                self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
-                await conversation.mount(self._assistant_widget)
+                # If TextChunkEvents already mounted the live-streaming widget
+                # this turn (plan 34 Phase 2, no-graph direct dispatch), finish
+                # it in place with the same persisted answer rather than
+                # mounting a second copy — the graph path never streams, so
+                # `_assistant_widget` is still None there and this falls back
+                # to the original mount-fresh behavior unchanged.
+                if self._assistant_widget is not None:
+                    self._assistant_widget.update(answer)
+                else:
+                    self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
+                    await conversation.mount(self._assistant_widget)
                 elapsed = time.monotonic() - start
                 operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({step_result.query_tool_count} {'tool' if step_result.query_tool_count == 1 else 'tools'})" if step_result.query_tool_count > 0 else "")
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, operation_text, color=color))

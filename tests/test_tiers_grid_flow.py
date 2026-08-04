@@ -312,7 +312,7 @@ async def test_happy_path_commits_all_three_tiers_to_disk(tmp_path: Path, monkey
 
         # Regression: the status bar reads agent.model/agent.effort directly —
         # these must reflect the just-committed CORE binding immediately, not
-        # only after the next gate()/process_stream() call (the self-heal
+        # only after the next process_stream() call (the self-heal
         # path only retries while resolution is still failing, which isn't
         # the case here since tiers were already configured going in... but
         # this is the very commit that first makes them configured, so it
@@ -486,8 +486,8 @@ async def test_ok_with_no_changes_reports_kept_actual_tiers(tmp_path: Path, monk
 async def test_recommitting_core_updates_agent_model_and_effort_live(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: `gate()`/`process_stream()` only re-resolve touchpoints
-    lazily while resolution is still *failing* (`self._gate`/`self._main` is
+    """Regression: `process_stream()` only re-resolves touchpoints
+    lazily while resolution is still *failing* (`self._main` is
     `None`) — once tiers are already configured, changing CORE's model via a
     second `/tiers` commit used to leave `agent.model`/`agent.effort` (and so
     the status bar) stuck on the old value until a process restart."""

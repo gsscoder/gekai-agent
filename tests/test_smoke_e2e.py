@@ -2,10 +2,12 @@
 survives the Plan->TaskGraph rename and the tui/app.py -> agent.harness.turn
 orchestration extraction, start to answer, unchanged.
 
-Drives the same sequence `GekaiApp._stream` drives (gate -> harness.turn.run_step)
-against a real model, exercising both branches the rename+extraction touched:
-the trivial single-agent path and the mutate sequencer+interpreter path (which
-must actually produce a file on disk via the interpreter's dispatch).
+Drives the same sequence `GekaiApp._stream` drives (harness.turn.run_step,
+which derives its no-graph/graph split from the Estimator's scope rung inside
+`Harness.stream()`) against a real model, exercising both branches the
+rename+extraction touched: the trivial single-agent path and the mutate
+sequencer+interpreter path (which must actually produce a file on disk via
+the interpreter's dispatch).
 
 Real LLM calls — requires GEKAI_CORE_MODEL_NAME/KEY (+ SUPPORT). Run 3 trials
 (plan 28 verification policy). Unlike test_planner_probe.py's majority-pass
@@ -42,11 +44,10 @@ async def _run_trial(working_dir: Path) -> str | None:
     agent = _make_agent(working_dir)
     session = Session(working_dir=working_dir, permissions=agent.permissions)
 
-    # trivial path: gate -> (estimator inside Harness.stream) -> main solo
-    route = await agent.gate("what is 7 plus 5? reply with just the number, nothing else.")
+    # trivial path: estimator (inside Harness.stream) -> main solo
     trivial_result = await run_step(
         agent, session, "what is 7 plus 5? reply with just the number, nothing else.", None,
-        turn_id="smoke-trivial", session_id=session.id, trivial=route.trivial,
+        turn_id="smoke-trivial", session_id=session.id,
         permission_callback=None, hidden_grant_callback=None,
     )
     if trivial_result.outcome != "ok":
@@ -54,12 +55,11 @@ async def _run_trial(working_dir: Path) -> str | None:
     if not trivial_result.answer.strip():
         return "trivial path produced an empty answer"
 
-    # mutate path: gate -> estimator:mutate -> sequencer -> interpreter -> main/subagent dispatch
+    # mutate path: estimator:mutate -> sequencer -> interpreter -> main/subagent dispatch
     mutate_prompt = "create a file named smoke.txt in the workspace root containing exactly the text: smoke ok"
-    route = await agent.gate(mutate_prompt)
     mutate_result = await run_step(
         agent, session, mutate_prompt, None,
-        turn_id="smoke-mutate", session_id=session.id, trivial=route.trivial,
+        turn_id="smoke-mutate", session_id=session.id,
         permission_callback=None, hidden_grant_callback=None,
     )
     if mutate_result.outcome != "ok":

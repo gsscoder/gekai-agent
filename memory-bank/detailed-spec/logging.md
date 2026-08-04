@@ -38,10 +38,10 @@ Per-turn — all carry `session=`, `turn=`, emitted from `_stream` (`tui/app.py`
 | Event | Fields | Notes |
 |---|---|---|
 | `turn.start` | `input_len` | |
-| `route` | `decision` (`_route_decision(route)`), `duration_ms` | decision: `rejected` / `<namespace>/<subagent>` (forced `/`-slash route) / `trivial` / `act` |
+| `estimate` | `decision` (`chat`/`solo`/`mutate`/`seeded`/`skipped`), `specialists` (always `[]` — vestigial, plan 33 open point 2), `duration_ms` | emitted by `agent/harness/turn.py::run_step` from the harness's `EstimateEvent`; formerly a separate `route` event (`trivial`/`act`) alongside this one — folded into this single classifier and event, plan 33 |
 | `harness` | `outcome` (`ok`/`max_iterations`), `llm_calls`, `prompt_tokens`, `completion_tokens`, `thinking_chars`, `tools` (dict tool→count), `duration_ms`, `budget_exhausted` | `outcome` here is a local `harness_outcome` variable computed in `tui/app.py::_run_step` — `"max_iterations"` iff the loop hit its cap *and* produced no answer text; it is independent of, and not renamed by, the `budget_exhausted` flag below |
 | `delegation` | `host`, `delegate`, `namespace`, `status` (`ok`/`failed`), `files`, `files_touched`, `summary_len`, `budget_exhausted` | only when `subagent is not None` (forced `/`-slash route to a subagent); mirrors `SubagentResult`. The `delegate` *tool*'s own nested-agent calls (main agent choosing a specialist mid-turn) are not separately logged here — they surface inside the `harness` event's `tools` count as `delegate` calls |
-| `error` | `stage`, `error_type`, `message` | level=`warning`; `stage` is the pipeline stage executing when caught (`route`/`harness`) |
+| `error` | `stage`, `error_type`, `message` | level=`warning`; `stage` is the pipeline stage executing when caught — always `harness` today (the separate `route` stage this used to distinguish was removed along with `Gate`, plan 33) |
 | `turn.end` | `outcome`, `duration_ms` | emitted in `finally`, once per turn |
 
 `budget_exhausted` (new, on both `harness` and `delegation`) is a diagnostic signal, not a pass/fail
@@ -62,6 +62,6 @@ Starts `"ok"`, last write wins, evaluated in `finally`:
 This log is always-on, regardless of `--debug`. Three distinct streams:
 - `events-*.jsonl` (this doc) — per-run telemetry, `~/.gekai/logs/`
 - `session.jsonl` — visible chat history (`turn`/`command`/`event` entries), see `architecture.md → Session Persistence`
-- `debug.jsonl` — internal plumbing (system prompts, route tokens), `--debug` only
+- `debug.jsonl` — internal plumbing (system prompts, `extra_params`, tool calls/results), `--debug` only
 
 Shared `turn_id` links a `session.jsonl` turn entry (`turn=` field via `append_message`) to its corresponding events in `events-*.jsonl`.

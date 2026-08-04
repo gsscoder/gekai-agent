@@ -99,11 +99,15 @@ Runs as exclusive Textual worker.
 - `finally`: `_stop_status_animation()`, `ws_renderer.stop_spinner()` if set, handle `_worker_cancelled` (mount INTERRUPTED widget), `_worker = None`, `_focus_prompt()`
 
 **Delegated specialist steps**: there is no more router-level plan or multi-step widget sequence —
-`_run_step` now dispatches a single `Gate` decision straight to `Harness` (`route.subagent` set only
-by a forced `/`-slash command). When the main agent itself decides mid-turn that a specialist step
-is needed, it calls the `delegate` tool (see `architecture.md → Delegate Tool`); that nested run is
-opaque to the TUI — it surfaces only as tool activity inside the main agent's own `SubAgentRenderer`
-block, not as a separate HEADER/widget sequence.
+`_run_step` dispatches straight to `Harness.stream()`, whose `Estimator` classifies the turn on the
+`chat`/`solo`/`mutate` scale (see `architecture.md → Estimator`; there is no separate `Gate`/`Route`
+stage — folded into the Estimator and deleted, plan 33). A `mutate` (or `seed`-forced) estimate
+routes into the sequencer + fixed interpreter, whose steps render as `DelegationStartEvent`/
+`DelegationDoneEvent` badges nested under the turn's `SubAgentRenderer` block (see
+`## SubAgentRenderer` below and `architecture.md → Cross-Agent Dispatch`) — never a separate
+HEADER/widget sequence of their own.
+There is no `delegate` tool: no agent, root or subagent, can call another agent mid-turn (plan 27
+decision 11).
 
 ## SubAgentRenderer
 Helper class in `app.py`; one instance per subagent block within a turn.

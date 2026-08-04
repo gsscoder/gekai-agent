@@ -18,6 +18,7 @@ from .events import (
     ModelResponseReceived,
     RetryAttemptEvent,
     StopReason,
+    TextChunkReceived,
     ThinkingChunkReceived,
     ToolExecutionCompleted,
     ToolExecutionStarted,
@@ -36,6 +37,7 @@ from .types import (
     StreamDone,
     StreamEvent,
     TextBlock,
+    TextDelta,
     ThinkingDelta,
     TokenCount,
     ToolResultBlock,
@@ -91,6 +93,8 @@ class Agent:
             async for ev in self.provider.stream(**self._provider_kwargs(messages, with_tools=with_tools)):
                 if isinstance(ev, ThinkingDelta):
                     self._emit(ThinkingChunkReceived(text=ev.text))
+                elif isinstance(ev, TextDelta):
+                    self._emit(TextChunkReceived(text=ev.text))
                 elif isinstance(ev, StreamDone):
                     final = ev.response
             if final is None:

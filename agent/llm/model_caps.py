@@ -26,10 +26,13 @@ MODEL_CAPS: dict[str, ModelCaps] = {
     # add them back once actually exercised, not as untested examples.
     "deepseek-v4-pro":   ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high",
                                     can_disable_thinking=False, effort_requires_thinking=True),
-    # this project's actual SUPP-tier model — never observed with thinking
-    # enabled (absent here previously meant resolve_thinking_params silently
-    # no-op'd for it; explicit now).
-    "deepseek-v4-flash": ModelCaps(),
+    # this project's actual FAST/SUPP-tier model — bound with thinking=False,
+    # but empirically it reasons on every call unless explicitly told not to
+    # (an absent `thinking` param means "unspecified" to the DeepSeek API,
+    # which defaults to reasoning ON; plan 34 phase 1). `thinking_style` is
+    # set so `resolve_thinking_params(..., enabled=False)` can find the
+    # DeepSeek disable payload.
+    "deepseek-v4-flash": ModelCaps(thinking_style="deepseek"),
 }
 
 _EFFORT_TO_PARAMS: dict[str, dict[str, dict]] = {
@@ -47,13 +50,28 @@ _EFFORT_TO_PARAMS: dict[str, dict[str, dict]] = {
 }
 
 
-def resolve_thinking_params(model: str, effort: str | None = None) -> dict:
-    """Return extra_params to enable thinking for the given model and effort.
+def resolve_thinking_params(model: str, effort: str | None = None, *, enabled: bool = True) -> dict:
+    """Return extra_params that realize the requested thinking state for the
+    given model and effort.
 
-    Returns empty dict if the model is not in MODEL_CAPS or does not support thinking.
+    `enabled=True` (default): params to turn thinking on, as before.
+    `enabled=False` (plan 34 phase 1): params to explicitly turn thinking
+    off. A bare `{}` means "unspecified" to providers like DeepSeek, which
+    then default to reasoning ON — so a `thinking: false` binding must
+    resolve to an explicit disable payload, not an empty dict.
+
+    Returns empty dict if the model is not in MODEL_CAPS, has no
+    `thinking_style` (no known provider-specific realization), or (when
+    `enabled=True`) does not support thinking at all.
     """
     caps = MODEL_CAPS.get(model)
-    if caps is None or not caps.thinking or caps.thinking_style is None:
+    if caps is None or caps.thinking_style is None:
+        return {}
+    if not enabled:
+        if caps.thinking_style == "deepseek":
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {}
+    if not caps.thinking:
         return {}
     effective_effort = effort or caps.default_effort
     style_map = _EFFORT_TO_PARAMS.get(caps.thinking_style, {})

@@ -24,14 +24,13 @@ class Touchpoint:
     job: str
     nominal_tier: TierName
     # Assignment-time scaling (Phase 2): a component's declared tier mobility.
-    # None for the three touchpoints not scaled in v1 (gate, estimator, micro)
-    # — they run at a bare `nominal_tier` with no mobility. When set,
-    # `policy.default` is expected to equal `nominal_tier`.
+    # None for the two touchpoints not scaled in v1 (estimator, micro) — they
+    # run at a bare `nominal_tier` with no mobility. When set, `policy.default`
+    # is expected to equal `nominal_tier`.
     policy: TierPolicy | None = None
 
 
 TOUCHPOINTS: tuple[Touchpoint, ...] = (
-    Touchpoint("gate", "chit-chat vs act (one token)", TierName.FAST),
     Touchpoint("estimator", "trivial vs mutate", TierName.FAST),
     Touchpoint(
         "sequencer",

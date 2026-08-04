@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.llm.model_caps import MODEL_CAPS, ModelCaps
 from agent.llm.resolve import TierResolutionError, all_tiers_ready, resolve_tier, resolve_touchpoint, tier_status
 from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName, TierSuitability
 
@@ -42,6 +43,30 @@ def test_resolve_tier_success(monkeypatch):
     assert isinstance(resolved.extra_params, dict)  # model_caps.py owns the actual param shape
 
 
+def test_resolve_tier_thinking_false_resolves_to_explicit_disable_payload(monkeypatch):
+    # plan 34 phase 1: a `thinking: false` binding must not silently resolve
+    # to `{}` (which DeepSeek interprets as "unspecified" -> reasoning ON).
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
+    monkeypatch.setitem(MODEL_CAPS, "flash", ModelCaps(thinking=False, thinking_style="deepseek"))
+    bindings = {TierName.FAST: TierBinding(model="flash", default_effort="low", thinking=False)}
+    resolved = resolve_tier(TierName.FAST, CATALOG, bindings)
+    assert resolved.extra_params == {"extra_body": {"thinking": {"type": "disabled"}}}
+
+
+def test_resolve_tier_thinking_true_unchanged(monkeypatch):
+    # Regression guard: a thinking=True binding's extra_params must be
+    # byte-identical to before the `enabled` param existed.
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
+    monkeypatch.setitem(
+        MODEL_CAPS, "pro", ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high")
+    )
+    bindings = {TierName.CORE: TierBinding(model="pro", default_effort="high", thinking=True)}
+    resolved = resolve_tier(TierName.CORE, CATALOG, bindings)
+    assert resolved.extra_params == {"reasoning_effort": "high", "extra_body": {"thinking": {"type": "enabled"}}}
+
+
 def test_resolve_touchpoint_uses_nominal_tier(monkeypatch):
     monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
     monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
@@ -49,7 +74,7 @@ def test_resolve_touchpoint_uses_nominal_tier(monkeypatch):
         TierName.FAST: TierBinding(model="flash", default_effort="low"),
         TierName.CORE: TierBinding(model="pro", default_effort="high"),
     }
-    resolved = resolve_touchpoint("gate", CATALOG, bindings)  # gate is nominal FAST
+    resolved = resolve_touchpoint("estimator", CATALOG, bindings)  # estimator is nominal FAST
     assert resolved.model == "flash"
 
 

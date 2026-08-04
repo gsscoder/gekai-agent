@@ -9,7 +9,6 @@ from typing import cast
 from agent.agent import GekaiAgent
 from agent.harness import Harness
 from agent.persistence import session_file
-from agent.pipeline import Route
 from agent.session import Session
 
 
@@ -61,7 +60,7 @@ def _turns(session: Session) -> list[dict]:
 def test_process_stream_persists_user_turn_once(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "hi", Route())))
+    run(_drain(agent.process_stream(session, "hi")))
 
     user_turns = [t for t in _turns(session) if t["role"] == "user"]
     assert len(user_turns) == 1
@@ -71,7 +70,7 @@ def test_process_stream_persists_user_turn_once(tmp_path: Path) -> None:
 def test_process_stream_persists_user_input_when_not_rewritten(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "plain request", Route())))
+    run(_drain(agent.process_stream(session, "plain request")))
 
     user_turns = [t for t in _turns(session) if t["role"] == "user"]
     assert user_turns[0]["content"] == "plain request"
@@ -80,7 +79,7 @@ def test_process_stream_persists_user_input_when_not_rewritten(tmp_path: Path) -
 def test_process_stream_writes_user_turn_before_assistant(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "question", Route())))
+    run(_drain(agent.process_stream(session, "question")))
 
     roles = [t["role"] for t in _turns(session)]
     assert roles == ["user", "assistant"]
@@ -94,7 +93,7 @@ def test_process_stream_writes_user_turn_before_assistant(tmp_path: Path) -> Non
 def test_process_stream_append_user_false_skips_user_turn(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "step 2 raw", Route(), append_user=False)))
+    run(_drain(agent.process_stream(session, "step 2 raw", append_user=False)))
 
     turns = _turns(session)
     assert [t["role"] for t in turns] == ["assistant"]
@@ -103,7 +102,7 @@ def test_process_stream_append_user_false_skips_user_turn(tmp_path: Path) -> Non
 def test_process_stream_append_user_true_matches_default(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "hi", Route(), append_user=True)))
+    run(_drain(agent.process_stream(session, "hi", append_user=True)))
 
     roles = [t["role"] for t in _turns(session)]
     assert roles == ["user", "assistant"]
@@ -114,10 +113,10 @@ def test_process_stream_plan_two_steps_persist_one_user_two_assistant(tmp_path: 
     turn_id = "shared-turn"
 
     agent_step1 = _stub_agent(["step1 reply"])
-    run(_drain(agent_step1.process_stream(session, "original prompt", Route(), turn_id=turn_id)))
+    run(_drain(agent_step1.process_stream(session, "original prompt", turn_id=turn_id)))
 
     agent_step2 = _stub_agent(["step2 reply"])
-    run(_drain(agent_step2.process_stream(session, "step 2 raw", Route(), turn_id=turn_id, append_user=False)))
+    run(_drain(agent_step2.process_stream(session, "step 2 raw", turn_id=turn_id, append_user=False)))
 
     turns = _turns(session)
     assert [t["role"] for t in turns] == ["user", "assistant", "assistant"]
@@ -127,22 +126,15 @@ def test_process_stream_plan_two_steps_persist_one_user_two_assistant(tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# trivial routes run main with empty extra_params (no thinking)
+# process_stream never overrides extra_params itself (plan 33 Phase 3) — the
+# chat-scope reasoning-param strip now lives entirely in `Harness.stream()`,
+# keyed off the Estimator's `chat` rung (see test_harness_core.py).
 # ---------------------------------------------------------------------------
 
-def test_process_stream_trivial_route_passes_empty_extra_params(tmp_path: Path) -> None:
+def test_process_stream_passes_no_extra_params_override(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "hi", Route(trivial=True))))
-
-    main = cast(_FakeMain, agent._main)
-    assert main.last_extra_params == {}
-
-
-def test_process_stream_non_trivial_route_passes_no_extra_params_override(tmp_path: Path) -> None:
-    session = _make_session(tmp_path)
-    agent = _stub_agent(["reply"])
-    run(_drain(agent.process_stream(session, "question", Route())))
+    run(_drain(agent.process_stream(session, "hi")))
 
     main = cast(_FakeMain, agent._main)
     assert main.last_extra_params is None

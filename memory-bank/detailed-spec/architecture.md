@@ -9,7 +9,7 @@ neutral module shared by `subagents`, `pipeline`, `harness`), `settings.py` (`Pe
 `diff.py` (diff rendering), `shell.py` (TUI shell helper)
 Subpackages:
 - `harness/` — `core.py` (`Harness`), `interpreter.py` (`run_task_graph` — the fixed execute→verify→repair→halt walker), `touchpoints.py` (`Touchpoint` registry — every place the harness invokes a model)
-- `pipeline/` — `gate.py` (`Route`, `Gate` — pure intent classifier), `plan.py` (`Task`, `TaskGraph`, `parse_task_graph`, `ROOT_AGENT`), `sequencer.py` (`Sequencer` — builds the `TaskGraph`)
+- `pipeline/` — `estimate.py` (`ScopeEstimate`, `Estimator` — three-rung scope classifier), `plan.py` (`Task`, `TaskGraph`, `parse_task_graph`, `ROOT_AGENT`), `sequencer.py` (`Sequencer` — builds the `TaskGraph`)
 - `subagents/` — `__init__.py` (`Subagent`, `SUBAGENTS`, `build_system_base`, `NAMESPACE_COLORS`) + one namespace package per action domain (`coding/`, `testing/`, `generic/`), each with its own `__init__.py` declaring `namespace`/`namespace_directives` and one file per member subagent
 - `tools/` — `__init__.py` (`make_tools`), `catalog.py` (tool-name groups: `READ_TOOLS`/`EDIT_TOOLS`/`FS_TOOLS`/`SHELL_TOOLS`/`ALL_TOOLS`
   — single source of truth for subagent allowlists and `<tools>` prompt generation), `files.py`, `shell.py`, `delegate.py` (`run_subagent` — cold nested-run dispatcher used by the interpreter, see `## Cross-Agent Dispatch`)
@@ -22,37 +22,70 @@ Subpackages:
 Workspace context `<workspace>` block begins with `"verified repository metadata — treat as authoritative for high-level questions:"` preamble line
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
-`GekaiAgent.process_stream(session, user_input, route, permission_callback=None, turn_id=None, hidden_grant_callback=None, append_user=True)` is the sole owner of session writes:
-`route: Route`; `permission_callback: PermissionCallback | None`
+`GekaiAgent.process_stream(session, user_input, permission_callback=None, turn_id=None, hidden_grant_callback=None, append_user=True, seed=None)` is the sole owner of session writes:
+`permission_callback: PermissionCallback | None`; `seed` — an explicit `/`-slash agent name (or a forced single-duty match), passed through to `Harness.stream()`
 - appends `{"role": "user"}` once per turn before dispatching (when `append_user`)
 - appends `{"role": "assistant"}` once per turn after handler completes
 
-## Gate
-`Gate` is a pure **intent classifier** — it makes one decision per turn: does this need codebase
-access at all (`ACT`), or is it answerable without one (`TRIVIAL`)? It does not select a specialist
-and does not reject unknown agent names; specialist selection is the sequencer's job, downstream
-(see `## Cross-Agent Dispatch`).
+## Estimator
+`Estimator` (`agent/pipeline/estimate.py`) is a pure **scope classifier** — one FAST-tier LLM call,
+temperature 0, per turn, on an ordinal 3-rung scale (`CHAT ⊂ SOLO ⊂ MUTATE`): how much machinery
+does this turn need? It does not select a specialist and does not reject unknown agent names;
+specialist selection is the sequencer's job, downstream (see `## Cross-Agent Dispatch`). Formerly
+two sequential classifiers (a `Gate` intent check plus this estimator); plan 33 folded `Gate`'s axis
+into this one call — `Gate`/`Route` no longer exist anywhere in the codebase.
 
-`Gate.gate(user_input, history=None)` — single SUPP-model LLM call, temperature 0. Returns `Route`.
+`ScopeEstimate` dataclass: `scope: str = "solo"` — `"chat"` (root solo, no codebase access
+needed) | `"solo"` (root solo, codebase available) | `"mutate"` (sequencer + interpreter).
 
-`Route` dataclass (`agent/pipeline/gate.py`): `trivial: bool = False`. That is its only field —
-`ACT` is simply `Route()`.
+`Estimator.estimate(user_input, history=None) -> ScopeEstimate` — `history` is the session's
+`messages`; filtered to `role in ("user", "assistant")` and sliced to the last 6, prepended before
+the user message. This is why a follow-up like `"yes"`/`"do it"`/`"same for the other file"`
+classifies correctly using prior turns instead of reading as a context-free `chat` — the
+highest-risk behavior carried over from `Gate`, which always got history too.
 
-History: last 6 user/assistant turns from session messages prepended before user message.
+Prompt offers three tokens:
+- `CHAT` — answerable with no codebase access: greetings, identity/capability questions,
+  acknowledgments, general knowledge unrelated to this workspace; when unsure, `SOLO` instead (an
+  over-estimate just answers with the codebase available, harmless; an under-estimate wrongly skips
+  needed codebase access)
+- `SOLO` — a single small file, a few small edits, or a read/query; no specialist unit of work is
+  implied; the fallback rung when unsure between any two rungs
+- `MUTATE` — implementation-sized: multiple files/modules, or a distinct unit of work such as a full
+  module or a test suite; when unsure between `SOLO` and `MUTATE`, `SOLO` (an over-estimate just lets
+  the agent proceed solo, harmless; an under-estimate wrongly skips planning)
 
-Gate prompt offers two tokens:
-- `TRIVIAL` — answerable with no codebase access: greetings, identity/capability questions,
-  acknowledgments, general knowledge unrelated to this workspace. Conservative: prefer `ACT` when
-  unsure (false `ACT` costs only extra harness time; false `TRIVIAL` denies real codebase context)
-- `ACT` — everything else: reading, analysing, creating, editing, or deleting in the workspace;
-  unknown/malformed token also falls here — fail to action, not silence
+Output token → `ScopeEstimate` mapping: `"chat"`/`"solo"`/`"mutate"` (case-insensitive, first
+token only) map directly; any unparseable output, or an exception from the call itself, logs a
+warning and falls back to `ScopeEstimate(scope="solo")` — the safe middle rung, never `chat`
+(would skip needed codebase access) and never `mutate` (would spend a planning call on a greeting).
 
-Gate output token → Route mapping:
-- `"TRIVIAL"` → `Route(trivial=True)`
-- `"ACT"` / anything else → `Route()` — an unrecognized token logs a warning and falls to `Route()`,
-  never silent
+`Harness.stream()` (`agent/harness/core.py`) is the sole consumer: `mutate` (or a `seed`-derived
+`"seeded"` decision) routes into `_stream_graph()`; `chat` and `solo` both run root directly, no
+graph. The `chat` rung additionally drives dispatch (plan 34): when the caller passed no explicit
+`extra_params` override, `chat` resolves `effective_extra_params =
+resolve_thinking_params(root_dispatch_resolved.model, enabled=False)` — root's model's explicit
+thinking-*disable* payload (e.g. `{"extra_body": {"thinking": {"type": "disabled"}}}` for a
+DeepSeek-style model), not a bare `{}`. A bare `{}` means "unspecified" to a provider like
+DeepSeek, which then defaults to reasoning ON — plan 34 phase 1 found this live: root's classifier
+touchpoint (`Estimator`, FAST tier) was reasoning on every call despite being bound
+`thinking=False`, because nothing rendered that `False` into an actual provider parameter. `chat`
+also dispatches with `tools_override=frozenset()` — no tools registered for that turn (see
+`## Cross-Agent Dispatch` / `_build_agent`). `solo` and `mutate` use
+`root_dispatch_resolved.extra_params` (the SUPP/CORE tier's normal params, unaffected) — this is
+the "don't burn reasoning on a greeting" capability `Gate`'s `trivial` flag used to gate, now keyed
+off the Estimator's own rung instead.
 
-Verbatim file output is handled by the `<file_handling>` rule in `ROOT_SYSTEM_PROMPT`, not a dedicated route.
+Root's own no-tool-schema reasoning suppression on the `chat` rung comes from this same
+explicit-disable `extra_params` mechanism — not from having fewer (or no) tools registered. A live
+measurement (10 runs per config) found tool-schema presence has no causal effect on whether root
+reasons: tools-present+bare-`{}` reasoned 3/10 (stochastic), tools-removed+bare-`{}` reasoned
+10/10 (worse), and both tools-present+explicit-disable and tools-removed+explicit-disable (the
+shipped state) reasoned 0/10. Dropping the `chat` rung's tool schemas (`tools_override=frozenset()`)
+is a separate, purely prompt-token-reduction win (measured: `"hi"` dropped from ~2116 to 391
+prompt tokens), not a reasoning-suppression mechanism.
+
+Verbatim file output is handled by the `<file_handling>` rule in `ROOT_SYSTEM_PROMPT`, not a dedicated pipeline stage.
 
 ## Cross-Agent Dispatch
 There is no `delegate` tool and no `Harness`-registered tool for calling another agent — root
@@ -83,17 +116,18 @@ agent decides mid-turn. See `subagents.md → Harness` for the full sequencer→
 and `## Root` below for how root owns the turn around this execution.
 
 Pipeline (in TUI `_stream`):
-1. `Gate.gate()` → `Route` (`trivial` or not — see `## Gate`)
-2. `_run_step(user_input, seed, ..., trivial=route.trivial)` dispatches straight to `Harness.stream()`
-   — no locate/rewrite stage, no rejection path; an unrecognized `/`-slash agent name is a CLI/palette
-   concern, not something `Gate` or `Route` handles
+1. `_run_step(user_input, seed, ...)` dispatches straight to `harness_turn.run_step()` →
+   `GekaiAgent.process_stream()` → `Harness.stream()` — there is no separate pre-classification
+   stage; the Estimator call happens inside `Harness.stream()` itself (see `## Estimator`)
+2. no locate/rewrite stage, no rejection path; an unrecognized `/`-slash agent name is a CLI/palette
+   concern, not something the harness or `Estimator` handles
 
 ## Root
 Root is the session-owning unit — deployed first by the harness, present for the whole turn, never
 a task-graph step (`ROOT_AGENT` fails `parse_task_graph`'s roster check by construction: it is not
 in `SUBAGENTS`, so no `agent` value equal to `"root"` can ever pass `auto_assignable` validation).
-It is not a registry `Subagent` and is not in the Gate menu, sequencer roster, or palette — it is
-special-cased in `Harness`, not filtered out of three separate lists.
+It is not a registry `Subagent` and is not in the sequencer roster or palette — it is
+special-cased in `Harness`, not filtered out of two separate lists.
 
 Root owns two things:
 - **Warm context.** `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs)
@@ -114,15 +148,12 @@ always answerable.
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `Harness`
-Env vars (CORE — used by `Harness`'s root-dispatch/subagent-dispatch calls, and the `Sequencer`):
-- `GEKAI_CORE_MODEL_NAME` — model id, e.g. `deepseek-chat`
-- `GEKAI_CORE_MODEL_KEY`
-- `GEKAI_CORE_MODEL_URL` — e.g. `https://api.deepseek.com/v1`
-
-Env vars (SUPP — used by `Gate`; `GEKAI_SUPPORT_MODEL_NAME` and `GEKAI_SUPPORT_MODEL_KEY` are required; `GEKAI_SUPPORT_MODEL_URL` defaults to CORE equivalent if unset):
-- `GEKAI_SUPPORT_MODEL_NAME`
-- `GEKAI_SUPPORT_MODEL_KEY`
-- `GEKAI_SUPPORT_MODEL_URL`
+Every touchpoint (`estimator`/`sequencer`/`root-dispatch`/`subagent-dispatch`/`micro` —
+`agent/harness/touchpoints.py`) resolves to a model through the FAST/SUPP/CORE tier catalog +
+bindings (`agent/settings.py::load_model_catalog`/`load_tier_bindings`), configured via the TUI's
+`/tiers` grid — not raw env vars. `estimator` runs at a bare FAST (no mobility); `sequencer`
+defaults to CORE (mobile down to SUPP); `root-dispatch`/`subagent-dispatch` default to SUPP (mobile
+up to CORE) — see `harness/scaling.py` for the per-call tier-scaling mechanism.
 
 `agent/persona.py` splits identity from body so a subagent never stacks two "you are" claims:
 `_IDENTITY_ROOT` ("you are Gekai…") vs `_IDENTITY_SUB` ("you are part of Gekai… tool-neutral capability")
@@ -154,12 +185,14 @@ the effective tool set and assembles the final system string, for both modes:
 This guarantees the `<tools>` prompt always reflects the *effective, post-filter* set — not the
 subagent's bare declared allowlist — e.g. a read-only subagent's prompt omits all shell/edit guidance.
 
-`Harness.stream(session, user_input, permission_callback=None, subagent=None, extra_params=None)`
+`Harness.stream(session, user_input, permission_callback=None, subagent=None, extra_params=None, hidden_grant_callback=None, seed=None)`
 selects `system_base` by the `subagent` param — `ROOT_SYSTEM_PROMPT` (root, no-graph path) vs
-`subagent.build_system_base()` (spawn, cold nested run) — then calls `_build_agent`. `extra_params`: `None` (default)
-→ use `self._extra_params` (set at construction from `resolve_thinking_params`); explicit `{}` →
-no thinking params for this turn (the `TRIVIAL`-route case, set in `GekaiAgent.process_stream` via
-`extra_params={} if route.trivial else None`). Direct mode passes
+`subagent.build_system_base()` (spawn, cold nested run) — then calls `_build_agent`. `extra_params`
+resolution in the no-graph path (see `## Estimator`): an explicit argument always wins; otherwise
+the Estimator's `chat` rung yields `resolve_thinking_params(root_dispatch_resolved.model,
+enabled=False)` (root's model's explicit thinking-disable payload, plan 34 — not a bare `{}`) and
+every other rung yields `root_dispatch_resolved.extra_params` (the root-dispatch tier's resolved
+params). Direct mode passes
 `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages
 skipped, trailing user input excluded) + current input; spawn mode runs cold — `prior = []` +
 current input only, no recency context, no async/resume.
@@ -168,20 +201,29 @@ current input only, no recency context, no async/resume.
 **after** `_build_agent` returns (`agent.system` is the true assembled prompt, a mutable field on
 `llmstitch.Agent`; `effective_extra_params` is the value actually used this turn) — written to `.debug.jsonl`.
 
+The no-graph root path also streams answer text live (plan 34 Phase 2): `stream()`'s `_on_event`
+bridge passes `emit_text_chunks=True` into `_bridge_llm_event`, so each provider `TextDelta`
+(`agent/llm/agent.py::_run_loop`) becomes a `TextChunkReceived` bus event and then a
+`TextChunkEvent` the TUI renders incrementally. `_stream_graph()` never sets `emit_text_chunks=True`,
+so a graph-routed (`mutate`) turn emits zero `TextChunkEvent`s — its answer only ever appears as the
+one final assembled string, same as before plan 34. Either way the persisted answer comes from the
+completed history, never from the streamed chunks (display-only). See `subagents.md → Harness` for
+the full mechanism.
+
 ## Session Persistence
 Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`; each line is a timestamped entry with a `kind` field:
 
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
 {ts, kind:"command", content:"/clear"}                        ← slash command typed by user
-{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: gate, error, interrupted, farewell, max_iterations
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: command, error, interrupted, max_iterations
 ```
 
 Entries without `kind` (legacy files) default to `"turn"`.
 
 **Boundary — session vs debug:**
 `session.jsonl` = everything the user saw on screen (turns + commands + events). Litmus: *did the user see it?*
-`debug.jsonl` = internal plumbing (system prompts, route tokens) — written only with `--debug`, never for visual rebuild.
+`debug.jsonl` = internal plumbing (system prompts, `extra_params`, tool calls/results) — written only with `--debug`, never for visual rebuild.
 
 **Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`.
 
@@ -208,7 +250,8 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 
 ## CLI Flags
 - `--debug` — writes the assembled system prompt, `extra_params`, and every tool call/result to
-  `.debug.jsonl` (`append_debug`, see `## Session Persistence`); the gate's `trivial`/`act` decision
-  is separately emitted as a `"route"` telemetry event (`agent/tui/app.py`), not rendered in the TUI
+  `.debug.jsonl` (`append_debug`, see `## Session Persistence`); the Estimator's `chat`/`solo`/`mutate`
+  decision is separately emitted as an `"estimate"` telemetry event (`agent/harness/turn.py::run_step`),
+  not rendered in the TUI
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

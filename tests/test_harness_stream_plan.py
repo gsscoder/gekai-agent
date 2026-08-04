@@ -166,7 +166,7 @@ def _capturing_sequencer_init(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 def test_trivial_estimate_skips_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
     plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run on trivial"))
     _patch_sequencer_sequence(monkeypatch, plan_mock)
     _ScriptedAdapter.responses = [
@@ -183,7 +183,7 @@ def test_trivial_estimate_skips_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 def test_mutate_estimate_routes_through_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="build a library with tests",
         steps=[
@@ -234,7 +234,7 @@ def test_seed_routes_through_sequencer_even_without_mutate_estimate(
 
 def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(summary="build something", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
@@ -270,7 +270,7 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
     # a ScaleEvent is yielded for the adjusted step only (core.py's
     # `dispatch()`: `if tier != policy.default: queue.put_nowait(ScaleEvent(...))`).
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="two specialist steps",
         steps=[
@@ -344,7 +344,7 @@ def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.Mon
     # own configured default (CORE): the `Sequencer` is built from the
     # CORE-resolved config, and no sequencer ScaleEvent is yielded.
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     sequencer_calls = _capturing_sequencer_init(monkeypatch)
     graph = TaskGraph(
         summary="login + tests",
@@ -377,7 +377,7 @@ def test_single_agent_path_never_scales_or_emits_scale_event(
     # `_make_scaling_harness` fixture is the exact one that does trigger
     # ScaleEvents on the graph path above.
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=False))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
     plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run on trivial"))
     _patch_sequencer_sequence(monkeypatch, plan_mock)
 
@@ -432,7 +432,7 @@ def test_graph_step_scope_read_excludes_write_tools_for_full_ceiling_agent(
     # agent post-plan-32-Phase-3, so a full-ceiling subagent is the
     # equivalent case for scope narrowing all the way down to "read".
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="read only",
         steps=[Task(agent="omni-worker", instruction="read stuff", mission="read stuff", scope="read")],
@@ -460,7 +460,7 @@ def test_graph_step_scope_fs_gets_full_tools_for_full_ceiling_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="full access",
         steps=[Task(agent="omni-worker", instruction="do anything", mission="do anything", scope="fs")],
@@ -483,7 +483,7 @@ def test_graph_step_scope_none_gets_full_tools_for_full_ceiling_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="no signal",
         steps=[Task(agent="omni-worker", instruction="do it", mission="do it", scope=None)],
@@ -506,7 +506,7 @@ def test_graph_step_scope_read_excludes_write_tools_for_subagent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(mutate=True))
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
         summary="read only",
         steps=[Task(agent="code-expert", instruction="read stuff", mission="read stuff", scope="read")],
