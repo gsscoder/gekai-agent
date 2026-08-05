@@ -11,7 +11,11 @@ class ModelCaps:
     # Realizability (plan 28 hard problem 1): effort and thinking are not
     # independent axes on every provider. `can_disable_thinking=False` means
     # `reasoning_effort` IMPLIES thinking — there is no non-thinking mode
-    # (o-series, DeepSeek); such a model can never be bound to FAST/SUPP.
+    # (o-series is the known example; DeepSeek was wrongly assumed to be one
+    # too until a live probe — real credentials, real sequencer prompt, 3
+    # runs/variant — showed `deepseek-v4-pro` returns `reasoning_content` of
+    # length 0 under `extra_body={"thinking": {"type": "disabled"}}` and
+    # still produces valid output, ~7x faster; see MODEL_CAPS below).
     # `effort_requires_thinking=True` means the effort ladder has no
     # observable realization without thinking — a non-thinking call carries
     # no effort-differentiated params (current Anthropic case: effort is
@@ -24,8 +28,16 @@ MODEL_CAPS: dict[str, ModelCaps] = {
     # DeepSeek only for now (confirmed in this project's tests/.env.test) —
     # other providers need credentials this project hasn't tested against yet;
     # add them back once actually exercised, not as untested examples.
+    # can_disable_thinking=True: confirmed by live probe (real credentials,
+    # real sequencer prompt, 3 runs/variant) — `thinking: {"type": "disabled"}`
+    # yields reasoning_content of length 0 and still valid task-graph output,
+    # median 13.2s vs 90.7s with thinking on. effort_requires_thinking=False:
+    # the same probe's two thinking-off variants (with vs. without an
+    # explicit `reasoning_effort`) produced different, valid outputs, so the
+    # effort ladder does have some observable realization without thinking —
+    # unlike the Anthropic case this flag was written for.
     "deepseek-v4-pro":   ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high",
-                                    can_disable_thinking=False, effort_requires_thinking=True),
+                                    can_disable_thinking=True, effort_requires_thinking=False),
     # this project's actual FAST/SUPP-tier model — bound with thinking=False,
     # but empirically it reasons on every call unless explicitly told not to
     # (an absent `thinking` param means "unspecified" to the DeepSeek API,
@@ -84,8 +96,8 @@ def resolve_thinking_params(model: str, effort: str | None = None, *, enabled: b
 def thinking_realizable(model: str, thinking: bool) -> bool:
     """Pure check (plan 28 Phase 0, inert): can `model` actually run with the
     requested thinking state? False only when the model has no thinking-off
-    mode (`can_disable_thinking=False`, e.g. o-series/DeepSeek) and
-    `thinking=False` is requested. Not wired into any dispatch path yet —
+    mode (`can_disable_thinking=False`, e.g. o-series) and `thinking=False`
+    is requested. Not wired into any dispatch path yet —
     Phase 1/2 consult this when resolving a component's tier point against
     real model realizability (hard problem 1).
     """

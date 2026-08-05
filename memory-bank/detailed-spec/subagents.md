@@ -45,7 +45,9 @@ in place, reset per turn). The graph/subagent-step path (`Harness._stream_graph`
 > classifies scope, on a `chat`/`solo`/`mutate` ordinal scale (see `architecture.md → Estimator`;
 > `Gate`, a separate classifier this once ran alongside, was folded into the `Estimator` and deleted,
 > plan 33). A `mutate`-estimated turn routes into
-> `Harness._stream_graph()`: `Sequencer.sequence()` makes one CORE-tier call and returns a validated
+> `Harness._stream_graph()`: `Sequencer.sequence()` makes one CORE-tier call (CORE's model/credential,
+> but the `sequencer` touchpoint's own `effort="high", thinking=False` — see
+> `architecture.md → LLM Integration → Tier binding vs touchpoint operating point`) and returns a validated
 > `TaskGraph` where every step is assigned to an `auto_assignable` roster specialist — never to
 > root (`parse_task_graph` rejects `ROOT_AGENT` as a step `agent`). `agent/harness/interpreter.py`'s
 > `run_task_graph()` then walks the graph deterministically (`execute → verify → repair → halt`),

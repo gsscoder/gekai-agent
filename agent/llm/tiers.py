@@ -40,10 +40,15 @@ def _effort_index(effort: str) -> int:
 class TierPolicy:
     """A component's tier mobility: an ordered, ascending array of tiers the
     harness may run it at, plus which one is the configured default absent
-    any assignment-time scaling. Effort/thinking are NOT a per-component axis
-    — they come entirely from the tier's own global binding (TierBinding).
-    A degenerate space (len(allowed) == 1) is how a non-scalable component
-    is expressed — no separate freeze flag."""
+    any assignment-time scaling. A tier binding decides WHICH model (and
+    credential) fills the slot; effort/thinking default to that binding's
+    values but are a per-component axis after all — a touchpoint may declare
+    its own (`Touchpoint.effort`/`.thinking`), because how hard to run a model
+    for one specific harness job is an engineering decision belonging next to
+    the touchpoint, not a knob a user retunes in `/tiers` per workload (the
+    sequencer is the standing case: CORE's model at effort=high, thinking
+    off). A degenerate space (len(allowed) == 1) is how a non-scalable
+    component is expressed — no separate freeze flag."""
     default: TierName
     allowed: tuple[TierName, ...]  # ascending by tier rank (FAST < SUPP < CORE); default must be a member
 
@@ -86,9 +91,12 @@ class TierSuitability:
 # alarm on a model we simply haven't rated yet). DeepSeek only for now —
 # see the note on MODEL_CAPS.
 MODEL_SUITABILITY: dict[str, TierSuitability] = {
-    # reasoning-only (can_disable_thinking=False in model_caps.py) can never
-    # actually run non-thinking, so FAST/SUPP aren't merely suboptimal —
-    # they're structurally unrealizable; rated deprecated, not warning.
+    # A live probe (see model_caps.py's MODEL_CAPS comment) confirmed
+    # deepseek-v4-pro CAN disable thinking (can_disable_thinking=True), so
+    # FAST/SUPP are no longer structurally unrealizable — these ratings are a
+    # cost/latency judgment (this model is ~7x slower with thinking on, and
+    # thinking-off behavior at these tiers hasn't been evaluated), not a
+    # realizability one. Left as deprecated/warning pending that evaluation.
     "deepseek-v4-pro":    TierSuitability(fast="deprecated", supp="warning", core="ok"),
     # this project's actual FAST- and SUPP-tier model.
     "deepseek-v4-flash":  TierSuitability(fast="ok", supp="ok", core="warning"),

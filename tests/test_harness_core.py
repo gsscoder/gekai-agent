@@ -153,7 +153,7 @@ def _make_harness(estimator: ResolvedTier | None = None) -> Harness:
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     return Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
@@ -323,7 +323,7 @@ def test_chat_scope_strips_extra_params(
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     harness = Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
@@ -353,7 +353,7 @@ def test_solo_scope_keeps_tier_extra_params(
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     harness = Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
@@ -383,7 +383,7 @@ def test_explicit_extra_params_override_wins_over_chat_scope(
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     harness = Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
@@ -424,7 +424,7 @@ def test_chat_scope_uses_explicit_disable_payload_not_bare_dict(
     tier = ResolvedTier(model="deepseek-v4-flash", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     harness = Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
@@ -463,7 +463,7 @@ def test_chat_rung_registers_zero_tools(
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     harness = Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
@@ -500,7 +500,7 @@ def test_solo_rung_still_registers_normal_tool_set(
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     harness = Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,

@@ -187,7 +187,7 @@ def _build_agent(
 class Harness:
     def __init__(
         self,
-        resolve: Callable[[TierName], ResolvedTier],
+        resolve: Callable[[TierName, str], ResolvedTier],
         sequencer_policy: TierPolicy,
         root_dispatch_policy: TierPolicy,
         subagent_dispatch_policy: TierPolicy,
@@ -200,9 +200,12 @@ class Harness:
         # this resolver closure (over the current catalog+bindings) plus
         # each touchpoint's declared `TierPolicy`, so a dispatch site can
         # pick a tier per call (`scale(policy, signal)`) and resolve it fresh
-        # (`resolve(tier)`). `estimator` stays optional and still frozen: it
-        # is not one of the scaled components — tests that don't wire one get
-        # the old flat behavior (pre-plan-27 "trivial"). Root's synthesis
+        # (`resolve(tier, touchpoint_name)` — the touchpoint name travels with
+        # the tier because `scale()` throws the touchpoint's identity away,
+        # and its declared operating point must survive tier movement).
+        # `estimator` stays optional and still frozen: it is not one of the
+        # scaled components — tests that don't wire one get the old flat
+        # behavior (pre-plan-27 "trivial"). Root's synthesis
         # (`_respond`) runs at `root_dispatch_policy` like any other
         # root-dispatch call (plan 32 Phase 3: root absorbs the Responder,
         # which had its own separate frozen tier).
@@ -271,7 +274,7 @@ class Harness:
         if pumped_domains:
             yield DirectivePumpEvent(domains=pumped_domains)
 
-        root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default)
+        root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
         chat_rung = estimate_decision == "chat"
         if extra_params is not None:
             effective_extra_params = extra_params
@@ -396,7 +399,7 @@ class Harness:
         # `Task.verify` to read yet) — demotes CORE->SUPP on a clearly-easy
         # request, otherwise stays at the configured default.
         sequencer_tier, sequencer_reason = scale(self._sequencer_policy, _sequencer_signal(user_input))
-        resolved_sequencer = self._resolve(sequencer_tier)
+        resolved_sequencer = self._resolve(sequencer_tier, "sequencer")
         if sequencer_tier != self._sequencer_policy.default:
             yield ScaleEvent(
                 component="sequencer",
@@ -426,7 +429,7 @@ class Harness:
 
         def _scale_and_resolve(policy, component, signal):
             tier, reason = scale(policy, signal)
-            resolved = self._resolve(tier)
+            resolved = self._resolve(tier, component)
             if tier != policy.default:
                 queue.put_nowait(ScaleEvent(
                     component=component,
@@ -532,7 +535,7 @@ class Harness:
         wrap-up."""
         t0 = time.monotonic()
         try:
-            resolved = self._resolve(self._root_dispatch_policy.default)
+            resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
             system_base, _pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
             system_base = _enrich_system_base(system_base, session.working_dir)
             agent = _build_agent(

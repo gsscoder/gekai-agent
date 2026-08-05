@@ -44,8 +44,9 @@ def test_policy_rejects_invalid_configuration(
     "model, tier, expected",
     [
         ("some-unlisted-model", TierName.CORE, "ok"),
-        # deepseek-v4-flash is the FAST/SUPP-tier model, deepseek-v4-pro is
-        # reasoning-only (can't disable thinking) so FAST/SUPP are deprecated.
+        # deepseek-v4-flash is the FAST/SUPP-tier model; deepseek-v4-pro can
+        # disable thinking (confirmed by live probe) but is still rated
+        # deprecated/warning there pending a cost/latency evaluation.
         ("deepseek-v4-flash", TierName.FAST, "ok"),
         ("deepseek-v4-flash", TierName.CORE, "warning"),
         ("deepseek-v4-pro", TierName.FAST, "deprecated"),

@@ -94,15 +94,17 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
     # what a no-signal (unscaled) dispatch resolves to, matching Phase 1b's
     # frozen behavior exactly.
     assert agent._main._sequencer_policy.default is TierName.CORE
-    assert agent._main._resolve(agent._main._sequencer_policy.default).model == "core-model"
+    assert agent._main._resolve(agent._main._sequencer_policy.default, "sequencer").model == "core-model"
 
     assert agent._main._root_dispatch_policy.default is TierName.SUPP
-    root_dispatch_resolved = agent._main._resolve(agent._main._root_dispatch_policy.default)
+    root_dispatch_resolved = agent._main._resolve(agent._main._root_dispatch_policy.default, "root-dispatch")
     assert root_dispatch_resolved.model == "supp-model"
     assert root_dispatch_resolved.api_key == "key-for-supp-supp-model-low-n"
 
     assert agent._main._subagent_dispatch_policy.default is TierName.SUPP
-    subagent_dispatch_resolved = agent._main._resolve(agent._main._subagent_dispatch_policy.default)
+    subagent_dispatch_resolved = agent._main._resolve(
+        agent._main._subagent_dispatch_policy.default, "subagent-dispatch"
+    )
     assert subagent_dispatch_resolved.model == "supp-model"
     assert subagent_dispatch_resolved.api_key == "key-for-supp-supp-model-low-n"
 

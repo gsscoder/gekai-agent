@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from agent.harness.touchpoints import TOUCHPOINTS
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
 from agent.llm.resolve import TierResolutionError, all_tiers_ready, resolve_tier, resolve_touchpoint, tier_status
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName, TierSuitability
+from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierSuitability
 
 
 CATALOG = {
@@ -76,6 +77,95 @@ def test_resolve_touchpoint_uses_nominal_tier(monkeypatch):
     }
     resolved = resolve_touchpoint("estimator", CATALOG, bindings)  # estimator is nominal FAST
     assert resolved.model == "flash"
+
+
+# --- per-touchpoint operating point (effort/thinking declared in code, on
+# top of the tier binding that supplies the model + credentials) ---
+
+
+def _record_credential_keys(monkeypatch) -> list[str]:
+    seen: list[str] = []
+
+    def _has_api_key(name: str) -> bool:
+        seen.append(name)
+        return True
+
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", _has_api_key)
+    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
+    return seen
+
+
+def test_touchpoint_override_changes_params_but_never_the_credential_key(monkeypatch):
+    # CRITICAL constraint: the keyring account name names what the user
+    # actually stored via `/tiers` — the *binding's* operating point. Building
+    # it from the code-side override instead would miss every stored key and
+    # make each override demand a fresh `/tiers` entry, which is exactly the
+    # churn per-touchpoint operating points exist to avoid.
+    keys_seen = _record_credential_keys(monkeypatch)
+    monkeypatch.setitem(MODEL_CAPS, "pro", ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high"))
+    bindings = {TierName.CORE: TierBinding(model="pro", default_effort="xhigh", thinking=True)}
+
+    resolved = resolve_touchpoint("sequencer", CATALOG, bindings)  # declares effort="high", thinking=False
+
+    assert keys_seen == ["core-pro-xhigh-y"], "credential lookup must use the binding's effort/thinking"
+    assert resolved.api_key == "key-for-core-pro-xhigh-y"
+    assert resolved.model == "pro"  # the binding still decides *which* model
+    assert resolved.extra_params == {"extra_body": {"thinking": {"type": "disabled"}}}
+
+
+def test_touchpoint_without_an_override_resolves_identically_to_its_bare_tier(monkeypatch):
+    # Regression guard for every touchpoint but the sequencer: declaring no
+    # operating point must resolve byte-identically to resolving its tier
+    # directly, exactly as before per-touchpoint overrides existed.
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
+    bindings = {
+        TierName.FAST: TierBinding(model="flash", default_effort="low"),
+        TierName.SUPP: TierBinding(model="flash", default_effort="medium"),
+        TierName.CORE: TierBinding(model="pro", default_effort="high", thinking=True),
+    }
+    plain = [t for t in TOUCHPOINTS if t.effort is None and t.thinking is None]
+    assert {t.name for t in plain} == {"estimator", "root-dispatch", "subagent-dispatch", "micro"}
+    for tp in plain:
+        assert resolve_touchpoint(tp.name, CATALOG, bindings) == resolve_tier(tp.nominal_tier, CATALOG, bindings), tp.name
+
+
+def test_touchpoint_override_follows_whatever_tier_scaling_landed_on(monkeypatch):
+    # `scale()` may demote the sequencer CORE->SUPP; its declared operating
+    # point must then apply to whatever model SUPP resolves to, not silently
+    # revert to that binding's own effort/thinking.
+    keys_seen = _record_credential_keys(monkeypatch)
+    asked: list[tuple] = []
+
+    def _spy(model: str, effort: str | None = None, *, enabled: bool = True) -> dict:
+        asked.append((model, effort, enabled))
+        return {}
+
+    monkeypatch.setattr("agent.llm.resolve.resolve_thinking_params", _spy)
+    catalog = dict(CATALOG)
+    catalog["flash"] = ModelCatalogEntry(
+        name="flash", base_url="https://api.example.com", efforts=EFFORT_LADDER, thinking=False
+    )
+    bindings = {TierName.SUPP: TierBinding(model="flash", default_effort="low")}
+
+    resolved = resolve_tier(TierName.SUPP, catalog, bindings, "sequencer")
+
+    assert resolved.model == "flash"  # the demoted tier's model...
+    assert asked == [("flash", "high", False)]  # ...operated at the sequencer's own point
+    assert keys_seen == ["supp-flash-low-n"]  # ...on the demoted tier's own credential
+
+
+def test_touchpoint_override_effort_the_model_does_not_declare_fails_loud(monkeypatch):
+    # House style is a chat-visible TierResolutionError, never a silent
+    # fallback to some nearby effort the model does declare.
+    _record_credential_keys(monkeypatch)
+    catalog = dict(CATALOG)
+    catalog["pro"] = ModelCatalogEntry(
+        name="pro", base_url="https://api.example.com", efforts=("xhigh", "max"), thinking=True
+    )
+    bindings = {TierName.CORE: TierBinding(model="pro", default_effort="xhigh", thinking=True)}
+    with pytest.raises(TierResolutionError, match="'sequencer' asks for effort 'high'"):
+        resolve_touchpoint("sequencer", catalog, bindings)
 
 
 def test_tier_status_no_binding():

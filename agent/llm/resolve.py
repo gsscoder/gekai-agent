@@ -4,8 +4,9 @@ credential + `model_caps` realizability on top of each other; every failure
 mode is a `TierResolutionError` (chat-visible, never a silent fallback —
 plan 28 decision 3/3b).
 
-Static only: returns the tier's own configured default_effort/thinking.
-Per-dispatch scaling within a component's declared space is Phase 2.
+Returns the tier's own configured default_effort/thinking, unless the
+touchpoint being resolved declares its own operating point — see
+`resolve_tier`'s `touchpoint_name`.
 """
 
 from __future__ import annotations
@@ -35,7 +36,14 @@ def resolve_tier(
     tier: TierName,
     catalog: dict[str, ModelCatalogEntry],
     bindings: dict[TierName, TierBinding],
+    touchpoint_name: str | None = None,
 ) -> ResolvedTier:
+    """Turn a tier name into runnable API params. `touchpoint_name`, when
+    given, additionally applies that touchpoint's own operating point
+    (`Touchpoint.effort`/`.thinking`) on top of the binding — the binding
+    still decides WHICH model and WHICH credential, the touchpoint only
+    decides HOW that model is operated for its job. Passing a touchpoint that
+    declares no override resolves exactly as passing none at all."""
     binding = bindings.get(tier)
     if binding is None:
         raise TierResolutionError(f"tier {tier.value!r} is not configured — run /tiers")
@@ -43,16 +51,28 @@ def resolve_tier(
         validate_binding(tier, binding, catalog)
     except ValueError as exc:
         raise TierResolutionError(f"tier {tier.value!r} binding is stale: {exc}") from exc
+    # Deliberately built from the *binding's* operating point, never the
+    # touchpoint's: the key names what the user actually stored via /tiers, so
+    # a code-side override must not send credential lookup hunting for a key
+    # nobody was ever asked for (which would demand a fresh /tiers entry per
+    # override — precisely the churn overrides exist to avoid).
     cred_key = credentials.credential_key(tier.value, binding.model, binding.default_effort, binding.thinking)
     if not credentials.has_api_key(cred_key):
         raise TierResolutionError(f"no stored credential for tier {tier.value!r} — run /tiers")
     entry = catalog[binding.model]
-    extra_params = resolve_thinking_params(binding.model, binding.default_effort, enabled=binding.thinking)
+    tp = touchpoint(touchpoint_name) if touchpoint_name is not None else None
+    effort = binding.default_effort if tp is None or tp.effort is None else tp.effort
+    thinking = binding.thinking if tp is None or tp.thinking is None else tp.thinking
+    if effort not in entry.efforts:
+        raise TierResolutionError(
+            f"touchpoint {touchpoint_name!r} asks for effort {effort!r}, which is not among "
+            f"{binding.model!r}'s declared efforts {entry.efforts}"
+        )
     return ResolvedTier(
         model=binding.model,
         api_key=credentials.get_api_key(cred_key),
         api_base=entry.base_url,
-        extra_params=extra_params,
+        extra_params=resolve_thinking_params(binding.model, effort, enabled=thinking),
     )
 
 
@@ -61,11 +81,11 @@ def resolve_touchpoint(
     catalog: dict[str, ModelCatalogEntry],
     bindings: dict[TierName, TierBinding],
 ) -> ResolvedTier:
-    """`touchpoint(name).nominal_tier` is the static rule (plan 28 Phase 1b) —
-    the sequencer is the only CORE-tier touchpoint today, so it's the only
-    one that ever picks up thinking, purely as a consequence of the CORE
-    binding's own `thinking` flag. No per-touchpoint override yet."""
-    return resolve_tier(touchpoint(name).nominal_tier, catalog, bindings)
+    """`touchpoint(name).nominal_tier` is the static rule (plan 28 Phase 1b),
+    at that touchpoint's own declared operating point. The scaled dispatch
+    sites can't use this — `scale()` has already picked a tier by then — so
+    they call `resolve_tier(tier, ..., touchpoint_name=name)` directly."""
+    return resolve_tier(touchpoint(name).nominal_tier, catalog, bindings, name)
 
 
 @dataclass(frozen=True)

@@ -220,7 +220,7 @@ def _make_respond_harness() -> Harness:
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     return Harness(
-        resolve=lambda _tier: tier,
+        resolve=lambda _tier, _touchpoint: tier,
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,

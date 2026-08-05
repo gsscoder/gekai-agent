@@ -103,8 +103,11 @@ class GekaiAgent:
         # resolved above at `policy.default` (kept only for `run.start`
         # telemetry, below). Rebuilt fresh every call so a `/tiers` save
         # mid-session is picked up the same way the frozen values used to be.
-        def _resolve(tier: TierName) -> ResolvedTier:
-            return resolve_tier(tier, catalog, bindings)
+        # The touchpoint name rides along so a touchpoint's own operating
+        # point (effort/thinking) still applies at whatever tier `scale()`
+        # picked — the tier alone no longer says who is being resolved.
+        def _resolve(tier: TierName, touchpoint_name: str) -> ResolvedTier:
+            return resolve_tier(tier, catalog, bindings, touchpoint_name)
 
         self._main = Harness(
             resolve=_resolve,

@@ -17,9 +17,10 @@ import pytest
 from agent.events import DoneEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
+from agent.llm.model_caps import MODEL_CAPS, ModelCaps
 from agent.llm.providers.base import ProviderAdapter
-from agent.llm.resolve import ResolvedTier
-from agent.llm.tiers import TierName, TierPolicy
+from agent.llm.resolve import ResolvedTier, resolve_tier
+from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierPolicy
 from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
@@ -49,7 +50,9 @@ def _make_harness() -> Harness:
     `_stream_graph()` instead of `__init__`) still resolves to the exact
     same config these tests were written against."""
     return _make_scaling_harness(
-        lambda _tier: ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
+        lambda _tier, _touchpoint: ResolvedTier(
+            model="test-model", api_key="key", api_base="http://localhost", extra_params={}
+        )
     )
 
 
@@ -101,14 +104,14 @@ class _ScriptedAdapter(ProviderAdapter):
 # functions (tests/test_scaling.py).
 
 
-def _tier_distinguishing_resolve(tier: TierName) -> ResolvedTier:
+def _tier_distinguishing_resolve(tier: TierName, touchpoint_name: str) -> ResolvedTier:
     """Fake resolver returning a distinguishable `.model` per tier (SUPP vs
     CORE), so a test can assert which tier a dispatch actually resolved and
     used."""
     return ResolvedTier(model=f"{tier.value}-model", api_key="key", api_base=None, extra_params={})
 
 
-def _make_scaling_harness(resolve: Callable[[TierName], ResolvedTier]) -> Harness:
+def _make_scaling_harness(resolve: Callable[[TierName, str], ResolvedTier]) -> Harness:
     """Like `_make_harness`, but takes a caller-supplied `resolve` instead of
     a flat one, so scaling tests can tell which tier a dispatch used."""
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
@@ -363,6 +366,59 @@ def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.Mon
     assert sequencer_calls[0]["model"] == "core-model", "Sequencer should stay on the CORE-resolved config"
     sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
     assert sequencer_events == []
+
+
+def test_each_touchpoint_resolves_at_its_own_operating_point(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: the touchpoint identity survives the trip through `scale()` — the
+    # resolver closure is handed a tier *and* a touchpoint name, so the
+    # sequencer runs CORE's model thinking-off while a subagent dispatch
+    # promoted onto that same CORE tier still gets the binding's thinking-on
+    # operating point. Uses the real `resolve_tier`, not a fake resolver.
+    catalog = {
+        "supp-model": ModelCatalogEntry(name="supp-model", base_url=None, efforts=EFFORT_LADDER, thinking=False),
+        "core-model": ModelCatalogEntry(name="core-model", base_url=None, efforts=EFFORT_LADDER, thinking=True),
+    }
+    bindings = {
+        TierName.SUPP: TierBinding(model="supp-model", default_effort="low"),
+        TierName.CORE: TierBinding(model="core-model", default_effort="max", thinking=True),
+    }
+    monkeypatch.setitem(MODEL_CAPS, "supp-model", ModelCaps(thinking_style="deepseek"))
+    monkeypatch.setitem(MODEL_CAPS, "core-model", ModelCaps(thinking=True, thinking_style="deepseek"))
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "key")
+    resolved_at: list[tuple[str, str, dict]] = []
+
+    def _resolve(tier: TierName, touchpoint_name: str) -> ResolvedTier:
+        resolved = resolve_tier(tier, catalog, bindings, touchpoint_name)
+        resolved_at.append((touchpoint_name, resolved.model, resolved.extra_params))
+        return resolved
+
+    harness = _make_scaling_harness(_resolve)
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    sequencer_calls = _capturing_sequencer_init(monkeypatch)
+    graph = TaskGraph(
+        summary="login + tests",
+        steps=[Task(agent="code-expert", instruction="do it", mission="do it", verify="mechanical")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+
+    _RecordingAdapter.instances = []
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "add a login endpoint and write tests for it"))
+
+    thinking_off = {"extra_body": {"thinking": {"type": "disabled"}}}
+    thinking_on = {"reasoning_effort": "max", "extra_body": {"thinking": {"type": "enabled"}}}
+    assert sequencer_calls[0]["model"] == "core-model"
+    assert sequencer_calls[0]["extra_params"] == thinking_off, "sequencer declares thinking=False"
+    # verify="mechanical" promotes the step's dispatch SUPP->CORE: same tier,
+    # same model as the sequencer above, but no declared operating point of
+    # its own, so it keeps CORE's binding.
+    assert ("subagent-dispatch", "core-model", thinking_on) in resolved_at
+    assert ("root-dispatch", "supp-model", thinking_off) in resolved_at  # SUPP binding is thinking-off
 
 
 def test_single_agent_path_never_scales_or_emits_scale_event(

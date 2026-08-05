@@ -29,6 +29,14 @@ def test_unknown_model_only_realizes_non_thinking() -> None:
     assert thinking_realizable("some-unlisted-model", thinking=True) is False
 
 
+def test_deepseek_v4_pro_can_disable_thinking() -> None:
+    # Live probe (real credentials, real sequencer prompt, 3 runs/variant)
+    # confirmed deepseek-v4-pro returns reasoning_content of length 0 under
+    # `thinking: {"type": "disabled"}` and still produces valid output — it
+    # is not a reasoning-only model like o-series.
+    assert thinking_realizable("deepseek-v4-pro", thinking=False) is True
+
+
 def test_resolve_thinking_params_disabled_deepseek_style_is_explicit_off(monkeypatch: pytest.MonkeyPatch) -> None:
     # plan 34 phase 1: `enabled=False` must resolve to an explicit disable
     # payload, not `{}` — a bare `{}` is "unspecified" to DeepSeek, which

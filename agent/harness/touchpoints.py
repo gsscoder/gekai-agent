@@ -28,6 +28,15 @@ class Touchpoint:
     # run at a bare `nominal_tier` with no mobility. When set, `policy.default`
     # is expected to equal `nominal_tier`.
     policy: TierPolicy | None = None
+    # The touchpoint's own operating point, applied on top of whatever tier it
+    # resolves at: the tier binding says WHICH model + credentials fill the
+    # capability slot (user config, /tiers), the touchpoint says HOW to operate
+    # that model for this particular job (harness engineering, code). `None` =
+    # inherit the binding's value, which is what every touchpoint but the
+    # sequencer does. Never used to build the credential key — that stays keyed
+    # on the binding's configured operating point (see resolve.py).
+    effort: str | None = None
+    thinking: bool | None = None
 
 
 TOUCHPOINTS: tuple[Touchpoint, ...] = (
@@ -37,6 +46,17 @@ TOUCHPOINTS: tuple[Touchpoint, ...] = (
         "build the task graph (formerly 'planner')",
         TierName.CORE,
         policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
+        # Sequencing is a short, structured JSON emission, not open-ended
+        # reasoning: a live probe (real credentials, real sequencer prompt)
+        # measured thinking-ON at a median 90.7s (10k-26k reasoning chars)
+        # against thinking-OFF at 13.2s with equally good — occasionally
+        # better — task graphs. Inheriting CORE's binding wholesale made
+        # planning cost about as much as the execution it plans, and the only
+        # user-facing fix was toggling CORE's thinking flag, which is a model-
+        # capability knob, not a per-workload one. So the sequencer declares
+        # its own operating point here while still taking CORE's model+creds.
+        effort="high",
+        thinking=False,
     ),
     Touchpoint(
         "root-dispatch",

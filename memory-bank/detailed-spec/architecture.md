@@ -155,6 +155,21 @@ bindings (`agent/settings.py::load_model_catalog`/`load_tier_bindings`), configu
 defaults to CORE (mobile down to SUPP); `root-dispatch`/`subagent-dispatch` default to SUPP (mobile
 up to CORE) — see `harness/scaling.py` for the per-call tier-scaling mechanism.
 
+**Tier binding vs touchpoint operating point.** A tier binding (`/tiers`, user config) decides
+WHICH model + credential fills a capability slot (FAST/SUPP/CORE); a `Touchpoint` (code,
+`agent/harness/touchpoints.py`) decides HOW that model is operated for its specific job —
+`Touchpoint.effort`/`.thinking`, `None` meaning "inherit the binding's value" (every touchpoint
+but `sequencer` today). `resolve_tier(tier, ..., touchpoint_name=...)` (`agent/llm/resolve.py`)
+applies the touchpoint's override to `extra_params` only; the credential lookup (`credentials.credential_key`)
+always keys on the *binding's* configured `default_effort`/`thinking`, never the override — an
+override must not require a fresh `/tiers` entry to have a stored key. `sequencer` is the standing
+case: it inherits CORE's model/credential but declares `effort="high", thinking=False` on itself,
+because a live probe found CORE's own thinking-on default cost ~90s median to sequence a small JSON
+task graph vs ~13s with thinking off, at equal-or-better plan quality — and fixing that via `/tiers`
+would mean turning CORE's thinking off for every CORE-tier call, not just sequencing. `TierPolicy`
+(`agent/llm/tiers.py`) documents the same split: effort/thinking default to the binding's values but
+are a per-touchpoint axis, not a per-workload `/tiers` knob.
+
 `agent/persona.py` splits identity from body so a subagent never stacks two "you are" claims:
 `_IDENTITY_ROOT` ("you are Gekai…") vs `_IDENTITY_SUB` ("you are part of Gekai… tool-neutral capability")
 vs `_SHARED_BODY` (meta-rule + behavior/file_handling/response_style/output_format, reused verbatim).

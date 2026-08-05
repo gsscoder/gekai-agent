@@ -45,3 +45,14 @@ def test_scaled_touchpoints_carry_the_expected_policy() -> None:
 def test_unscaled_touchpoints_have_no_policy() -> None:
     assert touchpoint("estimator").policy is None
     assert touchpoint("micro").policy is None
+
+
+def test_only_the_sequencer_declares_its_own_operating_point() -> None:
+    # The sequencer emits a short structured JSON graph — measured 90.7s
+    # median at CORE's thinking-on binding vs 13.2s thinking-off for equal or
+    # better graphs. Every other touchpoint inherits its binding's operating
+    # point (effort/thinking both None), unchanged.
+    assert (touchpoint("sequencer").effort, touchpoint("sequencer").thinking) == ("high", False)
+    for name in ("estimator", "root-dispatch", "subagent-dispatch", "micro"):
+        assert touchpoint(name).effort is None, name
+        assert touchpoint(name).thinking is None, name
