@@ -232,6 +232,7 @@ Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
 {ts, kind:"command", content:"/clear"}                        ← slash command typed by user
 {ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: command, error, interrupted, max_iterations
+{ts, kind:"compact", content:"<summary>"}                     ← /compact boundary; supersedes every turn before it
 ```
 
 Entries without `kind` (legacy files) default to `"turn"`.
@@ -240,11 +241,11 @@ Entries without `kind` (legacy files) default to `"turn"`.
 `session.jsonl` = everything the user saw on screen (turns + commands + events). Litmus: *did the user see it?*
 `debug.jsonl` = internal plumbing (system prompts, `extra_params`, tool calls/results) — written only with `--debug`, never for visual rebuild.
 
-**Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`.
+**Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`; `append_compact(session, summary)` → `kind:"compact"`.
 
 **Two readers:**
-- `load_session(id)` → `(session_id, working_dir, turns_only)` — only `kind=="turn"` entries (model context). Always-fresh system messages (ROOT_SYSTEM_PROMPT, workspace) excluded and re-injected on startup.
-- `load_timeline(id)` → `(working_dir, all_entries)` — full ordered list for visual rebuild; non-persistent system turns excluded.
+- `load_session(id)` → `(session_id, working_dir, turns_only)` — only `kind=="turn"` entries (model context). If a `kind=="compact"` entry exists, only entries after the *last* one are read, and the compact's `content` is seeded as the first (synthetic `user`-role) message — every turn before the boundary is dropped. Always-fresh system messages (ROOT_SYSTEM_PROMPT, workspace) excluded and re-injected on startup.
+- `load_timeline(id)` → `(working_dir, all_entries)` — full ordered list for visual rebuild; non-persistent system turns excluded; `compact` entries pass through unfiltered so resume shows the boundary.
 
 **Max-iterations:** when handler hits limit with no text produced, `process_stream` writes `append_event(source="max_iterations")` instead of an empty assistant turn — context stays clean, rebuild shows the warning.
 
@@ -262,6 +263,7 @@ Textual exclusive worker per turn; see `tui-layout.md → Streaming Worker`.
 Slash-prefixed input intercepted by `CommandPalette` then dispatched via `CommandRegistry`.
 - `/exit` — exit to terminal (with farewell message + delay)
 - `/clear` — clears chat and starts a new session (resets session ID)
+- `/compact [instructions]` — summarizes the transcript through the `"micro"` touchpoint and replaces `session.messages` with `[system, synthetic-user-summary]`; optional free-text instructions steer what the summary focuses on. Blocked while a turn is streaming. Auto-triggers with no instructions and no opt-out once transcript size (chars/4, `agent/tui/app.py::_estimate_session_tokens`) crosses 80% of `_context_limit`; a sticky status-bar hint warns at 75%. See `agent/compact.py` (`context_state`/`summarize`/`apply_summary`) and `## Session Persistence` for the `kind:"compact"` boundary.
 
 ## CLI Flags
 - `--debug` — writes the assembled system prompt, `extra_params`, and every tool call/result to

@@ -20,14 +20,16 @@ from textual.strip import Strip
 from textual.widgets import ProgressBar, Static, TextArea
 from textual.worker import Worker
 
-from agent import credentials
+from agent import compact, credentials
 from agent.agent import GekaiAgent
 from agent.harness import turn as harness_turn
 from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
+from agent.llm.resolve import TierResolutionError, resolve_touchpoint
 from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName, validate_binding
 from agent.persistence import (
     append_command,
+    append_compact,
     append_diff,
     append_event,
     append_operation,
@@ -773,6 +775,8 @@ class GekaiApp(App[None]):
         self._pending_choice: asyncio.Future[str | None] | None = None
         self._context_limit: int = 128_000
         self._other_ops_tokens: int = 0
+        self._compact_warning_shown: bool = False
+        self._compact_failure_count: int = 0
         self._history: PromptHistory | None = None
         self._file_paths: list[str] | None = None
         self._file_at_pos: int = -1
@@ -920,6 +924,14 @@ class GekaiApp(App[None]):
 
     def _refresh_status_bar(self) -> None:
         session_tokens = _estimate_session_tokens(self._session) if self._session is not None else 0
+        state = compact.context_state(session_tokens, self._context_limit)
+        if state == "warn" or state == "auto":
+            pct = round(session_tokens / self._context_limit * 100, 1)
+            self._show_hint(f"context {pct}% — auto-compact will trigger at 80%")
+            self._compact_warning_shown = True
+        elif self._compact_warning_shown:
+            self._clear_hint()
+            self._compact_warning_shown = False
         left = _fmt_status_left(
             self._agent.model, self._agent.effort, session_tokens, self._other_ops_tokens,
             session_tokens, self._context_limit,
@@ -1200,6 +1212,22 @@ class GekaiApp(App[None]):
                 conversation.scroll_end(animate=False)
                 await self._open_tiers_panel(conversation)
                 self._focus_prompt()
+                return
+            if _slash_name == "compact":
+                if self._worker is not None and not self._worker.is_finished:
+                    await conversation.mount(MessageWidget(MessageKind.ERROR, "a turn is already running — wait for it to finish before compacting"))
+                    conversation.scroll_end(animate=False)
+                    self._focus_prompt()
+                    return
+                if self._session is None:
+                    await conversation.mount(MessageWidget(MessageKind.ERROR, "no active session to compact"))
+                    conversation.scroll_end(animate=False)
+                    self._focus_prompt()
+                    return
+                _user_prompt = _slash_parts[1].strip() if len(_slash_parts) > 1 else ""
+                await conversation.mount(MessageWidget(MessageKind.USER, stripped))
+                conversation.scroll_end(animate=False)
+                await self._run_compact(conversation, _user_prompt)
                 return
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
             conversation.scroll_end(animate=False)
@@ -1580,6 +1608,14 @@ class GekaiApp(App[None]):
 
         await self._maybe_warn_tiers_unconfigured(conversation)
 
+        if self._session is not None and self._compact_failure_count < 3:
+            session_tokens = _estimate_session_tokens(self._session)
+            if compact.context_state(session_tokens, self._context_limit) == "auto":
+                if await self._run_compact(conversation, instructions=""):
+                    self._compact_failure_count = 0
+                else:
+                    self._compact_failure_count += 1
+
         try:
             await self._start_status_animation(verb[0], color)
 
@@ -1641,6 +1677,26 @@ class GekaiApp(App[None]):
             events.emit("turn.end", session=session_id, turn=turn_id, outcome=outcome, duration_ms=_ms(time.monotonic() - start))
             self._worker = None
             self._focus_prompt()
+
+    async def _run_compact(self, conversation: ScrollableContainer, instructions: str) -> bool:
+        assert self._session is not None
+        self._show_hint("compacting…")
+        try:
+            tier = resolve_touchpoint("micro", load_model_catalog(), load_tier_bindings())
+            summary = await compact.summarize(self._session.messages, tier, instructions)
+            compact.apply_summary(self._session, summary)
+            append_compact(self._session, summary)
+            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "conversation compacted"))
+            self._refresh_status_bar()
+            success = True
+        except Exception as error:
+            await conversation.mount(MessageWidget(MessageKind.ERROR, f"compact failed: {error}"))
+            success = False
+        finally:
+            self._clear_hint()
+        conversation.scroll_end(animate=False)
+        self._focus_prompt()
+        return success
 
     async def _animate_status(self, color: str, stop: asyncio.Event) -> None:
         try:

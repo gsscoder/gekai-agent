@@ -115,7 +115,7 @@ def _check_plan(steps: list[dict]) -> str | None:
     return None
 
 
-@pytest.mark.llm
+@pytest.mark.llm_harness
 def test_sequencer_decomposes_and_orders_with_verify_placement() -> None:
     model_name = os.environ.get("GEKAI_CORE_MODEL_NAME")
     api_key = os.environ.get("GEKAI_CORE_MODEL_KEY")

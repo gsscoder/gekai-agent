@@ -35,12 +35,16 @@ TIER_BINDINGS = {
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption("--llm", action="store_true", default=False, help="run LLM integration tests")
+    parser.addoption("--llm-harness", action="store_true", default=False, help="run LLM harness integration tests")
+    parser.addoption("--llm-compact", action="store_true", default=False, help="run LLM /compact integration tests")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if not config.getoption("--llm"):
-        skip = pytest.mark.skip(reason="pass --llm to run")
-        for item in items:
-            if "llm" in item.keywords:
-                item.add_marker(skip)
+    gated = {
+        "llm_harness": config.getoption("--llm-harness"),
+        "llm_compact": config.getoption("--llm-compact"),
+    }
+    for item in items:
+        for marker, enabled in gated.items():
+            if marker in item.keywords and not enabled:
+                item.add_marker(pytest.mark.skip(reason=f"pass --{marker.replace('_', '-')} to run"))

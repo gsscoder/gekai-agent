@@ -29,7 +29,8 @@ gekai = "agent.main:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "llm: marks tests that make real LLM calls (deselected by default, run with --llm)",
+    "llm_harness: marks tests that make real LLM calls against the harness (deselected by default, run with --llm-harness)",
+    "llm_compact: marks tests that make real LLM calls against /compact (deselected by default, run with --llm-compact)",
 ]
 
 [tool.hatch.build.targets.wheel]

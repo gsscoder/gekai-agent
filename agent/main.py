@@ -7,6 +7,7 @@ from pathlib import Path
 from . import __version__
 from .agent import GekaiAgent
 from .commands.clear import ClearCommand
+from .commands.compact import CompactCommand
 from .commands.exit import ExitCommand
 from .commands.tiers import TiersCommand
 from .commands.registry import CommandRegistry
@@ -111,6 +112,7 @@ def main() -> None:
 
     registry = CommandRegistry()
     registry.register(ClearCommand())
+    registry.register(CompactCommand())
     registry.register(ExitCommand())
     registry.register(TiersCommand())
 

@@ -93,6 +93,10 @@ def append_operation(session: Session, content: str, color: str, *, turn: str | 
     _append(session, entry)
 
 
+def append_compact(session: Session, summary: str) -> None:
+    _append(session, {"kind": "compact", "content": summary})
+
+
 def append_debug(session: Session, message: dict) -> None:
     base = Path.home() / ".gekai" / "workspaces" / _normalize_path(session.working_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -133,6 +137,10 @@ def load_session(session_id: str) -> tuple[str, Path, list[dict]] | None:
 
     Only kind=="turn" entries (or entries with no kind field, for backward compat)
     are returned. Always-fresh system messages are re-injected on startup.
+
+    If a kind=="compact" entry exists, everything before the last one is dropped:
+    the compact entry's content is surfaced as a synthetic leading user message,
+    followed by any turn entries that came after the boundary.
     """
     result = _session_path(session_id)
     if result is None:
@@ -141,20 +149,24 @@ def load_session(session_id: str) -> tuple[str, Path, list[dict]] | None:
     working_dir = _read_working_dir(workspace_folder)
     if working_dir is None:
         return None
-    messages: list[dict] = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            m = json.loads(line)
-            kind = m.get("kind", "turn")
-            if kind != "turn":
-                continue
-            if m.get("role") in ("user", "assistant") or _is_persistent_system_message(m):
-                messages.append(m)
+        entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+    compact_index = None
+    for i, m in enumerate(entries):
+        if m.get("kind") == "compact":
+            compact_index = i
+    messages: list[dict] = []
+    if compact_index is not None:
+        messages.append({"role": "user", "content": entries[compact_index]["content"]})
+        entries = entries[compact_index + 1:]
+    for m in entries:
+        kind = m.get("kind", "turn")
+        if kind != "turn":
+            continue
+        if m.get("role") in ("user", "assistant") or _is_persistent_system_message(m):
+            messages.append(m)
     return session_id, working_dir, messages
 
 
