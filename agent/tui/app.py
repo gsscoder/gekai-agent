@@ -1959,14 +1959,21 @@ class GekaiApp(App[None]):
 
     def _sync_prompt_lock(self) -> None:
         """The prompt must be visibly inert — no cursor, no blink, no typed
-        input landing in it — whenever a panel (FilePanel/HistoryPanel/
-        ChoiceBar/CommandPalette/TiersPanel) is showing; typing/pasting only
-        makes sense once a panel closes and the prompt is the active surface
-        again. `read_only` blocks keyboard edits, `show_cursor=False` (its
-        Textual-documented pairing) hides the caret entirely rather than
-        just freezing it mid-blink."""
+        input landing in it — whenever a panel navigated purely by arrow
+        keys/clicks (HistoryPanel/ChoiceBar/TiersPanel) is showing; typing
+        only makes sense once that panel closes and the prompt is the active
+        surface again. FilePanel and CommandPalette are excluded: they are
+        typeahead filters over the prompt's own text ("@"/"/" + what's typed
+        after), so locking the prompt while they're open would swallow the
+        very keystrokes they filter on. `read_only` blocks keyboard edits,
+        `show_cursor=False` (its Textual-documented pairing) hides the caret
+        entirely rather than just freezing it mid-blink."""
         prompt = self.query_one("#prompt", TextArea)
-        active = self._any_panel_active()
+        active = (
+            self.query_one("#history-panel", HistoryPanel).display
+            or self.query_one(ChoiceBar).display
+            or self.query_one(TiersPanel).display
+        )
         if active == prompt.read_only:
             return
         prompt.read_only = active
