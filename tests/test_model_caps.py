@@ -69,3 +69,36 @@ def test_resolve_thinking_params_enabled_unchanged_for_thinking_model() -> None:
 def test_resolve_thinking_params_unknown_model_is_empty_regardless_of_enabled() -> None:
     assert resolve_thinking_params("unlisted-model") == {}
     assert resolve_thinking_params("unlisted-model", enabled=False) == {}
+
+
+@pytest.mark.parametrize(
+    "effort, expected_reasoning_effort",
+    [
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "xhigh"),
+        ("xhigh", "xhigh"),
+        ("max", "xhigh"),
+    ],
+)
+def test_resolve_thinking_params_qwen_max_fold_down(effort: str, expected_reasoning_effort: str) -> None:
+    # QwenCloud's API reference (https://docs.qwencloud.com/api-reference/chat/openai-chat)
+    # documents only three native reasoning_effort values (low/medium/xhigh)
+    # for qwen3.8-max — the remaining two EFFORT_LADDER rungs fold onto xhigh
+    # per the doc's own "OpenAI standard value mapping" (high->xhigh,
+    # max->xhigh). Unlike DeepSeek's bare top-level entries, the value is
+    # nested under extra_body — that's the model/provider's documented wire
+    # shape, not resolve_thinking_params's own extra_body-for-enable wrapper
+    # (which is deepseek-style-only and doesn't fire for qwen-max).
+    assert resolve_thinking_params("qwen3.8-max", effort) == {
+        "extra_body": {"reasoning_effort": expected_reasoning_effort}
+    }
+
+
+def test_resolve_thinking_params_disabled_qwen_max_style_is_explicit_off() -> None:
+    # qwen3.8-max is not in the doc's `enable_thinking` boolean-toggle family
+    # — its documented disable path is `reasoning_effort="none"`, not a
+    # separate `enable_thinking` payload.
+    assert resolve_thinking_params("qwen3.8-max", enabled=False) == {
+        "extra_body": {"reasoning_effort": "none"}
+    }

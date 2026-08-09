@@ -302,14 +302,18 @@ def _ms(seconds: float) -> int:
     return round(seconds * 1000)
 
 
+_MASK_STARS = 6  # fixed width — a long key must not blow up the row with 1-for-1 stars
+
+
 def _mask_key(key: str) -> str:
     """Display form of a real key value: first 2 + last 3 characters kept,
-    the middle replaced 1-for-1 with '*' so the mask hints at true length.
+    the middle replaced with a fixed-width run of '*' (never 1-for-1 with
+    true length — some keys are long enough that would dominate the row).
     Keys of 5 characters or fewer are too short for head/tail to mean
-    anything distinct, so they're masked in full."""
+    anything distinct, so they're masked in full at the same fixed width."""
     if len(key) <= 5:
-        return "*" * len(key)
-    return key[:2] + "*" * (len(key) - 5) + key[-3:]
+        return "*" * _MASK_STARS
+    return key[:2] + "*" * _MASK_STARS + key[-3:]
 
 
 def _tier_credential_key(tier: TierName, model: str, effort: str, thinking: bool) -> str:

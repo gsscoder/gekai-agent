@@ -45,19 +45,72 @@ MODEL_CAPS: dict[str, ModelCaps] = {
     # set so `resolve_thinking_params(..., enabled=False)` can find the
     # DeepSeek disable payload.
     "deepseek-v4-flash": ModelCaps(thinking_style="deepseek"),
+    # Doc-derived, NOT live-probe-confirmed (no credentials exercised this
+    # session) — facts come from QwenCloud's official API reference
+    # (https://docs.qwencloud.com/api-reference/chat/openai-chat).
+    # thinking=True, default_effort="xhigh": the doc states qwen3.8-max is a
+    # thinking model enabled by default, and its own `reasoning_effort`
+    # default is "xhigh". can_disable_thinking=True: the doc documents an
+    # explicit disable path, `reasoning_effort="none"` (this model is NOT in
+    # the doc's `enable_thinking` boolean-toggle family — that path doesn't
+    # apply here). effort_requires_thinking=False: low/medium/xhigh remain
+    # distinct native values while thinking stays on, so the ladder has an
+    # observable realization independent of the thinking on/off axis.
+    # thinking_style="qwen-max" (distinct from "deepseek"): the wire shape
+    # differs — DeepSeek's `reasoning_effort` is a bare top-level kwarg, but
+    # the doc says qwen3.8-max's `reasoning_effort` is "not a standard OpenAI
+    # parameter" and must be nested under `extra_body` instead.
+    "qwen3.8-max": ModelCaps(thinking=True, thinking_style="qwen-max", default_effort="xhigh",
+                              can_disable_thinking=True, effort_requires_thinking=False),
 }
 
 _EFFORT_TO_PARAMS: dict[str, dict[str, dict]] = {
-    # DeepSeek only for now — openai/anthropic styles retired until those
-    # providers are actually exercised (see the MODEL_CAPS note above).
-    "deepseek": {
-        # DeepSeek API maps low/medium → high, xhigh → max internally.
-        # We align our map to the two real values to be explicit.
+    # Keyed by model id, NOT thinking_style. DeepSeek's real API folds
+    # requested effort to actual effort differently per model (confirmed
+    # against https://api-docs.deepseek.com/guides/thinking_mode) — a single
+    # shared "deepseek" bucket was wrong: it silently applied pro's fold-down
+    # (low/medium → high) to flash too, when flash's API actually honors a
+    # bare "low". Each model below gets its own complete fold-down map
+    # covering all 5 canonical EFFORT_LADDER rungs (tiers.py) — "medium" has
+    # no direct DeepSeek wire value at all (the API only accepts
+    # low/high/xhigh/max), so it is folded UP to the nearest defined rung
+    # rather than passed through. Any rung above a model's ceiling (e.g.
+    # flash caps at "high") folds down to that ceiling — the same pattern a
+    # future lower-ceiling model should follow for its own xhigh/max entries.
+    #
+    # qwen3.8-max's entry is shaped differently on purpose: each value below
+    # is already a self-contained `{"extra_body": {"reasoning_effort": ...}}`
+    # dict, not a bare `{"reasoning_effort": ...}` like DeepSeek's entries.
+    # That's because DeepSeek's `reasoning_effort` is a top-level kwarg (the
+    # `extra_body` wrapper resolve_thinking_params adds afterward is only the
+    # separate thinking-enable/disable payload), while QwenCloud's API
+    # reference (https://docs.qwencloud.com/api-reference/chat/openai-chat)
+    # states `reasoning_effort` is "not a standard OpenAI parameter" for this
+    # model/provider and must itself be nested under `extra_body`. The fold
+    # values are doc-derived: the model only accepts three native
+    # `reasoning_effort` values (low/medium/xhigh), so the doc's own
+    # "OpenAI standard value mapping" (high->xhigh, max->xhigh) is used to
+    # fill the remaining two EFFORT_LADDER rungs.
+    "deepseek-v4-flash": {
+        "low":    {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "high"},
+        "high":   {"reasoning_effort": "high"},
+        "xhigh":  {"reasoning_effort": "high"},
+        "max":    {"reasoning_effort": "max"},
+    },
+    "deepseek-v4-pro": {
         "low":    {"reasoning_effort": "high"},
         "medium": {"reasoning_effort": "high"},
         "high":   {"reasoning_effort": "high"},
         "xhigh":  {"reasoning_effort": "max"},
         "max":    {"reasoning_effort": "max"},
+    },
+    "qwen3.8-max": {
+        "low":    {"extra_body": {"reasoning_effort": "low"}},
+        "medium": {"extra_body": {"reasoning_effort": "medium"}},
+        "high":   {"extra_body": {"reasoning_effort": "xhigh"}},
+        "xhigh":  {"extra_body": {"reasoning_effort": "xhigh"}},
+        "max":    {"extra_body": {"reasoning_effort": "xhigh"}},
     },
 }
 
@@ -82,12 +135,14 @@ def resolve_thinking_params(model: str, effort: str | None = None, *, enabled: b
     if not enabled:
         if caps.thinking_style == "deepseek":
             return {"extra_body": {"thinking": {"type": "disabled"}}}
+        if caps.thinking_style == "qwen-max":
+            return {"extra_body": {"reasoning_effort": "none"}}
         return {}
     if not caps.thinking:
         return {}
     effective_effort = effort or caps.default_effort
-    style_map = _EFFORT_TO_PARAMS.get(caps.thinking_style, {})
-    params = dict(style_map.get(effective_effort, style_map.get("high", {})))
+    model_map = _EFFORT_TO_PARAMS.get(model, {})
+    params = dict(model_map.get(effective_effort, model_map.get("high", {})))
     if caps.thinking_style == "deepseek":
         params["extra_body"] = {"thinking": {"type": "enabled"}}
     return params

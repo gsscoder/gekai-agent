@@ -151,7 +151,11 @@ always answerable.
 Every touchpoint (`estimator`/`sequencer`/`root-dispatch`/`subagent-dispatch`/`micro` —
 `agent/harness/touchpoints.py`) resolves to a model through the FAST/SUPP/CORE tier catalog +
 bindings (`agent/settings.py::load_model_catalog`/`load_tier_bindings`), configured via the TUI's
-`/tiers` grid — not raw env vars. `estimator` runs at a bare FAST (no mobility); `sequencer`
+`/tiers` grid — not raw env vars. `load_model_catalog()` always returns a fresh dict built directly
+from `agent/llm/tiers.py::DEFAULT_MODEL_CATALOG` — capability facts (efforts, thinking, base_url,
+suitability) are never copied to disk, so a newly-added model shows up in `/tiers` immediately for
+existing installs. The only thing persisted at user level for tiers is `TierBinding` (which model +
+effort + thinking each of FAST/SUPP/CORE points to), under settings.json's `"tiers"` node. `estimator` runs at a bare FAST (no mobility); `sequencer`
 defaults to CORE (mobile down to SUPP); `root-dispatch`/`subagent-dispatch` default to SUPP (mobile
 up to CORE) — see `harness/scaling.py` for the per-call tier-scaling mechanism.
 

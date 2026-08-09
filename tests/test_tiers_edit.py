@@ -53,10 +53,10 @@ _CATALOG = {_FLASH.name: _FLASH, _PRO.name: _PRO}
 @pytest.mark.parametrize(
     "raw, expected",
     [
-        ("sk-1234567890abcdef", "sk" + "*" * 14 + "def"),
-        ("sk123", "*****"),
-        ("ab", "**"),
-        ("sk-123", "sk*123"),
+        ("sk-1234567890abcdef", "sk" + "*" * 6 + "def"),
+        ("sk123", "*" * 6),
+        ("ab", "*" * 6),
+        ("sk-123", "sk" + "*" * 6 + "123"),
     ],
 )
 def test_mask_key(raw: str, expected: str) -> None:
@@ -75,7 +75,7 @@ def test_display_key_no_key_when_nothing_staged_or_stored(monkeypatch: pytest.Mo
 def test_display_key_masks_real_stored_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("agent.tui.app.credentials.has_api_key", lambda name: True)
     monkeypatch.setattr("agent.tui.app.credentials.get_api_key", lambda name: "sk-1234567890abcdef")
-    assert _tiers_display_key("m", {}) == "sk" + "*" * 14 + "def"
+    assert _tiers_display_key("m", {}) == "sk" + "*" * 6 + "def"
     assert _tiers_key_present("m", {}) is True
 
 

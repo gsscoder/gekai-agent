@@ -107,6 +107,7 @@ MODEL_SUITABILITY: dict[str, TierSuitability] = {
 _KNOWN_BASE_URLS: dict[str, str] = {
     "deepseek-v4-pro": "https://api.deepseek.com",
     "deepseek-v4-flash": "https://api.deepseek.com",
+    "qwen3.8-max": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 }
 
 

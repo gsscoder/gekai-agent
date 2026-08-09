@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent.harness.touchpoints import TOUCHPOINTS
+from agent.llm import model_caps
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
 from agent.llm.resolve import TierResolutionError, all_tiers_ready, resolve_tier, resolve_touchpoint, tier_status
 from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierSuitability
@@ -63,6 +64,11 @@ def test_resolve_tier_thinking_true_unchanged(monkeypatch):
     monkeypatch.setitem(
         MODEL_CAPS, "pro", ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high")
     )
+    # _EFFORT_TO_PARAMS is now keyed by model id, not thinking_style (each
+    # real DeepSeek model folds effort differently) — this fixture's "pro" id
+    # isn't one of the real ids, so give it its own fold-down entry to keep
+    # this test's model-agnostic intent.
+    monkeypatch.setitem(model_caps._EFFORT_TO_PARAMS, "pro", {"high": {"reasoning_effort": "high"}})
     bindings = {TierName.CORE: TierBinding(model="pro", default_effort="high", thinking=True)}
     resolved = resolve_tier(TierName.CORE, CATALOG, bindings)
     assert resolved.extra_params == {"reasoning_effort": "high", "extra_body": {"thinking": {"type": "enabled"}}}

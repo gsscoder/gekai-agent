@@ -34,9 +34,11 @@ touches app.py/agent.py):
 ## Isolating disk state
 
 `agent.settings.Path.home` is monkeypatched per test (mirrors
-tests/test_settings_tiers.py) so `load_model_catalog`/`load_tier_bindings`/
-`save_tier_binding` hit a throwaway `tmp_path/.gekai/settings.json`. The
-keyring is faked with a plain `dict[str, str]`, patched onto
+tests/test_settings_tiers.py) so `load_tier_bindings`/`save_tier_binding` hit
+a throwaway `tmp_path/.gekai/settings.json`. `load_model_catalog` is a live
+read of `DEFAULT_MODEL_CATALOG` (never persisted to disk), so `_seed_catalog`
+monkeypatches that module global directly to `(MODEL_A, MODEL_B)` instead.
+The keyring is faked with a plain `dict[str, str]`, patched onto
 `agent.tui.app.credentials` (mirrors tests/test_resolve.py's pattern,
 applied to the module app.py actually imports its `credentials` reference
 from — see agent/tui/app.py's `from agent import credentials`).
@@ -109,9 +111,11 @@ def _stub_init_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(GekaiApp, "_init_session", _fake_init_session)
 
 
-def _seed_catalog() -> None:
-    settings.save_model_catalog_entry(MODEL_A)
-    settings.save_model_catalog_entry(MODEL_B)
+def _seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The catalog is a live read of DEFAULT_MODEL_CATALOG now — there's no
+    # disk write to seed, so tests exercising the fixed MODEL_A/MODEL_B pair
+    # monkeypatch the code-side catalog directly instead.
+    monkeypatch.setattr(settings, "DEFAULT_MODEL_CATALOG", (MODEL_A, MODEL_B))
 
 
 def _patch_credentials(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
@@ -248,7 +252,7 @@ async def _configure_all_tiers_fully(
 
 
 async def test_happy_path_commits_all_three_tiers_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     fake_keyring = _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -332,7 +336,7 @@ async def test_key_is_scoped_to_the_row_it_was_pasted_in(tmp_path: Path, monkeyp
     the same model shared one entry — pasting into SUPP visibly rewrote
     FAST's key cell. Keys are per tier now: each row shows the mask of its
     own key only."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -386,7 +390,7 @@ async def test_key_is_scoped_to_the_row_it_was_pasted_in(tmp_path: Path, monkeyp
 
 
 async def test_commit_blocked_when_tiers_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -418,7 +422,7 @@ async def test_commit_blocked_when_tiers_incomplete(tmp_path: Path, monkeypatch:
 
 
 async def test_cancel_discards_everything(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     fake_keyring = _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -446,7 +450,7 @@ async def test_cancel_discards_everything(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 async def test_ok_with_no_changes_reports_kept_actual_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     fake_keyring = _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -491,7 +495,7 @@ async def test_recommitting_core_updates_agent_model_and_effort_live(
     `None`) — once tiers are already configured, changing CORE's model via a
     second `/tiers` commit used to leave `agent.model`/`agent.effort` (and so
     the status bar) stuck on the old value until a process restart."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -548,7 +552,7 @@ async def test_commit_is_atomic_when_a_later_tier_fails_validation(
     directly, bypassing the UI cycling (which never lets you construct an
     invalid state in the first place — the model/effort/thinking cells only
     ever offer legal combinations)."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
 
     save_calls: list[tuple[TierName, TierBinding]] = []
@@ -597,7 +601,7 @@ async def test_commit_is_atomic_when_a_later_tier_fails_validation(
 async def test_clearing_key_is_staged_until_commit_and_can_be_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     fake_keyring = _patch_credentials(monkeypatch)
     fast_key = _tier_credential_key(TierName.FAST, "model-a", "low", False)
     fake_keyring[fast_key] = "sk-preexisting"  # simulates a credential from an earlier /tiers session
@@ -666,7 +670,7 @@ async def test_clearing_key_is_staged_until_commit_and_can_be_reset(
 
 
 async def test_prompt_is_locked_while_tiers_panel_is_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -711,7 +715,7 @@ async def test_prompt_is_locked_while_tiers_panel_is_open(tmp_path: Path, monkey
 
 
 async def test_paste_commits_immediately_and_survives_navigating_away(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -745,7 +749,7 @@ async def test_navigating_away_before_pasting_discards_the_pending_edit(tmp_path
     """Enter-to-start-editing with no paste yet must still discard cleanly on
     navigate-away — it must never register as an explicit clear of an
     existing key just because the cell was entered and left."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -775,7 +779,7 @@ async def test_manual_typing_does_nothing_only_p_pastes(tmp_path: Path, monkeypa
     """Locked design: pasting via "p" is the *only* way to fill the key
     buffer — typed characters (even a real key typed by hand) must be
     silently ignored while editing."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -813,7 +817,7 @@ async def test_paste_keeps_only_first_line_of_a_multiline_clipboard(
     paste outright, only the first line is kept (the common case is a
     trailing newline or an accidental whole-file copy, not a real mistake
     worth blocking on)."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -838,7 +842,7 @@ async def test_paste_keeps_only_first_line_of_a_multiline_clipboard(
 async def test_paste_of_empty_clipboard_shows_a_hint_and_leaves_buffer_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 
@@ -866,7 +870,7 @@ async def test_setting_a_second_tiers_key_does_not_overwrite_a_different_models_
 ) -> None:
     """Two tiers on *different* models keep independent keys — setting the
     second must not bleed into the first."""
-    _seed_catalog()
+    _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch)
     app = _make_app(tmp_path)
 

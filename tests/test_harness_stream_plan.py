@@ -17,6 +17,7 @@ import pytest
 from agent.events import DoneEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
+from agent.llm import model_caps
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier, resolve_tier
@@ -386,6 +387,10 @@ def test_each_touchpoint_resolves_at_its_own_operating_point(
     }
     monkeypatch.setitem(MODEL_CAPS, "supp-model", ModelCaps(thinking_style="deepseek"))
     monkeypatch.setitem(MODEL_CAPS, "core-model", ModelCaps(thinking=True, thinking_style="deepseek"))
+    # _EFFORT_TO_PARAMS is now keyed by model id, not thinking_style — these
+    # fixture ids aren't real DeepSeek ids, so give "core-model" its own
+    # fold-down entry to keep this test's model-agnostic intent.
+    monkeypatch.setitem(model_caps._EFFORT_TO_PARAMS, "core-model", {"max": {"reasoning_effort": "max"}})
     monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
     monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "key")
     resolved_at: list[tuple[str, str, dict]] = []
