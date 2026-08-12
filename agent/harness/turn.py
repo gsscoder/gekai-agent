@@ -16,13 +16,14 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from ..agent import GekaiAgent
+from ..agent import DirectiveVerdictCallback, GekaiAgent
 from ..events import (
     AgentEvent,
     BudgetExhaustedEvent,
     DirectivePumpEvent,
     DoneEvent,
     EstimateEvent,
+    ForeignFileDetectedEvent,
     InferEndEvent,
     LogEvent,
     MaxIterationsEvent,
@@ -67,12 +68,20 @@ async def run_step(
     hidden_grant_callback: HiddenGrantCallback | None,
     append_user: bool = True,
     on_event: OnEvent | None = None,
+    on_directive_verdict: DirectiveVerdictCallback | None = None,
 ) -> TurnResult:
     """Drive `agent.process_stream` to completion, aggregating token/tool/
     outcome bookkeeping and emitting harness telemetry (`estimate`,
     `task_graph`, `harness`), while re-emitting every item to `on_event` in
     the same order it arrived — a caller renders from `on_event`, never from
     the aggregation here.
+
+    `on_directive_verdict` (plan 35 Phase 3) is the TUI's `#directive-notice`
+    callback (`GekaiApp._apply_directive_verdict`), threaded through so a
+    `ForeignFileDetectedEvent` below can fire `agent.start_foreign_file_audit`
+    with the same callback GEKAI.md's own session-start audit uses — one
+    slot, one line, last verdict wins (concept 7), whichever file's audit
+    lands last.
     """
     events = agent.events
     result = TurnResult()
@@ -131,6 +140,11 @@ async def run_step(
                 "directive_pump", session=session_id, turn=turn_id,
                 domains=item.domains,
             )
+        elif isinstance(item, ForeignFileDetectedEvent):
+            # Not telemetry-only: this is the trigger itself (plan 35 Phase
+            # 3) — `start_foreign_file_audit` does its own cache-check/call/
+            # swallow/telemetry, mirroring `start_directive_audit`.
+            agent.start_foreign_file_audit(item.rel_path, item.text, on_directive_verdict)
         elif isinstance(item, ResponderEvent):
             # Telemetry only (mirrors ScaleEvent/DirectivePumpEvent above) —
             # the TUI's event handler doesn't recognize ResponderEvent, so

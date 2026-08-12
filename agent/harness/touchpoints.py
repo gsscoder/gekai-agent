@@ -71,6 +71,11 @@ TOUCHPOINTS: tuple[Touchpoint, ...] = (
         policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
     ),
     Touchpoint("micro", "one-shot summaries / labels / fs-support", TierName.FAST),
+    Touchpoint(
+        "directive-audit",
+        "yes/no: does a markdown file contain agent directives",
+        TierName.FAST,
+    ),
 )
 
 TOUCHPOINTS_BY_NAME: dict[str, Touchpoint] = {t.name: t for t in TOUCHPOINTS}

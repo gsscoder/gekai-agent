@@ -142,6 +142,37 @@ don't disappear — they keep what a directive can't confer: permission/tool sco
 context isolation from the conversation. Dynamic directives replaces dispatch-for-expertise, not
 dispatch-for-isolation.
 
+## A linter for instruction files, not a guardrail
+
+A project can hand Gekai standing instructions two ways — its own `GEKAI.md`, ingested verbatim
+into every turn, or a foreign file like `AGENTS.md` that the user asks Gekai to read once, which
+lands in message history like any other file read and is compaction fodder like any other file
+read. Framings that would gate or filter either file were each considered and dropped: a modal
+prompt (read-but-ignore / rewrite / cancel) fires on the very file the user wrote *for* Gekai and
+teaches click-through; silently stripping directives before injection makes Gekai the only agent
+that eats part of a file every other tool honors, with the false-positive cost landing on the user
+as a missing instruction they cannot see; a mechanical regex prefilter was tried and shipped once,
+then deleted — tested against a real sibling repo's `AGENTS.md`, it returned a false negative on a
+genuine instruction file while matching this project's own `AGENTS.md` on subject matter alone
+("AI coding agent" appearing in prose it was never meant to gate on). Every mechanical shortcut
+this project has tried in place of a model turn has failed the same way: it reads *what a file is
+about*, not *who a file addresses*. What ships instead is a single cheap, non-thinking LLM call
+that asks the file one question — does it contain rules meant to influence an AI agent's behavior —
+and tells the human, once, if the answer is yes. Never the model, and never a block.
+
+This is proportionate specifically because the surface a stronger control would protect was never
+prose to begin with: permissions are code (`agent/permissions.py`, `agent/settings.py`), and a
+markdown line asking for `exec` cannot grant it. The honest scope of the feature is telling the
+human that a file addresses an AI agent's behavior, and stopping there — no corpus, no comparison
+against Gekai's own directives, no classification of *how* it disagrees. If the user ignores the
+notice, whatever the file asks for runs for the whole session, every turn — the notice's
+persistence (it is not a timed toast; it stays until the next verdict replaces it) is the only
+mitigation, deliberately, because a stronger mechanism is the thing this design keeps refusing to
+build. The same honesty shapes the fallback direction on a bad or failed answer: a false `NO`
+(a missed warning) costs nothing but a skipped notice, while a false `YES` teaches the user to
+ignore every later warning — so every unparseable output and every call failure degrades to the
+silent, safe `NO`, never the reverse.
+
 ## Each pipeline stage does exactly one job, and fails loud
 
 Locate finds files. Rewrite attributes them into the request. Neither stage absorbs the

@@ -30,7 +30,7 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, ForeignFileDetectedEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
@@ -58,6 +58,33 @@ def _pumped_system_base(system_base: str, prompt: str) -> tuple[str, list[str]]:
     if text:
         system_base = f"{system_base}\n<domain_directives>\n{text}"
     return system_base, domains
+
+
+def _gekai_md_system_base(system_base: str, session: Session) -> str:
+    """GEKAI.md injection (plan 35 Concept 1): root's own project-context
+    file, appended verbatim beside the domain-directive pump, under its own
+    `<project_instructions source="GEKAI.md">` tag so the model can always
+    tell the user's rules from Gekai's own `<directives>` block. Root-only
+    by construction, not by a flag: both call sites below only reach this
+    function from the `subagent is None` branch, mirroring exactly how
+    `_pumped_system_base` is root-only (decision 10 / plan 28 decision 13)
+    — a subagent's context is isolated by design, and project instructions
+    are precisely the channel that isolation exists to close.
+
+    The system base — not a simulated read-and-understand turn in message
+    history — is where this lives because message history is what
+    `/compact` evicts. A GEKAI.md seeded as a turn would silently stop
+    applying somewhere around turn 40 with no signal to anyone; the system
+    base is reassembled every turn and never falls out of the window.
+
+    No truncation, no normalization, no reordering (decision 1): if the
+    file is oversized that is a telemetry fact for later, not a silent
+    edit here. Nothing is appended when there is nothing to inject — same
+    "don't emit an empty tag" discipline as `_pumped_system_base`.
+    """
+    if session.gekai_md is None:
+        return system_base
+    return f'{system_base}\n<project_instructions source="GEKAI.md">\n{session.gekai_md.text}'
 
 
 def _enrich_system_base(system_base: str, working_dir: Path) -> str:
@@ -268,6 +295,7 @@ class Harness:
         pumped_domains: list[str] = []
         if subagent is None:
             system_base, pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
+            system_base = _gekai_md_system_base(system_base, session)
         else:
             system_base = subagent.build_system_base()
         system_base = _enrich_system_base(system_base, session.working_dir)
@@ -308,7 +336,7 @@ class Harness:
 
         queue: asyncio.Queue[
             LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | TextChunkEvent | BudgetExhaustedEvent
-            | DelegationStartEvent | DelegationDoneEvent | None
+            | DelegationStartEvent | DelegationDoneEvent | ForeignFileDetectedEvent | None
         ] = asyncio.Queue()
         files_touched: list[str] = []
         root_run_id = uuid.uuid4().hex
@@ -318,6 +346,12 @@ class Harness:
                 event, queue, session, files_touched, self._debug, root_run_id,
                 emit_text_chunks=True,
             )
+            # Root-only (decision 11): `stream()` also runs a cold subagent
+            # outside a task graph (`subagent` set, no estimator/graph
+            # involved) — a specialist's incidental `read_file` must never
+            # raise this, only a root dispatch the user is actually driving.
+            if subagent is None:
+                _maybe_flag_foreign_instruction_file(event, queue)
 
         yield SubAgentStartEvent(
             name=subagent.name if subagent else "root",
@@ -537,6 +571,7 @@ class Harness:
         try:
             resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
             system_base, _pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
+            system_base = _gekai_md_system_base(system_base, session)
             system_base = _enrich_system_base(system_base, session.working_dir)
             agent = _build_agent(
                 resolved.model, resolved.api_key, resolved.api_base, resolved.extra_params,
@@ -571,6 +606,33 @@ class Harness:
             return answer, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=False)
         except Exception:
             return _recap(graph, halted=halted), ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
+
+
+def _maybe_flag_foreign_instruction_file(event: LlmEvent, queue: asyncio.Queue) -> None:
+    """Plan 35 v3's foreign-file trigger, hung off the same
+    `ToolExecutionCompleted` moment `_bridge_llm_event` already reacts to
+    for `edit_file`/`write_file` — kept as its own function rather than a
+    branch inside `_bridge_llm_event` because that function is shared with
+    the graph path's cold subagent steps (`_stream_graph`'s own
+    `_on_event`), which must never reach here (decision 11); the caller
+    only invokes this under its own `subagent is None` guard.
+
+    Markdown-only, no prefilter (v3 deletes the regex prefilter — decision
+    5): every root-dispatched `.md` `read_file` result fires a
+    `ForeignFileDetectedEvent` unconditionally; the one cheap LLM question
+    (`agent.directive_audit.Auditor`) is the only judgment left, downstream.
+    Whether the audit is even enabled is checked once, downstream, in
+    `GekaiAgent.start_foreign_file_audit` — the same place GEKAI.md's own
+    audit already checks it; not duplicated here.
+    """
+    if not isinstance(event, ToolExecutionCompleted):
+        return
+    if event.result.is_error or event.call.name != "read_file":
+        return
+    path = (event.call.input or {}).get("path", "")
+    if not path.lower().endswith(".md"):
+        return
+    queue.put_nowait(ForeignFileDetectedEvent(rel_path=path, text=event.result.content))
 
 
 def _last_assistant_text(history: list[Message]) -> str:

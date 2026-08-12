@@ -151,6 +151,32 @@ class DirectivePumpEvent(AgentEvent):
 
 
 @dataclass
+class DirectiveAuditEvent(AgentEvent):
+    """Telemetry only (plan 35 v3): the directive auditor asked its one
+    cheap yes/no question about an ingested or foreign markdown file. The
+    verdict itself never enters any model's context (plan 35 concept 5) —
+    this event and the TUI notice are its only two consumers."""
+    path: str = ""
+    has_directives: bool = False
+    cached: bool = False
+    duration_ms: int = 0
+    file_bytes: int = 0
+
+
+@dataclass
+class ForeignFileDetectedEvent(AgentEvent):
+    """Plan 35 v3 Phase A: a root-dispatched `read_file` call returned
+    markdown text — no prefilter gates this any more (v3 deletes it); every
+    root-dispatched `.md` read fires. Carries the file's rel_path and full
+    text so a caller can fire the same tracked, cached, swallow-all
+    directive audit GEKAI.md gets (`GekaiAgent.start_foreign_file_audit`) —
+    never the verdict itself, which stays out of any model's context
+    (concept 5)."""
+    rel_path: str = ""
+    text: str = ""
+
+
+@dataclass
 class ResponderEvent(AgentEvent):
     """Telemetry only: the responder synthesized (or failed to synthesize,
     falling back to the mechanical recap) the turn's final answer from the

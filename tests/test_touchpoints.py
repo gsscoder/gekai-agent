@@ -13,7 +13,7 @@ def test_all_touchpoints_have_unique_names() -> None:
 
 def test_expected_touchpoints_are_registered() -> None:
     names = {t.name for t in TOUCHPOINTS}
-    assert names == {"estimator", "sequencer", "root-dispatch", "subagent-dispatch", "micro"}
+    assert names == {"estimator", "sequencer", "root-dispatch", "subagent-dispatch", "micro", "directive-audit"}
 
 
 def test_estimator_and_micro_are_fast() -> None:

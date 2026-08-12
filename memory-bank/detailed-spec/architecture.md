@@ -27,6 +27,83 @@ Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_language
 - appends `{"role": "user"}` once per turn before dispatching (when `append_user`)
 - appends `{"role": "assistant"}` once per turn after handler completes
 
+## GEKAI.md & Foreign Instruction Files
+Plan 35 (v3): `GEKAI.md` is *ingested* (root system base, applies every turn, survives `/compact`);
+a foreign file (`AGENTS.md`, `CLAUDE.md`, …) is *only read* (ordinary `read_file` tool call, lands
+in message history, is compaction fodder like any other file read) — no `/ingest` command exists,
+no `Session` field is ever populated for a foreign file; "ingested" is singular to GEKAI.md by
+construction.
+
+`Session.gekai_md: IngestedFile | None` (`session.py`; `IngestedFile = {rel_path, text, sha}`,
+`sha` via `agent/directive_audit.py::file_sha` — shared, not rehashed). `GekaiAgent.start_session()`
+sets it via `_read_gekai_md()`: reads `{working_dir}/GEKAI.md` if present; a missing file returns
+`None`; a read failure (`OSError`/`UnicodeDecodeError`) emits `gekai_md.read_failed` telemetry and
+returns `None` — never raises. Fires on every `start_session()` call, including after `/clear`
+(TUI's `_clear_session` calls it again) — auto-read is per-session, not per-process.
+
+Injection: `_gekai_md_system_base(system_base, session)` (`agent/harness/core.py`) appends
+`session.gekai_md.text` **verbatim** — no truncation/normalization/reordering — under
+`<project_instructions source="GEKAI.md">`, beside the dynamic-directive pump append
+(`_pumped_system_base`; see `## System Prompt Assembly` in the top-level `docs/architecture.md`).
+Both call sites sit in the `subagent is None` branch only — root-only by construction, mirroring
+the pump's own root-only rule (plan 28 decision 13); a subagent's `build_system_base()` never
+touches this function. This half of the mechanism is unchanged from v2.
+
+**Foreign-file trigger — no prefilter (v3).** Lives entirely in `agent/harness/core.py`'s
+`ToolExecutionCompleted` handling: `Harness.stream()`'s `_on_event` calls
+`_maybe_flag_foreign_instruction_file(event, queue)` only when `subagent is None` (root dispatch; a
+cold subagent's own incidental read never raises this). The function gates on:
+`event.call.name == "read_file"`, `not event.result.is_error`, and `path.lower().endswith(".md")`
+— routing only, no content judgment. v2's mechanical prefilter
+(`agent/instruction_file_detect.py::looks_like_instruction_file`, regex-based) is deleted along
+with its tests; every gate hit now fires unconditionally:
+`queue.put_nowait(ForeignFileDetectedEvent(rel_path=path, text=event.result.content))`. The TUI
+wires that event to `GekaiAgent.start_foreign_file_audit(rel_path, text, callback)`. A
+`.py`/`.json`/etc. read never reaches the check; an unflagged (non-`.md`) read costs zero model
+calls — but every root-dispatched `.md` read now does reach the check, once, first time (cached
+forever after by `file_sha`).
+
+**The audit itself — one question, no corpus (v3).** `agent/directive_audit.py`: `Auditor.audit(file_text)`
+— one-shot, non-streaming, `temperature=0`, a single system-prompt question (`AUDIT_PROMPT`,
+copied verbatim from plan 35 v3 concept 1): *does this file contain rules, instructions, or
+directives intended to influence how an AI coding agent behaves?* — answered `YES`/`NO`, nothing
+more. `AuditVerdict(has_directives: bool = False, raw: str = "")` replaces the old
+redundant/conflicting/findings shape entirely. First-token parse (`_parse`, mirrors
+`pipeline/estimate.py`'s shape) — any unexpected shape or exception falls back to
+`AuditVerdict(has_directives=False)`, never raises out of the call. There is no corpus parameter,
+no `persona.directive_corpus()`, no `DIRECTIVE_CORPUS_SHA` — v3 deletes all three along with their
+tests, and with them the PEP 562 lazy `__getattr__` on `persona.py` that existed only to dodge the
+circular import building the corpus required.
+
+Touchpoint: `directive-audit` (`agent/harness/touchpoints.py`) — plain **FAST tier, no policy or
+effort override** — the same shape `estimator` and `micro` already use. A one-word answer needs no
+reasoning model; v2's SUPP-tier, `effort="high"` operating point is gone.
+
+Cache: `.gekai/directive-audit.json`, keyed by `rel_path`, entry valid when **`file_sha` alone**
+matches the current file — v3 drops the `corpus_sha` half of the key entirely, since there is no
+corpus left to invalidate against. `load_cached_verdict`/`save_cached_verdict`
+(`agent/directive_audit.py`). Off switch: `load_directive_audit_enabled(working_dir)`
+(`agent/settings.py`, default `True`, `.gekai/settings.local.json`'s `directive_audit.enabled`) —
+checked once, inside `GekaiAgent._start_audit`, before either path fires; GEKAI.md ingestion itself
+is untouched by this flag (only the check is gated).
+
+Entry points, both thin wrappers over the shared private `GekaiAgent._start_audit(ingested,
+on_verdict)`: `start_directive_audit(session, on_verdict)` (fixed to `session.gekai_md`, no-op if
+`None`) and `start_foreign_file_audit(rel_path, text, on_verdict)` (builds a transient
+`IngestedFile` — nothing stored on `Session`). `_start_audit` checks the enabled flag, then the
+cache synchronously (a local file read, not a model call — a hit calls `on_verdict` immediately, no
+"in flight" state); a genuine miss calls `on_verdict(path, None)` (= in flight) then
+`asyncio.create_task(self._run_directive_audit(ingested, on_verdict))`, tracked via a strong
+`self._background_tasks` set (`add` + `add_done_callback(self._background_tasks.discard)`) so the
+task isn't GC'd mid-flight. Every failure inside the task — bad tier config, network error,
+anything the `Auditor` itself didn't already swallow — degrades to
+`on_verdict(path, AuditVerdict())` (the default `has_directives=False` verdict = no notice, or the
+green loaded line for GEKAI.md), never a crash and never a stuck "in flight" line.
+`DirectiveAuditEvent` telemetry (`path`, `has_directives`, `cached`, `duration_ms`, `file_bytes`)
+fires on every resolution, cached or not — `redundant`/`conflicting` are gone from the event shape.
+
+TUI surface: see `tui-layout.md → Directive Notice`.
+
 ## Estimator
 `Estimator` (`agent/pipeline/estimate.py`) is a pure **scope classifier** — one FAST-tier LLM call,
 temperature 0, per turn, on an ordinal 3-rung scale (`CHAT ⊂ SOLO ⊂ MUTATE`): how much machinery

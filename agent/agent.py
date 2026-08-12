@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import platform
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from . import __version__
+from .directive_audit import Auditor, AuditVerdict, file_sha, load_cached_verdict, save_cached_verdict
 from .llm.resolve import ResolvedTier, TierResolutionError, resolve_tier, resolve_touchpoint
 from .llm.tiers import TierName
 from .harness import Harness, HiddenGrantCallback
 from .harness.touchpoints import touchpoint
 from .permissions import PermissionCallback
-from .session import Session
-from .settings import Permissions, load_model_catalog, load_tier_bindings
+from .session import IngestedFile, Session
+from .settings import Permissions, load_directive_audit_enabled, load_model_catalog, load_tier_bindings
 from .logging import EventLogger
 
-from .events import MaxIterationsEvent, AgentEvent
+from .events import DirectiveAuditEvent, MaxIterationsEvent, AgentEvent
 from .persistence import append_message, append_debug, append_event
+
+_log = logging.getLogger(__name__)
+
+# Called with (rel_path, verdict) whenever the directive audit's TUI-visible
+# state changes: `verdict=None` means "in flight" (a cache miss just started
+# the LLM call), any `AuditVerdict` means the audit finished (cache hit or a
+# real call) and is the final word until the next audit replaces it.
+DirectiveVerdictCallback = Callable[[str, "AuditVerdict | None"], None]
 
 
 class GekaiAgent:
@@ -41,6 +53,11 @@ class GekaiAgent:
         self.effort: str | None = None
         self._api_key: str | None = None
         self._api_base: str | None = None
+        # Strong references to fire-and-forget background tasks (plan 35
+        # concept 5's directive audit is the first one) — asyncio only holds
+        # a task alive via a live reference elsewhere; without this set a
+        # task can be garbage-collected mid-flight and silently vanish.
+        self._background_tasks: set[asyncio.Task] = set()
         estimator_model, sequencer_model, root_dispatch_model, subagent_dispatch_model = (
             self._configure_touchpoints()
         )
@@ -143,11 +160,139 @@ class GekaiAgent:
         session = Session(working_dir=self.working_dir, permissions=self.permissions)
         if session_id:
             session.id = session_id
+        session.gekai_md = self._read_gekai_md()
         if self.debug:
             append_debug(session, session.messages[0])
         if restored_messages:
             session.messages.extend(restored_messages)
         return session
+
+    def _read_gekai_md(self) -> IngestedFile | None:
+        """Auto-read of `GEKAI.md` at the workspace root (plan 35 decision
+        6: filename auto-discovery stops here, nothing else is scanned).
+        A read failure — missing file, permissions, bad encoding, anything
+        — is telemetry and a skip, never a crash: a broken GEKAI.md must
+        not prevent a session from starting."""
+        path = self.working_dir / "GEKAI.md"
+        if not path.exists():
+            return None
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            self.events.emit(
+                "gekai_md.read_failed", level="warning",
+                path=str(path), error_type=type(exc).__name__, message=str(exc),
+            )
+            return None
+        return IngestedFile(rel_path="GEKAI.md", text=text, sha=file_sha(text))
+
+    def start_directive_audit(
+        self, session: Session, on_verdict: DirectiveVerdictCallback | None = None,
+    ) -> None:
+        """Fires plan 35 Phase 2's directive audit for `session.gekai_md`, if
+        any. Deliberately a separate call from `start_session()` rather than
+        folded into it: `start_session()` must keep working for callers with
+        no running event loop (e.g. `tests/test_gekai_md.py`'s plain sync
+        tests), while firing a background task needs one. Both TUI call
+        sites (`_init_session`, `_clear_session`) are already `async def`, so
+        calling this immediately after `start_session()` there still counts
+        as "after `_read_gekai_md()` sets `session.gekai_md`" — there is no
+        await between the two, nothing else can observe the gap.
+
+        Thin wrapper over `_start_audit`, fixed to `session.gekai_md` — the
+        generalized entry point (plan 35 Phase 3's `start_foreign_file_audit`
+        below shares the same cache/resolve/call/swallow flow)."""
+        gekai_md = session.gekai_md
+        if gekai_md is None:
+            return
+        self._start_audit(gekai_md, on_verdict)
+
+    def start_foreign_file_audit(
+        self, rel_path: str, text: str, on_verdict: DirectiveVerdictCallback | None = None,
+    ) -> None:
+        """Plan 35 Phase 3: the foreign-file counterpart of
+        `start_directive_audit` above — same cache-check-then-fire, resolve,
+        call, swallow-all-failures, and `DirectiveAuditEvent` telemetry,
+        just built from a transient `IngestedFile` rather than
+        `session.gekai_md`. Nothing is stored on `Session` for this (concept
+        2 / decision 5 — no ingestion command, no per-file state): the
+        `IngestedFile` built here exists only for the duration of this
+        call, exactly like a foreign file read is a transient event in
+        message history rather than accumulated session state."""
+        ingested = IngestedFile(rel_path=rel_path, text=text, sha=file_sha(text))
+        self._start_audit(ingested, on_verdict)
+
+    def _start_audit(
+        self, ingested: IngestedFile, on_verdict: DirectiveVerdictCallback | None,
+    ) -> None:
+        """The cache check happens synchronously, inline, before any task is
+        created: it's a local file read, not a model call, so a hit can
+        answer `on_verdict` immediately with no "in flight" flash and no
+        task to track. Only a genuine miss pays for the background LLM call
+        (concept 5 — never awaited, never blocks the caller)."""
+        if not load_directive_audit_enabled(self.working_dir):
+            return
+        try:
+            cached = load_cached_verdict(self.working_dir, ingested.rel_path, ingested.sha)
+        except Exception:
+            _log.warning("directive audit cache lookup failed; skipping", exc_info=True)
+            return
+        if cached is not None:
+            self._emit_directive_audit_event(ingested, cached, cached=True, duration_ms=0)
+            if on_verdict is not None:
+                on_verdict(ingested.rel_path, cached)
+            return
+
+        if on_verdict is not None:
+            on_verdict(ingested.rel_path, None)  # None = in flight
+        task = asyncio.create_task(self._run_directive_audit(ingested, on_verdict))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_directive_audit(
+        self, ingested: IngestedFile, on_verdict: DirectiveVerdictCallback | None,
+    ) -> None:
+        # Every failure here — bad/incomplete tier config, a network error,
+        # anything the Auditor itself didn't already swallow — degrades to
+        # the safe NO verdict, never a crash and never a stuck "in flight"
+        # line (concept 5: the verdict has exactly one consumer, the human,
+        # and a broken audit must never become the session's problem).
+        t0 = time.monotonic()
+        try:
+            resolved = resolve_touchpoint("directive-audit", load_model_catalog(), load_tier_bindings())
+            auditor = Auditor(
+                model=resolved.model, api_key=resolved.api_key,
+                api_base=resolved.api_base, extra_params=resolved.extra_params,
+            )
+            verdict = await auditor.audit(ingested.text)
+        except Exception:
+            _log.warning("directive audit failed; falling back to NO", exc_info=True)
+            if on_verdict is not None:
+                on_verdict(ingested.rel_path, AuditVerdict())
+            return
+        duration_ms = round((time.monotonic() - t0) * 1000)
+        try:
+            save_cached_verdict(self.working_dir, ingested.rel_path, ingested.sha, verdict)
+        except Exception:
+            _log.warning("directive audit cache save failed", exc_info=True)
+        self._emit_directive_audit_event(ingested, verdict, cached=False, duration_ms=duration_ms)
+        if on_verdict is not None:
+            on_verdict(ingested.rel_path, verdict)
+
+    def _emit_directive_audit_event(
+        self, ingested: IngestedFile, verdict: AuditVerdict, *, cached: bool, duration_ms: int,
+    ) -> None:
+        event = DirectiveAuditEvent(
+            path=ingested.rel_path, has_directives=verdict.has_directives,
+            cached=cached, duration_ms=duration_ms,
+            file_bytes=len(ingested.text.encode("utf-8")),
+        )
+        self.events.emit(
+            "directive_audit",
+            path=event.path, has_directives=event.has_directives,
+            cached=event.cached, duration_ms=event.duration_ms,
+            file_bytes=event.file_bytes,
+        )
 
     async def process_stream(
         self,

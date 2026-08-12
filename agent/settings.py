@@ -81,6 +81,34 @@ def save_allow_hidden(working_dir: Path, rel: str) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def load_directive_audit_enabled(working_dir: Path) -> bool:
+    """Off switch for plan 35's directive auditor (decision 15, unmeasurable
+    features get deleted). Defaults to enabled — absent from a fresh
+    `settings.local.json`, like `load_allow_hidden`'s empty-set default, so
+    a project that never touched this setting gets the audit rather than
+    silently losing it; disabling is an explicit opt-out, not an implicit
+    one. Phase 0: nothing reads this yet."""
+    path = _settings_path(working_dir)
+    if not path.exists():
+        return True
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return True
+    return bool(data.get("directive_audit", {}).get("enabled", True))
+
+
+def save_directive_audit_enabled(working_dir: Path, enabled: bool) -> None:
+    path = _settings_path(working_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault("directive_audit", {})["enabled"] = enabled
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def bootstrap_global_settings() -> None:
     """Ensures ~/.gekai/settings.json exists."""
     path = Path.home() / ".gekai" / "settings.json"

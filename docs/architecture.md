@@ -164,6 +164,89 @@ actually pumped.
 
 ---
 
+## GEKAI.md & Foreign Instruction Files
+
+Plan 35 (v3) gives Gekai two distinct ways a project can hand it standing instructions, and one
+shared, advisory-only check that asks a single yes/no question about either.
+
+**`GEKAI.md` — ingested.** `Session.gekai_md: IngestedFile | None` (`agent/session.py`) is read
+once, at session start (including after `/clear`), from the workspace root
+(`GekaiAgent._read_gekai_md`, `agent/agent.py`) — a missing file or a read failure is telemetry
+and a skip, never a crash. When present, `_gekai_md_system_base()` (`agent/harness/core.py`)
+appends the file **verbatim** to root's system base, under its own tag:
+
+```
+<project_instructions source="GEKAI.md">
+…file text, byte-for-byte…
+```
+
+This happens beside the dynamic-directive pump append, **root-only** — a spawned subagent never
+sees it, mirroring the pump's own root-only rule (plan 28 decision 13). The system base is chosen
+over a simulated "read and understand" turn in message history specifically because message
+history is what `/compact` evicts; a rule seeded there would silently stop applying somewhere
+around turn 40 with no signal to anyone.
+
+**Foreign instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, …) — merely read.** There is
+no dedicated command and no `Session` field for these — no `/ingest` command exists, and never did
+in shipped code. When the user asks Gekai to read one, root calls the ordinary `read_file` tool
+(`agent/tools/files.py`) and the file becomes a tool result in message history, exactly like
+reading any other file — it is compaction fodder, on purpose: the user asked for it once, for
+context, not as standing law.
+
+**The shared check — one question, no prefilter, no corpus.** Both paths feed the same async,
+advisory-only check, `agent/directive_audit.py`'s `Auditor` — a single yes/no question asked of the
+file's text alone: *does this file contain rules, instructions, or directives intended to influence
+how an AI coding agent behaves?* There is no corpus, no comparison against Gekai's own directives,
+no classification, no counting — a file may describe an AI product or mention agents throughout and
+still answer `NO`; what matters is whether the file addresses the assistant reading it, not its
+subject matter.
+
+- GEKAI.md always triggers the check — it is Gekai's own file, instruction-file by definition.
+- A foreign file triggers the check on **every** root-dispatched `.md` `read_file` result — v3
+  deletes the regex prefilter that used to gate this. `_maybe_flag_foreign_instruction_file`
+  (`agent/harness/core.py`, fired from `ToolExecutionCompleted` handling) gates only on: the read
+  was root-dispatched (never a subagent's own incidental read), the path ends in `.md`, and the
+  read succeeded — routing, not content judgment. A `.py`/`.json` read never reaches the check.
+- The call runs at the `directive-audit` touchpoint — plain **FAST tier, no policy or effort
+  override** (`agent/harness/touchpoints.py`), the same shape `estimator`/`micro` already use: a
+  one-word answer needs no reasoning model. `AuditVerdict(has_directives: bool, raw: str)` — a
+  first-token parse mirroring `estimate.py`; any unexpected output, or any call failure, falls back
+  to `NO`, the safe, silent answer.
+- Results cache at `.gekai/directive-audit.json`, keyed on `file_sha` alone — there is no corpus
+  any more to invalidate against. A `directive_audit.enabled` setting (`agent/settings.py`, default
+  on) turns the whole check off without touching GEKAI.md ingestion.
+- `GekaiAgent.start_directive_audit()` (the GEKAI.md path) and `start_foreign_file_audit()` (the
+  foreign-file path) both funnel into a shared private `_start_audit()` — same cache check, fire,
+  swallow-all-failures, and telemetry flow either way.
+
+**The verdict never enters any model's context.** It has exactly one consumer — the human, via a
+single `#directive-notice` TUI slot and the `directive_audit` telemetry event. One slot, one line,
+last verdict wins:
+
+| file      | verdict    | slot shows                                |
+|-----------|------------|--------------------------------------------|
+| GEKAI.md  | in flight  | grey `⋯ checking GEKAI.md`                  |
+| GEKAI.md  | YES        | yellow `⚠  GEKAI.md contains agent directives` |
+| GEKAI.md  | NO         | green `✓ GEKAI.md loaded` (persists)        |
+| foreign   | in flight  | grey `⋯ checking <path>`                    |
+| foreign   | YES        | yellow `⚠  <path> contains agent directives` |
+| foreign   | NO         | nothing                                     |
+
+GEKAI.md always leaves a mark because its read is invisible — silence on a clean file would be
+indistinguishable from the file not existing or the check being broken. A foreign file stays silent
+on `NO` because the user asked for that read and watched it happen; a confirmation there would be
+noise. The slot is one line, last-verdict-wins — not stacked, not per-file — so a foreign file's
+verdict landing after GEKAI.md's own warning silently overwrites it; this is a known, accepted
+limitation (two different lifetimes sharing one slot, with nothing in the notice itself
+distinguishing which is which), not a bug.
+
+This is a **linter, not a guardrail**: it reports and stops there. It never blocks a turn, never
+strips or rewrites the file, and never changes what any model sees — the enforcement surface a
+stronger control would otherwise protect is already held mechanically, by the permission system
+(`agent/permissions.py`, `agent/settings.py`).
+
+---
+
 ## Sandbox / Isolation
 
 Tool execution is **not** OS-sandboxed. The current boundary is:

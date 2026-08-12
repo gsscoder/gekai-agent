@@ -22,6 +22,7 @@ from textual.worker import Worker
 
 from agent import compact, credentials
 from agent.agent import GekaiAgent
+from agent.directive_audit import AuditVerdict
 from agent.harness import turn as harness_turn
 from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
@@ -705,6 +706,15 @@ class GekaiApp(App[None]):
         display: none;
     }
 
+    #directive-notice {
+        height: 1;
+        background: ansi_default;
+        color: grey;
+        padding: 0 2 0 0;
+        text-align: right;
+        display: none;
+    }
+
     #context-bar {
         height: 1;
         background: ansi_default;
@@ -814,6 +824,7 @@ class GekaiApp(App[None]):
             yield HistoryPanel(id="history-panel")
             yield TiersPanel(id="tiers-panel")
             yield Static("", id="copy-notice")
+            yield Static("", id="directive-notice")
             with Container(id="input-area"):
                 yield PromptTextArea(id="prompt", show_line_numbers=False, compact=True, highlight_cursor_line=False)
                 yield Static("❯", id="prompt-marker")
@@ -839,11 +850,13 @@ class GekaiApp(App[None]):
     async def _init_session(self) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
 
+        self._hide_directive_notice()
         self._session = self._agent.start_session(
             restored_messages=self._restored_messages,
             session_id=self._restored_id,
         )
         self._agent.events.emit("session.start", session=self._session.id, resumed=self._restored_id is not None)
+        self._agent.start_directive_audit(self._session, self._apply_directive_verdict)
 
         history_path = (
             Path.home() / ".gekai" / "workspaces"
@@ -968,8 +981,10 @@ class GekaiApp(App[None]):
     async def _clear_session(self, command_text: str | None = None) -> None:
         conversation = self.query_one("#conversation", ScrollableContainer)
         await conversation.remove_children()
+        self._hide_directive_notice()
         self._session = self._agent.start_session()
         self._agent.events.emit("session.start", session=self._session.id, resumed=False)
+        self._agent.start_directive_audit(self._session, self._apply_directive_verdict)
         self._other_ops_tokens = 0
         self._refresh_status_bar()
         self._assistant_widget = None
@@ -1587,6 +1602,7 @@ class GekaiApp(App[None]):
             hidden_grant_callback=self._hidden_grant_callback,
             append_user=append_user,
             on_event=_on_event,
+            on_directive_verdict=self._apply_directive_verdict,
         )
 
         return _StepResult(
@@ -2005,6 +2021,56 @@ class GekaiApp(App[None]):
     def _hide_copy_notice(self) -> None:
         try:
             self.query_one("#copy-notice", Static).display = False
+        except Exception:
+            pass
+
+    def _apply_directive_verdict(self, path: str, verdict: AuditVerdict | None) -> None:
+        """`GekaiAgent.start_directive_audit`'s callback (plan 35 v3 concept
+        3): one slot, one line, last verdict wins — there is no per-file
+        store, so a second audit landing (GEKAI.md, then a foreign-file
+        read, or vice versa) simply overwrites whatever is showing now.
+        Not a toast: the condition reported can last the whole session, so
+        the notice persists until the next verdict replaces it, with no
+        timer to auto-hide it.
+
+        GEKAI.md always reports — in flight, YES, and NO all leave a mark,
+        because its read is invisible and silence would be indistinguishable
+        from a broken audit. A foreign file only warns on YES; a clean
+        foreign-file read stays silent because the user asked for that read
+        and watched it happen (concept 3)."""
+        try:
+            notice = self.query_one("#directive-notice", Static)
+        except Exception:
+            return
+
+        is_gekai_md = path == "GEKAI.md"
+
+        if verdict is None:
+            notice.update(f"⋯ checking {path}")
+            notice.styles.color = "grey"
+            notice.display = True
+            return
+
+        if verdict.has_directives:
+            notice.update(f"⚠  {path} contains agent directives")
+            notice.styles.color = "yellow"
+            notice.display = True
+            return
+
+        if is_gekai_md:
+            notice.update("✓ GEKAI.md loaded")
+            notice.styles.color = "green"
+            notice.display = True
+            return
+
+        notice.update("")
+        notice.display = False
+
+    def _hide_directive_notice(self) -> None:
+        try:
+            notice = self.query_one("#directive-notice", Static)
+            notice.update("")
+            notice.display = False
         except Exception:
             pass
 
