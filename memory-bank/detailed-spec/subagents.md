@@ -78,9 +78,10 @@ the `NAMESPACE_COLORS` comment: a namespace with no invocable members is innate 
 no selector to build), `auto_assignable=True` (routable by the sequencer), full tool ceiling with a
 per-step `tool_policy` for narrowing, `directive_domains=("*",)` — the one subagent that composes
 every other namespace's directives (rank-ordered) into its own, since a step can land it in any
-domain. The four coding/testing specialists (`code-expert`, `code-refactorer`, `test-expert`,
-`test-fixer`) declare `directive_domains=("generic",)`, composing the same cold-dispatch contract
-into their own directives (`Subagent._compose_directives`, `agent/subagents/__init__.py`).
+domain. The five coding/testing specialists (`code-expert`, `code-fixer`, `code-refactorer`,
+`test-expert`, `test-fixer`) declare `directive_domains=("generic",)`, composing the same
+cold-dispatch contract into their own directives (`Subagent._compose_directives`,
+`agent/subagents/__init__.py`).
 
 ## Adding a New Subagent-Style Streamer
 There is no base class to inherit — any async generator yielding `AgentEvent`s following the

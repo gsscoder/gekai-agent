@@ -513,10 +513,12 @@ Adding a subagent = drop one file; zero other changes required.
 skipped). There is no fallback subagent: each subagent stands on its own `description`. `main` is the
 **generalist default** — general or simple requests, reading/explaining/running code, and
 and all general/glue/scaffolding work in a plan; pick a subagent only when
-the request clearly fits its specialty. `code-expert` handles **code work by kind** —
-features, fixes, and behavior-changing rewrites where the approach is decided; it owns its assigned step's implementation in full;
-its `description` excludes general/scaffolding/glue work (that's `main`) and
-pure refactors / complexity-reduction passes with no behavior change (those go to `code-refactorer`).
+the request clearly fits its specialty. `code-expert` handles **decided behavior work** —
+features and behavior-changing rewrites where the approach is already decided; it owns its assigned
+step's implementation in full; its `description` excludes general/scaffolding/glue work (that's
+`main`), all bug fixing regardless of how obvious the fix (that's `code-fixer`'s domain — trace
+root cause first, then apply the minimal correction), and pure refactors / complexity-reduction
+passes with no behavior change (those go to `code-refactorer`).
 
 `validate_registry()` runs at startup — raises if any namespace in `NAMESPACES` has no badge
 color, a subagent has an unknown namespace, or names collide.
