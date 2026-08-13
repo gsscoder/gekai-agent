@@ -369,7 +369,7 @@ class Harness:
         def _on_event(event: LlmEvent) -> None:
             _bridge_llm_event(
                 event, queue, session, files_touched, self._debug, root_run_id,
-                emit_text_chunks=True,
+                emit_text_chunks=subagent is None,
             )
             # Root-only (decision 11): `stream()` also runs a cold subagent
             # outside a task graph (`subagent` set, no estimator/graph
