@@ -46,24 +46,6 @@ def test_trivial_single_duty_yields_one_step_no_verify() -> None:
     assert graph[0].verify is None
 
 
-def test_agent_x_seed_assigns_primary_step_to_seed_agent() -> None:
-    sequencer = _make_sequencer()
-    raw = json.dumps({
-        "summary": "add coverage",
-        "steps": [{"agent": "test-expert", "instruction": "add coverage", "mission": "add coverage", "verify": None}],
-    })
-    mock_create = AsyncMock(return_value=mock_llm_response(raw))
-    sequencer._client.chat.completions.create = mock_create
-
-    graph = run(sequencer.sequence("add coverage", seed="test-expert"))
-
-    # the seed must reach the outbound prompt (mechanism)...
-    sent_user_message = mock_create.call_args.kwargs["messages"][1]["content"]
-    assert "test-expert" in sent_user_message
-    # ...and the parsed graph's primary (first) step must actually carry it (outcome).
-    assert graph[0].agent == "test-expert"
-
-
 def test_post_planning_only_agent_in_phase1_raises() -> None:
     sequencer = _make_sequencer()
     raw = json.dumps({

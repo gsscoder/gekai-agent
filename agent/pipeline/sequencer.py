@@ -81,16 +81,15 @@ class Sequencer:
         self._full_roster = list(SUBAGENTS)
         self._prompt = _build_prompt(roster)
 
-    async def sequence(self, user_input: str, *, seed: str | None = None) -> TaskGraph:
+    async def sequence(self, user_input: str) -> TaskGraph:
         """Returns a validated TaskGraph. Raises ValueError if the model's output
         fails schema/roster/phase validation (fail loud — plan 27 decision 6).
         """
-        prompt = user_input if seed is None else f"primary specialist: {seed}\n\n{user_input}"
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": self._prompt},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_input},
             ],
             **self._extra_params,
         )

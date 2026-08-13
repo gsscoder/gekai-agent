@@ -23,7 +23,7 @@ Workspace context `<workspace>` block begins with `"verified repository metadata
 Injected subset: `workspace_name`, `workspace_type`, `branch`, `primary_languages`, `projects`; `extensions` when `projects` empty; `domain_map` when present
 
 `GekaiAgent.process_stream(session, user_input, permission_callback=None, turn_id=None, hidden_grant_callback=None, append_user=True, seed=None)` is the sole owner of session writes:
-`permission_callback: PermissionCallback | None`; `seed` — an explicit `/`-slash agent name (or a forced single-duty match), passed through to `Harness.stream()`
+`permission_callback: PermissionCallback | None`; `seed` — an explicit `/`-slash agent name, passed through to `Harness.stream()`, which resolves it against `SUBAGENTS` and dispatches that agent directly on the no-graph path (sequencer/task graph bypassed entirely — see `## Estimator` / `## Cross-Agent Dispatch`)
 - appends `{"role": "user"}` once per turn before dispatching (when `append_user`)
 - appends `{"role": "assistant"}` once per turn after handler completes
 
@@ -137,9 +137,10 @@ token only) map directly; any unparseable output, or an exception from the call 
 warning and falls back to `ScopeEstimate(scope="solo")` — the safe middle rung, never `chat`
 (would skip needed codebase access) and never `mutate` (would spend a planning call on a greeting).
 
-`Harness.stream()` (`agent/harness/core.py`) is the sole consumer: `mutate` (or a `seed`-derived
-`"seeded"` decision) routes into `_stream_graph()`; `chat` and `solo` both run root directly, no
-graph. The `chat` rung additionally drives dispatch (plan 34): when the caller passed no explicit
+`Harness.stream()` (`agent/harness/core.py`) is the sole consumer: `mutate` routes into
+`_stream_graph()`; `chat` and `solo` both run root directly, no graph. An explicit `seed` bypasses
+the Estimator entirely (decision `"dispatch"`) and also runs the no-graph path, but with the
+named subagent bound in place of root — see `## Cross-Agent Dispatch`. The `chat` rung additionally drives dispatch (plan 34): when the caller passed no explicit
 `extra_params` override, `chat` resolves `effective_extra_params =
 resolve_thinking_params(root_dispatch_resolved.model, enabled=False)` — root's model's explicit
 thinking-*disable* payload (e.g. `{"extra_body": {"thinking": {"type": "disabled"}}}` for a
@@ -170,9 +171,10 @@ cannot self-spawn, and no subagent can spawn anything (plan 27 decision 11, supe
 agents-as-tools). All cross-agent dispatch is owned by the sequencer + the fixed interpreter, not
 by an LLM deciding mid-turn to call a tool:
 
-1. `Harness.stream()` estimates the turn (`Estimator`, or a `seed` from a forced `/`-slash route);
-   a `mutate`/`seeded` estimate routes into `Harness._stream_graph()`, everything else runs root
-   directly, cold-free, at the `root-dispatch` touchpoint (no graph).
+1. `Harness.stream()` estimates the turn (`Estimator`); a `mutate` estimate routes into
+   `Harness._stream_graph()`. Everything else — including an explicit `seed`, which skips the
+   Estimator entirely — runs at the `root-dispatch` touchpoint, no graph: root by default, or the
+   `seed`'s named subagent (warm session context, same as root) when one is given.
 2. `Sequencer.sequence()` (`agent/pipeline/sequencer.py`) makes one CORE-tier LLM call and returns
    a validated `TaskGraph` (`agent/pipeline/plan.py`, `parse_task_graph`) — every step's `agent` is
    an `auto_assignable` roster `Subagent` name; `root` (`ROOT_AGENT = "root"`) is rejected if the
@@ -208,8 +210,9 @@ special-cased in `Harness`, not filtered out of two separate lists.
 
 Root owns two things:
 - **Warm context.** `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs)
-  is passed on every root-dispatch call — the no-graph path in `Harness.stream()` and the
-  synthesis call below. Subagent (spawn-mode) runs never get this; they run cold (`prior=[]`).
+  is passed on every no-graph `Harness.stream()` call — root as well as a `seed`-dispatched
+  subagent — and on the synthesis call below. Only a graph-spawned subagent step (`run_subagent`,
+  called from inside `_stream_graph()`) runs cold (`prior=[]`).
 - **The turn's final answer.** `Harness._respond()` (`agent/harness/core.py`) is a real root call
   at the `root-dispatch` touchpoint — session recency + the graph's `summary` + every
   `StepResult.output`, prompted to write the reply the user sees. This runs after
@@ -217,7 +220,9 @@ Root owns two things:
   naming the step and reason). There is no separate `Responder` unit or touchpoint — root absorbed
   it. Fail-soft: any exception during synthesis (empty text, model/network error) falls back to
   `_recap()`, a mechanical (no LLM call) summary built from `graph.summary` and the halt info alone,
-  so a turn is never lost to its own wrap-up.
+  so a turn is never lost to its own wrap-up. A `seed`-dispatched subagent turn never reaches this
+  — it skips synthesis entirely and yields its own completed history's last assistant text
+  directly, the same as root's no-graph path.
 
 `_ROOT_DIRECTIVES` ("ask before acting on an ambiguous request") is safe specifically because root
 is never dispatched cold inside a graph — it is the only unit ever facing a human, so "ask" is

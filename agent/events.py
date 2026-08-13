@@ -98,7 +98,7 @@ class BudgetExhaustedEvent(AgentEvent):
 @dataclass
 class EstimateEvent(AgentEvent):
     """Result of the trivial-vs-mutate scope estimate (plan 27 improvement 5)."""
-    decision: str = ""  # "chat" | "solo" | "mutate" | "seeded" | "skipped"
+    decision: str = ""  # "chat" | "solo" | "mutate" | "dispatch" | "skipped"
     specialists: list[str] = field(default_factory=list)
     duration_ms: int = 0
 

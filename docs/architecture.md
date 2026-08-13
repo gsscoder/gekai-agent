@@ -7,7 +7,8 @@ agent-quoting ("use code-expert to…") are retired outright — no hybrid, no f
 flow for any workspace mutation now lives in engineered harness code, not in the core model's
 turn-by-turn judgement: **Gate (guard) → Estimator (guard) → Sequencer (CORE thinking, mutation
 path only) → fixed interpreter**. The only explicit way to summon a specific agent is `/agent-x`,
-which *seeds* the sequencer — it does not dispatch the whole turn to that agent directly.
+which dispatches the whole turn directly to that agent — bypassing the Estimator, the Sequencer,
+and the task graph entirely, not "seeding" the sequencer's decomposition.
 
 ```
 user input
@@ -426,9 +427,10 @@ class ScopeEstimate:
 | `TRIVIAL`| a single small file, a few small edits, or a read/query          | main solo, no sequencer (case 2 — deliberately loose) |
 | `MUTATE` | implementation-sized: multiple files/modules, a distinct unit    | Sequencer + interpreter (case 4) |
 
-An explicit `/agent-x` seed (or a single-duty match — case 3) **bypasses the Estimator entirely**
-and always goes to the Sequencer, seeded with that agent's duty — one mutation path for both cases
-3 and 4 (plan 27 decision 4), no shortcut that skips verification.
+An explicit `/agent-x` seed **bypasses the Estimator, the Sequencer, and the task graph entirely**
+— `Harness.stream()` resolves it directly against the subagent roster and dispatches that agent on
+the same no-graph path root normally runs (warm session context, no verify/repair/halt walk, since
+there is no task graph to walk).
 
 ---
 
@@ -436,8 +438,9 @@ and always goes to the Sequencer, seeded with that agent's duty — one mutation
 
 Plan 27 replaces `delegate`-in-main with two engineered pieces:
 
-- **Sequencer** (`agent/pipeline/sequencer.py`) — CORE thinking, one call per mutation turn. Given the
-  request (and an optional `/agent-x` seed), returns a raw plan text the model itself decomposes
+- **Sequencer** (`agent/pipeline/sequencer.py`) — CORE thinking, one call per mutation turn.
+  `Sequencer.sequence(user_input)` takes no seed (an explicit `/agent-x` seed never reaches the
+  sequencer at all — it bypasses this stage entirely). Given the request, returns a raw plan text the model itself decomposes
   into ordered steps assigned to `main` or an **auto-assignable** subagent (`code-expert`,
   `test-expert`), each carrying `verify`/`repair` when the model judges the step's complexity
   warrants a preventive check (the complexity *metric* itself remains an open design point — see
@@ -494,7 +497,7 @@ into the agent's own context once spawned — "who you act as right now," distin
 `agent/tools/catalog.py` to guard against drift); `permissions` lets a subagent further
 *restrict* — never escalate beyond — the session's grant. `auto_assignable` is orthogonal to
 `user_invocable`: `code-expert`/`test-expert` are both (sequencer may assign them, `/agent-x` can
-seed them); a verify/repair agent is `user_invocable=True, auto_assignable=False` (slash-summonable,
+dispatch them directly, bypassing the sequencer); a verify/repair agent is `user_invocable=True, auto_assignable=False` (slash-summonable,
 but never assigned by phase-1 decomposition). See [System Prompt Assembly](#system-prompt-assembly)
 for the full funnel and [Harness — Tool Loop](#harness--tool-loop) for how the allowlist and
 permissions jointly determine the *effective* tool set (and therefore the `<tools>` prompt content).
@@ -520,7 +523,8 @@ color, a subagent has an unknown namespace, or names collide.
 
 Subagent selection is performed by the Sequencer (phase-1 decomposition, auto-assignable roster
 only) — see [Sequencer + Interpreter](#sequencer--interpreter) above — or explicitly via `/agent-x`
-(seeds the sequencer; unknown `/agent-x` rejected at the command layer).
+(dispatches that agent directly, bypassing the sequencer/task graph entirely; unknown `/agent-x`
+rejected at the command layer).
 
 > **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
 > intent via routing. A separate, still-unbuilt `harness-worker` category would instead serve
@@ -544,9 +548,10 @@ effective = Permissions(
 `#input-area` container `border_title` shows the current pipeline stage as it advances
 (`route` → `main`/sequencer-badge names as `SubAgentStartEvent`/`DelegationStartEvent` arrive), not
 a single per-turn label keyed on `route.subagent` (that field is gone — plan 27 improvement 4).
-A `/agent-x` seed no longer means "the whole turn runs as that subagent's identity"; it seeds the
-sequencer, so the top-level label stays `main`/`sequencer` and individual plan steps render their own
-specialist badges as the interpreter dispatches them.
+An `/agent-x` seed now once again means "the whole turn runs as that subagent's identity" — it
+dispatches directly to that agent, bypassing the sequencer, so a seeded turn renders one
+`SubAgentStartEvent` badge for the named subagent itself, never the `DelegationStartEvent` badges
+an interpreter step walk would produce.
 
 ---
 
@@ -565,8 +570,10 @@ async def stream(
 ```
 
 - `subagent=None, seed=None`, trivial estimate (or no estimator wired) → single-agent path (below).
-- `subagent=None`, mutate estimate **or** `seed` given → `_stream_plan`: Sequencer + interpreter
-  (see [Sequencer + Interpreter](#sequencer--interpreter)).
+- `subagent=None`, mutate estimate → `_stream_graph`: Sequencer + interpreter
+  (see [Sequencer + Interpreter](#sequencer--interpreter)). An explicit `seed` no longer routes
+  here — it resolves straight to a bound `subagent` and takes the single-agent path below instead,
+  skipping the Estimator entirely.
 - `subagent=<Subagent>` → single-agent path built *as* that subagent — used internally by
   `run_subagent` for a nested dispatch, not a production top-level entry point any more (that role
   moved to `seed`).
@@ -624,7 +631,7 @@ sequenceDiagram
     participant CoreModel
 
     TUI->>Harness: stream(session, user_input, extra_params={} if route.trivial else None, seed=forced_seed)
-    Note over Harness: single-agent path (trivial estimate, or no mutate/seed) — the<br/>mutate/seeded path instead runs Sequencer + interpreter (_stream_plan)
+    Note over Harness: single-agent path (trivial estimate, or an explicit seed) — only a<br/>mutate estimate runs Sequencer + interpreter (_stream_graph); a seed never does
     Harness->>Harness: _build_agent(...) — filter tools, render <tools>, construct Agent
     Harness->>llmstitch: agent.run(prior_messages)
     loop tool-calling

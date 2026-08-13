@@ -47,6 +47,7 @@ class Subagent:
     tool_policy: ToolPolicy | None = None  # assignment-time tool ceiling (plan 31 Phase 1); None = no ceiling declared, unit runs full
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
+    alias: str = ""  # if set and user_invocable, shown/typed in slash palette instead of `name`
     auto_assignable: bool = False  # phase-1 decomposition may assign it; False = post-planning-only (verify/repair)
     # ADDITIONAL namespaces (beyond this subagent's own, which is always
     # auto-inherited unconditionally — never needs listing itself here) whose
@@ -138,13 +139,26 @@ def validate_registry() -> None:
     for ns in NAMESPACES:
         if not NAMESPACE_COLORS.get(ns):
             raise ValueError(f"namespace {ns!r} has no badge color defined")
-    seen: set[str] = set()
+    # single namespace of "slash strings" — both `name` and `alias` live here,
+    # since either can be typed in the slash palette; value tracks the owning
+    # subagent's real name and whether it claimed the string via name/alias
+    seen: dict[str, tuple[str, str]] = {}
     for p in SUBAGENTS:
         if p.namespace not in NAMESPACES:
             raise ValueError(f"subagent {p.name!r} has unknown namespace: {p.namespace!r}")
         if p.name in seen:
-            raise ValueError(f"duplicate subagent name: {p.name!r}")
-        seen.add(p.name)
+            other_name, other_kind = seen[p.name]
+            raise ValueError(
+                f"duplicate subagent name: {p.name!r} (already claimed as {other_kind} by {other_name!r})"
+            )
+        seen[p.name] = (p.name, "name")
+        if p.alias:
+            if p.alias in seen:
+                other_name, other_kind = seen[p.alias]
+                raise ValueError(
+                    f"subagent {p.name!r} alias {p.alias!r} collides with {other_kind} of subagent {other_name!r}"
+                )
+            seen[p.alias] = (p.name, "alias")
         if p.tool_policy is not None and not (0 <= p.tool_policy.ceiling < len(RUNGS)):
             raise ValueError(f"subagent {p.name!r} has out-of-range tool policy ceiling: {p.tool_policy.ceiling!r}")
         if "*" in p.directive_domains and len(p.directive_domains) > 1:

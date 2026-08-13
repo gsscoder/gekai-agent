@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import DoneEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
+from agent.events import DoneEvent, EstimateEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm import model_caps
@@ -213,27 +213,80 @@ def test_mutate_estimate_routes_through_sequencer(monkeypatch: pytest.MonkeyPatc
     assert collected[-1] == "build a library with tests"
 
 
-def test_seed_routes_through_sequencer_even_without_mutate_estimate(
+def test_seed_dispatches_directly_without_sequencer_or_estimator(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    # REQ: a `/alias` dispatch (`seed=...`) is a single task action bound to
+    # the session -- it must bypass the sequencer/task graph entirely, never
+    # touching the estimator or `Sequencer.sequence` (bug A's fix: routing a
+    # non-auto-assignable seed like `code-refactorer`/`test-fixer` through
+    # the sequencer's auto-assignable-only roster either mis-fires to a
+    # different agent or raises inside `parse_task_graph`).
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
-    graph = TaskGraph(summary="add coverage", steps=[Task(agent="test-expert", instruction="add coverage", mission="add coverage")])
-    plan_mock = AsyncMock(return_value=graph)
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run when seeded"))
     _patch_sequencer_sequence(monkeypatch, plan_mock)
-
-    async def fake_run_subagent(agent, task, **kwargs):
-        return "done"
-
-    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "add coverage", seed="test-expert"))
 
-    plan_mock.assert_awaited_once()
-    _, kwargs = plan_mock.await_args
-    assert kwargs.get("seed") == "test-expert"
-    assert any(isinstance(e, TaskGraphStartedEvent) for e in collected)
+    estimate_events = _only(collected, EstimateEvent)
+    assert len(estimate_events) == 1
+    assert estimate_events[0].decision == "dispatch"
+    assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+    assert collected[-1] == "done"
+
+
+def test_seed_dispatch_of_non_auto_assignable_code_refactorer_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: the literal regression from the live session bug report (bug A) --
+    # `code-refactorer` is `auto_assignable=False` (post-planning verify/
+    # repair-only), so the sequencer's own roster would never offer it as a
+    # legal choice; the seed-dispatch path must never ask the sequencer at
+    # all and must succeed cleanly.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run when seeded"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="refactored")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "clean this up", seed="code-refactorer"))
+
+    assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+    assert collected[-1] == "refactored"
+
+
+def test_seed_dispatch_of_non_auto_assignable_test_fixer_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: second confirmation of the fix class -- `test-fixer` is also
+    # `auto_assignable=False`.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run when seeded"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="fixed")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "fix the failing test", seed="test-fixer"))
+
+    assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+    assert collected[-1] == "fixed"
 
 
 def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -312,34 +365,32 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
     ]
 
 
-def test_sequencer_demotes_on_short_simple_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # REQ: item 5 -- a short, mechanically-simple request demotes the
-    # sequencer off its configured CORE default to SUPP (`_sequencer_signal`,
-    # scaling.py); proven end-to-end via the actual resolved config the
-    # freshly-built `Sequencer` receives, plus the yielded `ScaleEvent`.
+def test_seed_dispatch_never_constructs_a_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # REQ: second confirmation of the sequencer-bypass fix -- a seeded
+    # dispatch never even constructs a `Sequencer` (not just never awaits
+    # `.sequence()`), and resolves its own dispatch at root-dispatch's
+    # configured operating point like any other no-graph turn, with no
+    # sequencer `ScaleEvent` (there is no sequencer signal to compute).
     harness = _make_scaling_harness(_tier_distinguishing_resolve)
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
     sequencer_calls = _capturing_sequencer_init(monkeypatch)
-    graph = TaskGraph(summary="renamed", steps=[Task(agent="code-expert", instruction="rename it", mission="rename it")])
-    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run when seeded"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
 
     _RecordingAdapter.instances = []
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
 
     session = _make_session(tmp_path)
-    # 3 words, none in the multi-step keyword list -> guaranteed demote
-    # (scaling.py's own test_sequencer_signal_demotes_short_simple_prompt
-    # uses this exact prompt).
     prompt = "rename this variable"
-    assert len(prompt.split()) <= 15  # sanity: within _SEQUENCER_WORD_LIMIT
 
     collected = run(_drain(harness, session, prompt, seed="code-expert"))
 
-    assert sequencer_calls[0]["model"] == "supp-model", "Sequencer should be built from the SUPP-resolved config"
-    sequencer_events = [e for e in _only(collected, ScaleEvent) if e.component == "sequencer"]
-    assert sequencer_events == [
-        ScaleEvent(component="sequencer", default_tier="core", chosen_tier="supp", reason="easy-demote")
-    ]
+    assert sequencer_calls == [], "Sequencer should never be constructed for a seeded dispatch"
+    assert not any(isinstance(e, ScaleEvent) for e in collected)
+    assert len(_RecordingAdapter.instances) == 1
+    assert _RecordingAdapter.instances[0].calls[0]["model"] == "supp-model", (
+        "seed dispatch resolves at root-dispatch's default (SUPP) -- no scaling signal applies"
+    )
 
 
 def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

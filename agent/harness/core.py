@@ -271,7 +271,18 @@ class Harness:
         estimate_duration_ms = 0
         if subagent is None:
             if seed is not None:
-                estimate_decision = "seeded"
+                # Explicit slash-alias dispatch (e.g. `/refactor ...`): a
+                # single task action bound to this session, not a mutation
+                # for the sequencer to plan. Bypasses the sequencer/task
+                # graph entirely and resolves straight to a cold-ish
+                # subagent run below — this is the only way `stream()`'s own
+                # `subagent` local ever gets bound (delegate.py's
+                # `run_subagent` builds its own `Agent` and never calls
+                # `stream()`).
+                estimate_decision = "dispatch"
+                subagent = next((s for s in SUBAGENTS if s.name == seed), None)
+                if subagent is None:
+                    raise ValueError(f"unknown seed agent {seed!r}")
             elif self._estimator is not None:
                 t0 = time.monotonic()
                 estimate = await self._estimator.estimate(user_input, history=session.messages)
@@ -281,17 +292,19 @@ class Harness:
                 estimate_decision = "solo"  # no estimator wired — safest default, no planning
         yield EstimateEvent(decision=estimate_decision, specialists=[], duration_ms=estimate_duration_ms)
 
-        if subagent is None and estimate_decision in ("mutate", "seeded"):
+        if estimate_decision == "mutate":
             async for item in self._stream_graph(
-                session, user_input, seed, permission_callback, hidden_grant_callback, bus,
+                session, user_input, permission_callback, hidden_grant_callback, bus,
             ):
                 yield item
             return
 
-        # No-graph turn (trivial single-agent, or a cold subagent run outside
-        # a task graph): runs at root-dispatch's configured default, always —
-        # there is no per-node signal here (no verify/retry concept exists in
-        # this path), so it never modulates (plan 28 Phase 2 guardrail).
+        # No-graph turn: trivial single-agent (root), or a seed-dispatched
+        # subagent run bound to this session (warm context, no directive
+        # pump/GEKAI.md — decision 2/3 of the seed-dispatch fix). Runs at
+        # root-dispatch's configured default, always — there is no per-node
+        # signal here (no verify/retry concept exists in this path), so it
+        # never modulates (plan 28 Phase 2 guardrail).
         pumped_domains: list[str] = []
         if subagent is None:
             system_base, pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
@@ -318,18 +331,30 @@ class Harness:
             effective_extra_params = resolve_thinking_params(root_dispatch_resolved.model, enabled=False)
         else:
             effective_extra_params = root_dispatch_resolved.extra_params
+        if chat_rung:
+            # plan 34 phase 3: the chat rung carries no tool schemas — a
+            # greeting/chit-chat turn never needs them, and dropping the 9
+            # tool JSON schemas cuts root's prompt from ~2134 tokens toward
+            # a few hundred. The system prompt itself is untouched (decision
+            # 5) so a chat turn keeps solo's voice.
+            tools_override: frozenset[str] | None = frozenset()
+        elif subagent is not None:
+            # Seed-dispatch's tool ceiling clamp (decision 4): mirrors the
+            # graph path's `tool_scope(matched.tool_policy, step_scope)`,
+            # here with `step_scope=None` always (no sequencer step exists),
+            # so this only ever applies the subagent's own ceiling — the
+            # scope reason is always "default" (nothing to narrow further),
+            # so no `ToolScopeEvent` telemetry, unlike the graph path.
+            tools_override, _scope_reason = tool_scope(subagent.tool_policy, None)
+        else:
+            tools_override = None
         agent = _build_agent(
             root_dispatch_resolved.model, root_dispatch_resolved.api_key, root_dispatch_resolved.api_base,
             effective_extra_params,
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
-            # plan 34 phase 3: the chat rung carries no tool schemas — a
-            # greeting/chit-chat turn never needs them, and dropping the 9
-            # tool JSON schemas cuts root's prompt from ~2134 tokens toward
-            # a few hundred. The system prompt itself is untouched (decision
-            # 5) so a chat turn keeps solo's voice.
-            tools_override=frozenset() if chat_rung else None,
+            tools_override=tools_override,
         )
         if self._debug:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
@@ -359,7 +384,13 @@ class Harness:
             color=_ROOT_COLOR,
         )
 
-        prior = [] if subagent else _recency_turns(session.messages, _RECENCY_N)
+        # `stream()`'s own `subagent` param is only ever bound by the
+        # seed-dispatch path above — a genuine graph-spawned subagent run
+        # goes through `delegate.py`'s `run_subagent`, which builds its own
+        # `Agent` directly and never calls `stream()`. A seed-dispatched
+        # subagent is a single task action bound to this session (decision
+        # 1), so it gets warm session context like any root turn, never `[]`.
+        prior = _recency_turns(session.messages, _RECENCY_N)
         prior.append(Message(role="user", content=user_input))
         unsubscribe = bus.subscribe(_on_event)
         agent_task: asyncio.Task = asyncio.create_task(agent.run(prior, run_id=root_run_id))
@@ -399,7 +430,6 @@ class Harness:
         self,
         session: Session,
         user_input: str,
-        seed: str | None,
         permission_callback: PermissionCallback | None,
         hidden_grant_callback: HiddenGrantCallback | None,
         bus: EventBus,
@@ -447,7 +477,7 @@ class Harness:
         )
 
         try:
-            graph = await sequencer.sequence(user_input, seed=seed)
+            graph = await sequencer.sequence(user_input)
         except ValueError as exc:
             unsubscribe()
             yield TaskGraphHaltedEvent(step_index=-1, agent="sequencer", reason=str(exc))

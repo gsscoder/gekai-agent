@@ -801,7 +801,7 @@ class GekaiApp(App[None]):
         self._welcome_dismissed: bool = False
         self._exit_reason: str = "quit"
         self._invocable_subagents: dict[str, Subagent] = {
-            p.name: p for p in SUBAGENTS if p.user_invocable
+            p.alias or p.name: p for p in SUBAGENTS if p.user_invocable
         }
         super().__init__(**kwargs)
         self.ansi_color = True
@@ -814,7 +814,7 @@ class GekaiApp(App[None]):
             yield Static("", id="status-spacer")
             yield CommandPalette(
                 self._command_registry,
-                subagents=[(p.name, p.short_description) for p in SUBAGENTS if p.user_invocable],
+                subagents=[(p.alias or p.name, p.short_description) for p in SUBAGENTS if p.user_invocable],
                 id="command-palette",
             )
             yield Static("", id="hint-area")
@@ -1220,7 +1220,7 @@ class GekaiApp(App[None]):
                     conversation.scroll_end(animate=False)
                     self._focus_prompt()
                     return
-                await conversation.mount(MessageWidget(MessageKind.USER, _user_prompt))
+                await conversation.mount(MessageWidget(MessageKind.USER, stripped))
                 self._worker = self.run_worker(
                     self._stream(_resolve_at_refs(_user_prompt), forced_seed=_subagent.name),
                     exclusive=True,
@@ -1551,7 +1551,20 @@ class GekaiApp(App[None]):
             elif isinstance(item, SubAgentStartEvent):
                 ws_renderer = SubAgentRenderer(conversation)
                 active_renderer = ws_renderer
-                await ws_renderer.start(item.name)
+                # `item.name` is "root" for the ordinary no-graph turn, or a
+                # real subagent name for an explicit `/alias` seed dispatch
+                # (the only other caller bound to this event) — resolve
+                # against the roster so a seed dispatch gets its own colored
+                # badge, same as a task-graph step's DelegationStartEvent
+                # handler just below, instead of falling through to root's
+                # generic "Triaging..."/"Thought for X" header.
+                resolved = next((s for s in SUBAGENTS if s.name == item.name), None)
+                if resolved is not None:
+                    await ws_renderer.start(
+                        item.name, namespace=resolved.namespace, bg_color=NAMESPACE_COLORS[resolved.namespace],
+                    )
+                else:
+                    await ws_renderer.start(item.name)
             elif isinstance(item, DelegationStartEvent):
                 resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
                 if resolved is not None:

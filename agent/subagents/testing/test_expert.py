@@ -3,6 +3,7 @@ from ...tools.catalog import EDIT_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 subagent = Subagent(
     name="test-expert",
+    alias="build-test",
     short_description="write spec-driven test suites or coverage designs",
     namespace="testing",
     description=(
