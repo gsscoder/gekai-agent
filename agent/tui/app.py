@@ -1238,11 +1238,19 @@ class GekaiApp(App[None]):
             assert model is not None and effort is not None  # guaranteed by the step order above
             save_tier_binding(tier, TierBinding(model=model, default_effort=effort, thinking=thinking))
             self._agent.reconfigure_touchpoints()
+            summary = f"{tier.value.upper()}: {model} (effort={effort}, thinking={thinking})"
+            if tiers_configured():
+                # Completing the last tier is a real new-session start: GEKAI.md
+                # was never actually read+audited while tiers were incomplete
+                # (the directive audit needs a working touchpoint) — catch it up
+                # now the same way `/clear` already does.
+                await self._clear_session()
+                conversation = self.query_one("#conversation", ScrollableContainer)
+                await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, summary))
+                conversation.scroll_end(animate=False)
+                return
             self._refresh_status_bar()
-            await conversation.mount(MessageWidget(
-                MessageKind.COMMAND_RESULT,
-                f"{tier.value.upper()}: {model} (effort={effort}, thinking={thinking})",
-            ))
+            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, summary))
             conversation.scroll_end(animate=False)
             return
 
@@ -1281,6 +1289,16 @@ class GekaiApp(App[None]):
             history_panel.hide()
         prompt.clear()
         conversation = self.query_one("#conversation", ScrollableContainer)
+        if not tiers_configured():
+            _slash_name = stripped.lstrip("/").split(None, 1)[0] if stripped.startswith("/") else ""
+            if _slash_name not in ("models", "tier", "exit"):
+                await conversation.mount(MessageWidget(
+                    MessageKind.WARNING,
+                    "model tiers are not configured — run /models to store API keys, then /tier to assign FAST/SUPP/CORE",
+                ))
+                conversation.scroll_end(animate=False)
+                self._focus_prompt()
+                return
         if stripped.startswith("/"):
             _slash_parts = stripped.lstrip("/").split(None, 1)
             _slash_name = _slash_parts[0] if _slash_parts else ""

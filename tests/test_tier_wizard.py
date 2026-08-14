@@ -42,11 +42,13 @@ from textual.widgets import TextArea
 
 from agent import credentials, settings
 from agent.agent import GekaiAgent
+from agent.commands.exit import ExitCommand
 from agent.commands.registry import CommandRegistry
+from agent.logging import EventLogger
 from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
 from agent.settings import Permissions
 from agent.tui.app import GekaiApp
-from agent.tui.widgets import ChoiceBar, MessageWidget
+from agent.tui.widgets import ChoiceBar, MessageWidget, ModelsPanel
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,6 +93,7 @@ def _stub_tui_agent(working_dir: Path) -> GekaiAgent:
     stub.model = "fake-model"
     stub.effort = None
     stub._tier_error = None
+    stub.events = EventLogger()
     return stub
 
 
@@ -480,6 +483,109 @@ async def test_pressing_enter_on_slash_tier_launches_the_wizard_without_deadlock
         await asyncio.wait_for(pilot.press("escape"), timeout=5)
         await pilot.pause()
         assert app.query_one(ChoiceBar).display is False
+
+
+async def test_tiers_unconfigured_blocks_prompt_except_models_tier_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_submit_prompt`'s interaction guard: while `tiers_configured()` is
+    False, plain chat and unrelated commands (`/clear`) must be blocked with
+    a warning and never reach `_stream`/command dispatch, while `/models`,
+    `/tier`, and `/exit` stay reachable so the user can actually configure
+    tiers (or quit)."""
+    _seed_catalog(monkeypatch)
+    _patch_credentials(monkeypatch, {KEY_A, KEY_B})
+    app = _make_app(tmp_path)
+    app._command_registry.register(ExitCommand())
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        conversation = app.query_one("#conversation", ScrollableContainer)
+        prompt = app.query_one("#prompt", TextArea)
+        assert settings.tiers_configured() is False
+
+        prompt.text = "hello there"
+        await asyncio.wait_for(pilot.press("enter"), timeout=5)
+        await pilot.pause()
+        assert app._worker is None
+        assert not any(w.has_class("user") for w in _messages(conversation))
+        assert any(
+            w.has_class("warning") and "not configured" in w.text for w in _messages(conversation)
+        )
+
+        prompt.text = "/clear"
+        await asyncio.wait_for(pilot.press("enter"), timeout=5)
+        await pilot.pause()
+        assert app._worker is None
+        assert not any(w.has_class("command_result") for w in _messages(conversation))
+
+        prompt.text = "/tier fast"
+        await asyncio.wait_for(pilot.press("enter"), timeout=5)
+        await pilot.pause()
+        bar = app.query_one(ChoiceBar)
+        assert bar.display is True
+        assert "FAST" in bar._question
+        await asyncio.wait_for(pilot.press("escape"), timeout=5)
+        await pilot.pause()
+
+        prompt.text = "/models"
+        await asyncio.wait_for(pilot.press("enter"), timeout=5)
+        await pilot.pause()
+        assert app.query_one(ModelsPanel).display is True
+        await app.action_cancel_stream()
+        await pilot.pause()
+        assert app.query_one(ModelsPanel).display is False
+
+        prompt.text = "/exit"
+        await asyncio.wait_for(pilot.press("enter"), timeout=5)
+        await pilot.pause()
+        assert app._exit_reason == "command"
+
+
+async def test_completing_the_last_tier_reruns_the_directive_audit_like_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Completing the last of the 3 tiers must catch up the GEKAI.md
+    read+audit that never actually ran while tiers were incomplete (see
+    `GekaiAgent.start_directive_audit`'s no-op-without-a-working-touchpoint
+    note) — the same way `/clear` already does. Confirming an *intermediate*
+    tier (leaving one still unconfigured) must not trigger this."""
+    _seed_catalog(monkeypatch)
+    _patch_credentials(monkeypatch, {KEY_A, KEY_B})
+    settings.save_tier_binding(TierName.FAST, TierBinding(model="model-a", default_effort="low", thinking=False))
+    settings.save_tier_binding(TierName.SUPP, TierBinding(model="model-a", default_effort="low", thinking=False))
+    app = _make_app(tmp_path)
+
+    calls = 0
+
+    def _spy(self: GekaiAgent, session, on_verdict=None) -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(GekaiAgent, "start_directive_audit", _spy)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert settings.tiers_configured() is False
+        conversation = app.query_one("#conversation", ScrollableContainer)
+        task = asyncio.create_task(app._run_tier_wizard(TierName.CORE, conversation))
+        await pilot.pause()
+
+        _pick(app, "model-a")  # thinking=False, no thinking step
+        await _confirm(app, pilot)
+        assert calls == 0
+        _pick(app, "low")
+        await _confirm(app, pilot)
+        assert calls == 0
+
+        bar = app.query_one(ChoiceBar)
+        assert "save?" in bar._question
+        _pick(app, "confirm")
+        await _confirm(app, pilot)
+
+        await task
+        assert calls == 1
+        assert settings.tiers_configured() is True
 
 
 async def test_typing_slash_tier_with_an_unknown_name_shows_an_error(

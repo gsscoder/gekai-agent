@@ -50,6 +50,15 @@ def _stub_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(GekaiApp, "_stream", _fake_stream)
 
 
+@pytest.fixture(autouse=True)
+def _tiers_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not what this file is testing — the `_submit_prompt` interaction
+    guard blocks everything but `/models`/`/tier`/`/exit` while tiers are
+    unconfigured, which would otherwise swallow the `/refactor` submits
+    below regardless of the real machine's on-disk tier state."""
+    monkeypatch.setattr("agent.tui.app.tiers_configured", lambda: True)
+
+
 def _stub_tui_agent(working_dir: Path) -> GekaiAgent:
     stub = object.__new__(GekaiAgent)
     stub.working_dir = working_dir
