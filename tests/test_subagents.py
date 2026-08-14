@@ -221,8 +221,9 @@ def test_validate_registry_passes_with_omni_worker_registered():
 # ---------------------------------------------------------------------------
 # Cold-dispatch specialists inherit the generic contract (plan 32 Phase 4) —
 # code-expert, code-fixer, code-refactorer, test-expert, test-fixer each
-# declare directive_domains=("generic",) so their composed directives carry
+# list "generic" in directive_domains so their composed directives carry
 # the generic namespace's cold-run contract alongside their own craft directives
+# (test-expert/test-fixer additionally list "coding" for its reuse-before-write trait)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -231,7 +232,7 @@ def test_validate_registry_passes_with_omni_worker_registered():
 )
 def test_cold_dispatch_specialist_composes_generic_block(name):
     p = next(s for s in subagents_module.SUBAGENTS if s.name == name)
-    assert p.directive_domains == ("generic",)
+    assert "generic" in p.directive_domains
     assert subagents_module.NAMESPACE_DIRECTIVES["generic"] in p.directives
 
 

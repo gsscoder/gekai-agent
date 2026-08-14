@@ -34,5 +34,5 @@ subagent = Subagent(
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + SHELL_TOOLS),
     auto_assignable=True,
-    directive_domains=("generic",),
+    directive_domains=("coding", "generic"),
 )

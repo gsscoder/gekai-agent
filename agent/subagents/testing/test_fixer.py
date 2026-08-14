@@ -29,5 +29,5 @@ subagent = Subagent(
         "expected values are semantically correct"
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + SHELL_TOOLS),
-    directive_domains=("generic",),
+    directive_domains=("coding", "generic"),
 )
