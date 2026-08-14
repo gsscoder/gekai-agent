@@ -48,6 +48,7 @@ class Subagent:
     permissions: Permissions | None = None  # permission overlay; None = inherit session
     user_invocable: bool = True  # router menu + prompt-quoting eligibility; False = system-managed worker
     alias: str = ""  # if set and user_invocable, shown/typed in slash palette instead of `name`
+    params: str = "<subagent prompt>"  # declared parameter signature shown as a dimmed hint, e.g. `/<alias-or-name> <params>`
     auto_assignable: bool = False  # phase-1 decomposition may assign it; False = post-planning-only (verify/repair)
     # ADDITIONAL namespaces (beyond this subagent's own, which is always
     # auto-inherited unconditionally — never needs listing itself here) whose

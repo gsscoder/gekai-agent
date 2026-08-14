@@ -630,6 +630,14 @@ class GekaiApp(App[None]):
         background: ansi_default;
     }
 
+    #param-hint {
+        height: 1;
+        background: ansi_default;
+        color: grey;
+        padding: 0 0 0 2;
+        display: none;
+    }
+
     #prompt-marker {
         layer: marker;
         position: absolute;
@@ -825,6 +833,7 @@ class GekaiApp(App[None]):
             yield TiersPanel(id="tiers-panel")
             yield Static("", id="copy-notice")
             yield Static("", id="directive-notice")
+            yield Static("", id="param-hint")
             with Container(id="input-area"):
                 yield PromptTextArea(id="prompt", show_line_numbers=False, compact=True, highlight_cursor_line=False)
                 yield Static("❯", id="prompt-marker")
@@ -1017,6 +1026,29 @@ class GekaiApp(App[None]):
     def _prompt_move_to_end(self, prompt: TextArea) -> None:
         prompt.move_cursor(prompt.document.end)
 
+    def _params_for(self, slash_name: str) -> str | None:
+        """None = unknown command name. "" = no params. Else the param spec string."""
+        subagent = self._invocable_subagents.get(slash_name)
+        if subagent is not None:
+            return subagent.params
+        command = self._command_registry.get(slash_name)
+        if command is not None:
+            return command.params
+        return None
+
+    def _render_param_hint(self) -> None:
+        prompt_text = self.query_one("#prompt", TextArea).text
+        hint = self.query_one("#param-hint", Static)
+        if prompt_text.startswith("/"):
+            name = prompt_text[1:].split(None, 1)[0] if prompt_text[1:].split() else ""
+            params = self._params_for(name)
+            if params:
+                hint.update(f"/{name} {params}")
+                hint.display = True
+                return
+        hint.update("")
+        hint.display = False
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if not self._welcome_dismissed and event.text_area.text:
             self._welcome_dismissed = True
@@ -1054,6 +1086,8 @@ class GekaiApp(App[None]):
 
         if self._esc_pending:
             self._clear_hint()
+
+        self._render_param_hint()
 
     def on_key(self, event: events.Key) -> None:
         # ChoiceBar's left/right cursor movement used to be special-cased
@@ -1189,10 +1223,9 @@ class GekaiApp(App[None]):
         stripped = prompt.text.strip()
         if palette.display:
             cmd = palette.selected_name
-            is_subagent_sel = palette.selected_is_subagent
             palette.hide()
             if cmd:
-                if is_subagent_sel:
+                if self._params_for(cmd):
                     prompt.clear()
                     prompt.text = f"/{cmd} "
                     self._prompt_move_to_end(prompt)
@@ -1215,7 +1248,9 @@ class GekaiApp(App[None]):
             if _slash_name in self._invocable_subagents:
                 _subagent = self._invocable_subagents[_slash_name]
                 _user_prompt = _slash_parts[1].strip() if len(_slash_parts) > 1 else ""
-                if not _user_prompt:
+                _params_spec = self._params_for(_slash_name) or ""
+                _param_required = bool(_params_spec) and not _params_spec.startswith("<optional")
+                if _param_required and not _user_prompt:
                     await conversation.mount(MessageWidget(MessageKind.ERROR, f"/{_slash_name} needs a prompt — e.g. /{_slash_name} <instructions>"))
                     conversation.scroll_end(animate=False)
                     self._focus_prompt()
@@ -2237,10 +2272,9 @@ class GekaiApp(App[None]):
 
     async def action_select_command(self, name: str) -> None:
         palette = self.query_one(CommandPalette)
-        is_subagent_sel = palette.selected_is_subagent
         palette.hide()
         prompt = self.query_one("#prompt", TextArea)
-        if is_subagent_sel:
+        if self._params_for(name):
             prompt.text = f"/{name} "
             self._prompt_move_to_end(prompt)
             self._focus_prompt()

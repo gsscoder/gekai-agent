@@ -11,6 +11,9 @@ class CommandRegistry:
     def commands(self) -> list[Command]:
         return list(self._commands.values())
 
+    def get(self, name: str) -> Command | None:
+        return self._commands.get(name)
+
     async def dispatch(self, raw: str) -> CommandResult:
         parts = raw.lstrip("/").split()
         name = parts[0] if parts else ""
