@@ -103,18 +103,17 @@ def _record_credential_keys(monkeypatch) -> list[str]:
 
 def test_touchpoint_override_changes_params_but_never_the_credential_key(monkeypatch):
     # CRITICAL constraint: the keyring account name names what the user
-    # actually stored via `/tiers` — the *binding's* operating point. Building
-    # it from the code-side override instead would miss every stored key and
-    # make each override demand a fresh `/tiers` entry, which is exactly the
-    # churn per-touchpoint operating points exist to avoid.
+    # actually stored via `/models` — provider:model, nothing else. Neither
+    # the binding's operating point nor a code-side touchpoint override may
+    # leak into it, or the lookup would miss the one key that was stored.
     keys_seen = _record_credential_keys(monkeypatch)
     monkeypatch.setitem(MODEL_CAPS, "pro", ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high"))
     bindings = {TierName.CORE: TierBinding(model="pro", default_effort="xhigh", thinking=True)}
 
     resolved = resolve_touchpoint("sequencer", CATALOG, bindings)  # declares effort="high", thinking=False
 
-    assert keys_seen == ["core-pro-xhigh-y"], "credential lookup must use the binding's effort/thinking"
-    assert resolved.api_key == "key-for-core-pro-xhigh-y"
+    assert keys_seen == ["openai:pro"], "credential lookup must key on the model alone"
+    assert resolved.api_key == "key-for-openai:pro"
     assert resolved.model == "pro"  # the binding still decides *which* model
     assert resolved.extra_params == {"extra_body": {"thinking": {"type": "disabled"}}}
 
@@ -158,7 +157,7 @@ def test_touchpoint_override_follows_whatever_tier_scaling_landed_on(monkeypatch
 
     assert resolved.model == "flash"  # the demoted tier's model...
     assert asked == [("flash", "high", False)]  # ...operated at the sequencer's own point
-    assert keys_seen == ["supp-flash-low-n"]  # ...on the demoted tier's own credential
+    assert keys_seen == ["openai:flash"]  # ...on that model's own credential
 
 
 def test_touchpoint_override_effort_the_model_does_not_declare_fails_loud(monkeypatch):
@@ -250,7 +249,7 @@ def test_all_tiers_ready_false_when_binding_present_but_no_credential(monkeypatc
     # one tier has no stored key — old tiers_configured() (binding-only)
     # would have reported True here.
     def _has_key(name: str) -> bool:
-        return not name.startswith("fast-")
+        return name != "openai:flash"
 
     monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", _has_key)
     bindings = {

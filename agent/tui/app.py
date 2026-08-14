@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.color import Color
@@ -27,7 +27,7 @@ from agent.harness import turn as harness_turn
 from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
 from agent.llm.resolve import TierResolutionError, resolve_touchpoint
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName, validate_binding
+from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
 from agent.persistence import (
     append_command,
     append_compact,
@@ -55,7 +55,7 @@ from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 from .palette import CommandPalette
 from .history import PromptHistory
-from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, TierRowView, TiersPanel, WelcomeOverlay
+from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, ModelRowView, ModelsPanel, WelcomeOverlay
 
 
 class ConversationContainer(ScrollableContainer):
@@ -317,18 +317,10 @@ def _mask_key(key: str) -> str:
     return key[:2] + "*" * _MASK_STARS + key[-3:]
 
 
-def _tier_credential_key(tier: TierName, model: str, effort: str, thinking: bool) -> str:
-    return credentials.credential_key(tier.value, model, effort, thinking)
-
-
-def _tiers_display_key(cred_key: str, key_input: dict[str, str]) -> str:
+def _models_display_key(cred_key: str, key_input: dict[str, str]) -> str:
     """Non-editing display for the key cell: an in-progress edit for this
-    operating point (`key_input`, including an explicit clear stored as "")
-    always wins over whatever's actually in the keyring — mirrors how the
-    model/effort/thinking columns show the pending edit, not the saved
-    value. Keyed by `_tier_credential_key` (tier-model-effort-thinking), so a
-    key pasted for one row/operating-point is masked and displayed there
-    only, even when another row shares its model."""
+    model (`key_input`, including an explicit clear stored as "") always wins
+    over whatever's actually in the keyring."""
     if cred_key in key_input:
         value = key_input[cred_key]
         return _mask_key(value) if value else "no key"
@@ -337,56 +329,13 @@ def _tiers_display_key(cred_key: str, key_input: dict[str, str]) -> str:
     return "no key"
 
 
-def _tiers_key_present(cred_key: str, key_input: dict[str, str]) -> bool:
-    """Whether this operating point currently has a usable key once this edit
-    lands — an in-progress edit (including an explicit clear) wins over the
-    real stored credential, same precedence as `_tiers_display_key`."""
+def _models_key_present(cred_key: str, key_input: dict[str, str]) -> bool:
+    """Whether this model currently has a usable key once this edit lands —
+    an in-progress edit (including an explicit clear) wins over the real
+    stored credential, same precedence as `_models_display_key`."""
     if cred_key in key_input:
         return bool(key_input[cred_key])
     return credentials.has_api_key(cred_key)
-
-
-def _pending_row_status(
-    tier: TierName,
-    model: str | None,
-    effort: str | None,
-    thinking: bool,
-    catalog: dict[str, ModelCatalogEntry],
-    key_input: dict[str, str],
-) -> str:
-    """Pure status-cell formatter for one `/tiers` grid row — reflects the
-    in-progress edit (`GekaiApp._tiers_edit`), not what's saved on disk, so
-    it deliberately does not reuse `agent/llm/resolve.py::tier_status()`
-    (that answers "is what's saved resolvable", which is the wrong question
-    while a key has just been typed/cleared but not yet committed)."""
-    if model is None or effort is None:
-        return "not configured"
-    entry = catalog.get(model)
-    if entry is None:
-        return "stale — model missing from catalog"
-    if not _tiers_key_present(_tier_credential_key(tier, model, effort, thinking), key_input):
-        return "no key"
-    verdict = entry.suitability.verdict(tier, thinking)
-    if verdict in ("warning", "deprecated"):
-        return verdict
-    return "✓ ready"
-
-
-def _cycle_choice(options: list[str] | tuple[str, ...], current: str | None) -> str:
-    """Shared wrap-around-cycle rule for the `/tiers` grid's model and effort
-    columns: land on `options[0]` if nothing (or something stale/unlisted) is
-    currently selected, otherwise advance to the next option, wrapping."""
-    if current is None or current not in options:
-        return options[0]
-    return options[(list(options).index(current) + 1) % len(options)]
-
-
-def _tier_edit_complete(model: str | None, key_present: bool) -> bool:
-    """Whether one tier's in-progress edit has everything `[ok]` requires:
-    a model selected and a usable key (effort is guaranteed non-None
-    whenever `model` is set — see the model-change auto-reset in
-    `_handle_tiers_enter` — so it needs no separate check here)."""
-    return model is not None and key_present
 
 
 def _fmt_duration(elapsed: float) -> str:
@@ -518,18 +467,14 @@ class _StepResult:
 
 
 @dataclass
-class _TiersEdit:
-    """Mutable staging area for an in-progress `/tiers` edit. Mutated
+class _ModelsEdit:
+    """Mutable staging area for an in-progress `/models` edit. Mutated
     synchronously by the existing key-event action cascade (`action_navigate_*`,
     `action_confirm_or_submit`, `action_cancel_stream`) — no worker, no
-    future-based primitive. Nothing here reaches disk/keyring until `[ok]`
-    (see `GekaiApp._commit_tiers_edit`)."""
-    catalog: dict[str, ModelCatalogEntry]
-    model: dict[TierName, str | None]
-    effort: dict[TierName, str | None]
-    thinking: dict[TierName, bool]
-    key_input: dict[str, str]  # credential_key(tier, model, effort, thinking) -> new value staged this session ("" means explicit clear); NOT yet written to keyring
-    original_bindings: dict[TierName, TierBinding | None] = field(default_factory=dict)  # what was on disk when the panel opened, for the "kept actual tiers" no-op check
+    future-based primitive. Nothing here reaches the keyring until `[ok]`
+    (see `GekaiApp._commit_models_edit`)."""
+    entries: list[ModelCatalogEntry]  # one grid row each, in catalog order
+    key_input: dict[str, str]  # credential_key(provider, model) -> new value staged this session ("" means explicit clear); NOT yet written to keyring
     key_editing: bool = False  # the currently-selected key cell is in free-text edit mode
     key_edit_buffer: str = ""  # raw text typed/pasted so far while key_editing — always starts empty
 
@@ -802,7 +747,7 @@ class GekaiApp(App[None]):
         self._history: PromptHistory | None = None
         self._file_paths: list[str] | None = None
         self._file_at_pos: int = -1
-        self._tiers_edit: _TiersEdit | None = None
+        self._models_edit: _ModelsEdit | None = None
         self._worker_cancelled: bool = False
         self._permission_denied_msg: str | None = None
         self._status_paused: bool = False
@@ -830,7 +775,7 @@ class GekaiApp(App[None]):
                 yield Static("Scroll to bottom (ctrl+B) ↓", id="scroll-hint")
             yield FilePanel(id="file-panel")
             yield HistoryPanel(id="history-panel")
-            yield TiersPanel(id="tiers-panel")
+            yield ModelsPanel(id="models-panel")
             yield Static("", id="copy-notice")
             yield Static("", id="directive-notice")
             yield Static("", id="param-hint")
@@ -974,16 +919,16 @@ class GekaiApp(App[None]):
 
     async def _maybe_warn_tiers_unconfigured(self, conversation: ScrollableContainer) -> None:
         """Nudge, not a gate: `GekaiAgent` tolerates unconfigured tiers at
-        construction time (so `/tiers` itself stays reachable — see
+        construction time (so `/models` and `/tier` stay reachable — see
         `agent/agent.py`'s `_tier_error` deferral) but every touchpoint raises
-        the moment it's actually used. This just keeps surfacing that /tiers
-        hasn't been set up yet, both at startup and on every prompt submitted
-        while it stays unset."""
+        the moment it's actually used. This just keeps surfacing that the
+        tiers haven't been set up yet, both at startup and on every prompt
+        submitted while they stay unset."""
         if tiers_configured():
             return
         await conversation.mount(MessageWidget(
             MessageKind.WARNING,
-            "model tiers are not configured — run /tiers to configure FAST/SUPP/CORE",
+            "model tiers are not configured — run /models to store API keys, then /tier to assign FAST/SUPP/CORE",
         ))
         conversation.scroll_end(animate=False)
 
@@ -1097,16 +1042,16 @@ class GekaiApp(App[None]):
         if self._esc_pending and event.key != "escape":
             self._clear_hint()
 
-        # `/tiers`' key column, while in edit mode (see `_handle_tiers_enter`):
+        # `/models`' key column, while in edit mode (see `_handle_models_enter`):
         # "p" is the *only* way to fill the buffer — it reads the OS
         # clipboard directly (ctypes, same as `_read_clipboard_text`
         # elsewhere — no reliance on "ctrl+v"/the terminal's bracketed-paste
         # support, which doesn't reach this app) and commits straight into
-        # `key_input` on success (single press, like every other column —
-        # no separate confirm step to forget before navigating away). Must
+        # `key_input` on success (single press, no separate confirm step to
+        # forget before navigating away). Must
         # be checked before the auto-focus-and-type fallback below, which
         # would otherwise route this keystroke into the chat prompt instead.
-        edit = self._tiers_edit
+        edit = self._models_edit
         if edit is not None and edit.key_editing:
             if event.key == "p":
                 clipboard_text = self._read_clipboard_text()
@@ -1121,15 +1066,13 @@ class GekaiApp(App[None]):
                     self.set_timer(2.0, self._clear_hint)
                     event.stop()
                     return
-                panel = self.query_one(TiersPanel)
+                panel = self.query_one(ModelsPanel)
                 row, _ = panel.selected_cell
-                tier = list(TierName)[row]
-                model, effort = edit.model[tier], edit.effort[tier]
-                if model is not None and effort is not None:
-                    cred_key = _tier_credential_key(tier, model, effort, edit.thinking[tier])
-                    edit.key_input[cred_key] = first_line
+                if row < len(edit.entries):
+                    entry = edit.entries[row]
+                    edit.key_input[credentials.credential_key(entry.provider, entry.name)] = first_line
                 edit.key_editing = False
-                self._render_tiers_panel()
+                self._render_models_panel()
                 event.stop()
                 return
             # Any other key (manual typing, no longer supported) falls
@@ -1143,7 +1086,7 @@ class GekaiApp(App[None]):
             prompt.insert("\n")
             event.stop()
             return
-        # Bracketed paste never reaches this app (see the `/tiers` key-field
+        # Bracketed paste never reaches this app (see the `/models` key-field
         # comment above) — Textual has no `Paste` message to fall back on,
         # so `ctrl+v` does nothing unless handled explicitly here. Reads the
         # OS clipboard directly (same ctypes helper the key field uses) and
@@ -1210,6 +1153,102 @@ class GekaiApp(App[None]):
         self.query_one(ChoiceBar).show(question, options, 0)
         return await self._pending_choice
 
+    _TIER_WIZARD_BACK = "__back__"
+
+    async def _run_tier_wizard(self, tier: TierName, conversation: ScrollableContainer) -> None:
+        """`/tier <TIER>`'s real implementation: a sequence of `_ask_choice`
+        screens (the same mechanism the first-run permissions prompt uses),
+        not a persistent grid — model, then effort, then thinking (only when
+        `tier` is CORE and the picked model supports it), then a confirm
+        screen. Every screen but the first prepends a "‹ back" option so the
+        whole sequence is freely re-walkable; only the confirm step actually
+        writes anything, and only on "confirm"."""
+        catalog = load_model_catalog()
+        keyed = [
+            entry for entry in catalog.values()
+            if credentials.has_api_key(credentials.credential_key(entry.provider, entry.name))
+        ]
+        if not keyed:
+            await conversation.mount(MessageWidget(
+                MessageKind.ERROR, "no models have a stored key — run /models first",
+            ))
+            conversation.scroll_end(animate=False)
+            return
+
+        step = "model"
+        model: str | None = None
+        effort: str | None = None
+        thinking = False
+        thinking_applicable = False
+
+        while True:
+            if step == "model":
+                choice = await self._ask_choice(
+                    f"{tier.value.upper()}: pick a model",
+                    [(e.name, e.name) for e in keyed],
+                )
+                if choice is None:
+                    break
+                model, step = choice, "effort"
+                continue
+
+            entry = catalog[model]  # type: ignore[index]  # `model` is set on every step past "model"
+
+            if step == "effort":
+                choice = await self._ask_choice(
+                    f"{tier.value.upper()}: pick an effort for {model}",
+                    [(self._TIER_WIZARD_BACK, "‹ back")] + [(e, e) for e in entry.efforts],
+                )
+                if choice is None:
+                    break
+                if choice == self._TIER_WIZARD_BACK:
+                    step = "model"
+                    continue
+                effort = choice
+                thinking_applicable = tier is TierName.CORE and entry.thinking
+                thinking = False
+                step = "thinking" if thinking_applicable else "confirm"
+                continue
+
+            if step == "thinking":
+                choice = await self._ask_choice(
+                    f"{tier.value.upper()}: enable thinking for {model}?",
+                    [(self._TIER_WIZARD_BACK, "‹ back"), ("y", "Yes"), ("n", "No")],
+                )
+                if choice is None:
+                    break
+                if choice == self._TIER_WIZARD_BACK:
+                    step = "effort"
+                    continue
+                thinking = choice == "y"
+                step = "confirm"
+                continue
+
+            # step == "confirm"
+            choice = await self._ask_choice(
+                f"{tier.value.upper()}: {model} (effort={effort}, thinking={thinking}) — save?",
+                [(self._TIER_WIZARD_BACK, "‹ back"), ("confirm", "Confirm"), ("cancel", "Cancel")],
+            )
+            if choice is None or choice == "cancel":
+                break
+            if choice == self._TIER_WIZARD_BACK:
+                step = "thinking" if thinking_applicable else "effort"
+                continue
+
+            assert model is not None and effort is not None  # guaranteed by the step order above
+            save_tier_binding(tier, TierBinding(model=model, default_effort=effort, thinking=thinking))
+            self._agent.reconfigure_touchpoints()
+            self._refresh_status_bar()
+            await conversation.mount(MessageWidget(
+                MessageKind.COMMAND_RESULT,
+                f"{tier.value.upper()}: {model} (effort={effort}, thinking={thinking})",
+            ))
+            conversation.scroll_end(animate=False)
+            return
+
+        await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "cancelled"))
+        conversation.scroll_end(animate=False)
+
     async def _submit_prompt(self) -> None:
         if self._session is None:
             self._focus_prompt()
@@ -1261,12 +1300,43 @@ class GekaiApp(App[None]):
                     exclusive=True,
                 )
                 return
-            if _slash_name == "tiers":
+            if _slash_name == "models":
                 await conversation.mount(MessageWidget(MessageKind.USER, stripped))
                 conversation.scroll_end(animate=False)
-                await self._open_tiers_panel(conversation)
+                await self._open_models_panel(conversation)
                 self._focus_prompt()
                 return
+            if _slash_name == "tier":
+                # Only a single token after the name is the wizard's
+                # trigger — no args (listing) or extra tokens (a usage
+                # error) fall through to the plain `TierCommand` dispatch
+                # below, unchanged.
+                _tier_arg = _slash_parts[1].strip() if len(_slash_parts) > 1 else ""
+                if _tier_arg and " " not in _tier_arg:
+                    await conversation.mount(MessageWidget(MessageKind.USER, stripped))
+                    conversation.scroll_end(animate=False)
+                    try:
+                        _tier = TierName(_tier_arg.lower())
+                    except ValueError:
+                        names = "/".join(t.value.upper() for t in TierName)
+                        await conversation.mount(MessageWidget(
+                            MessageKind.ERROR, f"unknown tier {_tier_arg!r} — expected one of {names}"
+                        ))
+                        conversation.scroll_end(animate=False)
+                        self._focus_prompt()
+                        return
+                    # Must run as a worker, not be awaited inline: this call
+                    # is itself inside the Enter keybinding's own action
+                    # handler, which Textual's message pump awaits directly.
+                    # `_run_tier_wizard` blocks on `_ask_choice` futures that
+                    # only resolve from a LATER keypress — awaited inline,
+                    # the pump would never get back around to dispatch that
+                    # keypress, deadlocking the whole app (confirmed: it did).
+                    # `_init_session`'s identical `_ask_choice` usage avoids
+                    # this the same way, via `run_worker` below.
+                    self.run_worker(self._run_tier_wizard(_tier, conversation), exclusive=True)
+                    self._focus_prompt()
+                    return
             if _slash_name == "compact":
                 if self._worker is not None and not self._worker.is_finished:
                     await conversation.mount(MessageWidget(MessageKind.ERROR, "a turn is already running — wait for it to finish before compacting"))
@@ -1295,10 +1365,18 @@ class GekaiApp(App[None]):
                 await self._clear_session(command_text=stripped)
                 return
             output = result.output or ""
-            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, output))
+            await conversation.mount(MessageWidget(MessageKind.ERROR if result.error else MessageKind.COMMAND_RESULT, output))
             conversation.scroll_end(animate=False)
             if self._session is not None:
                 append_event(self._session, output, source="command")
+            if result.reconfigure:
+                # `/tier` just rewrote a binding — re-resolve now rather than
+                # waiting on process_stream()'s lazy self-heal, which only
+                # retries while resolution is still failing (the status bar
+                # would otherwise show the pre-command CORE binding until the
+                # next restart).
+                self._agent.reconfigure_touchpoints()
+                self._refresh_status_bar()
             if result.exit_app:
                 self._quit(had_prior=had_prior)
                 return
@@ -1307,139 +1385,71 @@ class GekaiApp(App[None]):
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
 
-    async def _open_tiers_panel(self, conversation: ScrollableContainer) -> None:
-        """`/tiers`'s real implementation: no worker, no async "flow" — just
-        seeds `self._tiers_edit` from what's currently saved and renders the
-        grid. Every further edit is driven synchronously by the ordinary
-        key-event action cascade (`action_navigate_*`, `action_confirm_or_submit`,
+    async def _open_models_panel(self, conversation: ScrollableContainer) -> None:
+        """`/models`'s real implementation: no worker, no async "flow" — just
+        seeds `self._models_edit` from the catalog and renders the grid.
+        Every further edit is driven synchronously by the ordinary key-event
+        action cascade (`action_navigate_*`, `action_confirm_or_submit`,
         `action_cancel_stream`), the same way `FilePanel`/`HistoryPanel` are
         already driven in this file."""
         catalog = load_model_catalog()
         if not catalog:
             await conversation.mount(MessageWidget(
                 MessageKind.ERROR,
-                "the model catalog is empty — nothing to configure (check ~/.gekai/settings.json)",
+                "the model catalog is empty — nothing to configure",
             ))
             conversation.scroll_end(animate=False)
             return
 
-        bindings = load_tier_bindings()
-        model: dict[TierName, str | None] = {}
-        effort: dict[TierName, str | None] = {}
-        thinking: dict[TierName, bool] = {}
-        for tier in TierName:
-            binding = bindings.get(tier)
-            if binding is not None:
-                # Seeded even if `binding.model` is stale/missing from the
-                # catalog — show what's actually saved, don't silently drop it.
-                model[tier] = binding.model
-                effort[tier] = binding.default_effort
-                thinking[tier] = binding.thinking
-            else:
-                model[tier] = None
-                effort[tier] = None
-                thinking[tier] = False
+        self._models_edit = _ModelsEdit(entries=list(catalog.values()), key_input={})
+        self._render_models_panel()
 
-        self._tiers_edit = _TiersEdit(
-            catalog=catalog, model=model, effort=effort, thinking=thinking,
-            key_input={}, original_bindings={tier: bindings.get(tier) for tier in TierName},
-        )
-        self._render_tiers_panel()
-
-    def _render_tiers_panel(self) -> None:
-        """Rebuild the 3 `TierRowView`s from `self._tiers_edit` and re-show
-        the panel — called after every edit (model cycle, effort cycle,
-        thinking toggle, key set via clipboard), mirroring the old flow's
-        own "mutate then re-render" shape for its messages."""
-        edit = self._tiers_edit
+    def _render_models_panel(self) -> None:
+        """Rebuild one `ModelRowView` per catalog entry from
+        `self._models_edit` and re-show the panel — called after every edit
+        (key set via clipboard, key cleared)."""
+        edit = self._models_edit
         if edit is None:
             return
-        panel = self.query_one(TiersPanel)
+        panel = self.query_one(ModelsPanel)
         sel_row, sel_column = panel.selected_cell
-        rows: list[TierRowView] = []
-        for i, tier in enumerate(TierName):
-            model = edit.model[tier]
-            effort = edit.effort[tier]
-            entry = edit.catalog.get(model) if model is not None else None
-            thinking_supported = tier is TierName.CORE and entry is not None and entry.thinking
+        rows: list[ModelRowView] = []
+        for i, entry in enumerate(edit.entries):
+            cred_key = credentials.credential_key(entry.provider, entry.name)
             if edit.key_editing and i == sel_row and sel_column == "key":
                 key_display = edit.key_edit_buffer or "press p to paste"
-            elif model is not None and effort is not None:
-                cred_key = _tier_credential_key(tier, model, effort, edit.thinking[tier])
-                key_display = _tiers_display_key(cred_key, edit.key_input)
             else:
-                key_display = "no key"
-            rows.append(TierRowView(
-                tier_label=tier.value.upper(),
-                model=model if model is not None else "…",
-                effort=effort if effort is not None else "…",
-                thinking=("yes" if edit.thinking[tier] else "no") if thinking_supported else "n/a",
+                key_display = _models_display_key(cred_key, edit.key_input)
+            rows.append(ModelRowView(
+                provider=entry.provider,
+                model=entry.name,
                 key=key_display,
-                status=_pending_row_status(tier, model, effort, edit.thinking[tier], edit.catalog, edit.key_input),
+                status="✓ keyed" if _models_key_present(cred_key, edit.key_input) else "no key",
             ))
         panel.show(rows)
 
-    async def _handle_tiers_enter(self, panel: TiersPanel) -> None:
-        edit = self._tiers_edit
+    async def _handle_models_enter(self, panel: ModelsPanel) -> None:
+        edit = self._models_edit
         if edit is None:
             return
         row, column = panel.selected_cell
         conversation = self.query_one("#conversation", ScrollableContainer)
 
-        if row == 3:
+        if row == len(edit.entries):
             if column == "cancel":
-                await self._cancel_tiers_edit(conversation)
+                await self._cancel_models_edit(conversation)
             elif column == "ok":
-                await self._commit_tiers_edit(conversation)
-            return
-
-        tier = list(TierName)[row]
-
-        if column == "model":
-            catalog_keys = list(edit.catalog.keys())
-            next_model = _cycle_choice(catalog_keys, edit.model[tier])
-            edit.model[tier] = next_model
-            # A new model invalidates whatever effort/thinking was chosen
-            # for the old one.
-            edit.effort[tier] = edit.catalog[next_model].efforts[0]
-            edit.thinking[tier] = False
-            self._render_tiers_panel()
-            return
-
-        if column == "effort":
-            model = edit.model[tier]
-            if model is None:
-                return
-            entry = edit.catalog.get(model)
-            if entry is None:
-                return
-            edit.effort[tier] = _cycle_choice(entry.efforts, edit.effort[tier])
-            self._render_tiers_panel()
-            return
-
-        if column == "thinking":
-            model = edit.model[tier]
-            if model is None:
-                return
-            entry = edit.catalog.get(model)
-            if entry is None or tier is not TierName.CORE or not entry.thinking:
-                return
-            edit.thinking[tier] = not edit.thinking[tier]
-            self._render_tiers_panel()
+                await self._commit_models_edit(conversation)
             return
 
         if column == "key":
-            model = edit.model[tier]
-            effort = edit.effort[tier]
-            if model is None or effort is None:
-                return
+            entry = edit.entries[row]
             if edit.key_editing:
                 # Confirm: an empty buffer is an explicit clear, stored as
-                # "" (see `_tiers_display_key`/`_tiers_key_present`) rather
+                # "" (see `_models_display_key`/`_models_key_present`) rather
                 # than leaving `key_input` untouched, which would mean "no
                 # change — keep whatever's in the keyring".
-                cred_key = _tier_credential_key(tier, model, effort, edit.thinking[tier])
-                edit.key_input[cred_key] = edit.key_edit_buffer
+                edit.key_input[credentials.credential_key(entry.provider, entry.name)] = edit.key_edit_buffer
                 edit.key_editing = False
                 edit.key_edit_buffer = ""
             else:
@@ -1447,73 +1457,32 @@ class GekaiApp(App[None]):
                 # masked value, per the locked design.
                 edit.key_editing = True
                 edit.key_edit_buffer = ""
-            self._render_tiers_panel()
-            return
+            self._render_models_panel()
 
-    async def _cancel_tiers_edit(self, conversation: ScrollableContainer) -> None:
-        self._tiers_edit = None
-        self.query_one(TiersPanel).hide()
+    async def _cancel_models_edit(self, conversation: ScrollableContainer) -> None:
+        self._models_edit = None
+        self.query_one(ModelsPanel).hide()
         await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "cancelled"))
         conversation.scroll_end(animate=False)
 
-    async def _commit_tiers_edit(self, conversation: ScrollableContainer) -> None:
-        edit = self._tiers_edit
+    async def _commit_models_edit(self, conversation: ScrollableContainer) -> None:
+        edit = self._models_edit
         if edit is None:
             return
 
-        def _tier_complete(tier: TierName) -> bool:
-            model = edit.model.get(tier)
-            effort = edit.effort.get(tier)
-            present = (
-                model is not None
-                and effort is not None
-                and _tiers_key_present(_tier_credential_key(tier, model, effort, edit.thinking[tier]), edit.key_input)
-            )
-            return _tier_edit_complete(model, present)
-
-        if not all(_tier_complete(tier) for tier in TierName):
-            await conversation.mount(MessageWidget(
-                MessageKind.WARNING,
-                "tier configuration is incomplete — fill in every field, or [cancel] to abort",
-            ))
-            conversation.scroll_end(animate=False)
-            return
-
-        # Validate all three bindings *before* writing anything — the fail-
-        # loud backstop below is unreachable given the UI only ever offers
-        # valid combinations, but if it ever did trigger, a save-as-you-go
-        # loop would leave a partial write (some tiers saved, some not);
-        # validating up front keeps this an all-or-nothing commit.
-        bindings: dict[TierName, TierBinding] = {}
-        for tier in TierName:
-            model = edit.model[tier]
-            effort = edit.effort[tier]
-            assert model is not None and effort is not None  # guaranteed by _tier_complete + the model-change auto-reset
-            binding = TierBinding(model=model, default_effort=effort, thinking=edit.thinking[tier])
-            try:
-                validate_binding(tier, binding, edit.catalog)
-            except ValueError as exc:
-                await conversation.mount(MessageWidget(MessageKind.ERROR, str(exc)))
-                conversation.scroll_end(animate=False)
-                return
-            bindings[tier] = binding
-
-        # No key was touched and every binding is exactly what was already
-        # on disk when the panel opened — nothing to write, say so plainly
-        # instead of "saving" a no-op.
-        unchanged = not edit.key_input and all(
-            bindings[tier] == edit.original_bindings.get(tier) for tier in TierName
-        )
-        if unchanged:
-            self.query_one(TiersPanel).hide()
-            self._tiers_edit = None
-            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "kept actual tiers"))
+        # A model with no key is not an incomplete form — it's simply a model
+        # this user doesn't use, and `/tier` refuses to bind it. So there is
+        # nothing to validate here: only "was anything actually staged".
+        if not edit.key_input:
+            self.query_one(ModelsPanel).hide()
+            self._models_edit = None
+            await conversation.mount(MessageWidget(MessageKind.COMMAND_RESULT, "kept actual keys"))
             conversation.scroll_end(animate=False)
             return
 
         # Batched at commit, not as each key is typed/pasted — the ONLY
         # place `set_api_key`/`delete_api_key` are called, per the locked
-        # design. "" means an explicit clear (see `_handle_tiers_enter`'s
+        # design. "" means an explicit clear (see `_handle_models_enter`'s
         # confirm step); a non-empty value is a real key to store.
         for cred_key, value in edit.key_input.items():
             if value:
@@ -1521,18 +1490,18 @@ class GekaiApp(App[None]):
             else:
                 credentials.delete_api_key(cred_key)
 
-        summaries: list[str] = []
-        for tier in TierName:
-            binding = bindings[tier]
-            save_tier_binding(tier, binding)
-            summaries.append(f"{tier.value.upper()}: {binding.model} (effort={binding.default_effort}, thinking={binding.thinking})")
+        summaries = [
+            f"{cred_key}: {'stored' if value else 'cleared'}"
+            for cred_key, value in edit.key_input.items()
+        ]
 
-        self.query_one(TiersPanel).hide()
-        self._tiers_edit = None
+        self.query_one(ModelsPanel).hide()
+        self._models_edit = None
         # Re-resolve immediately rather than waiting on process_stream()'s
         # lazy self-heal (which only retries while resolution is still failing)
-        # — otherwise the status bar (self._agent.model/.effort) keeps showing
-        # the pre-commit CORE binding until the next restart.
+        # — a tier whose model just gained its key becomes resolvable now, and
+        # the status bar (self._agent.model/.effort) would otherwise keep
+        # showing the pre-commit state until the next restart.
         self._agent.reconfigure_touchpoints()
         self._refresh_status_bar()
         # First line sits right next to the "⎿" MessageWidget already
@@ -1881,20 +1850,20 @@ class GekaiApp(App[None]):
             future.set_result(None)
             return
 
-        tiers_panel = self.query_one(TiersPanel)
-        if tiers_panel.display:
-            edit = self._tiers_edit
+        models_panel = self.query_one(ModelsPanel)
+        if models_panel.display:
+            edit = self._models_edit
             if edit is not None and edit.key_editing:
                 # Discard the in-progress buffer only — not the whole
-                # `/tiers` edit — mirroring how navigating away from the key
-                # cell also discards it (see `_exit_tiers_key_edit`).
+                # `/models` edit — mirroring how navigating away from the key
+                # cell also discards it (see `_exit_models_key_edit`).
                 edit.key_editing = False
                 edit.key_edit_buffer = ""
-                self._render_tiers_panel()
+                self._render_models_panel()
                 return
             # Same helper as the `[cancel]` cell (step 7/8 of the design) —
             # Esc and `[cancel]` behave identically, not "hide silently".
-            await self._cancel_tiers_edit(self.query_one("#conversation", ScrollableContainer))
+            await self._cancel_models_edit(self.query_one("#conversation", ScrollableContainer))
             self._focus_prompt()
             return
 
@@ -1939,9 +1908,9 @@ class GekaiApp(App[None]):
             return
 
 
-        tiers_panel = self.query_one(TiersPanel)
-        if tiers_panel.display:
-            await self._handle_tiers_enter(tiers_panel)
+        models_panel = self.query_one(ModelsPanel)
+        if models_panel.display:
+            await self._handle_models_enter(models_panel)
             return
 
         file_panel = self.query_one("#file-panel", FilePanel)
@@ -2044,7 +2013,7 @@ class GekaiApp(App[None]):
 
     async def _poll_clipboard(self) -> None:
         """Keeps `last` fresh for the whole app lifetime (so opening the
-        `/tiers` key-edit field never fires a stale notice for an earlier,
+        `/models` key-edit field never fires a stale notice for an earlier,
         unrelated copy), but only surfaces the visible notice while that
         field is the one thing actually listening for a pasted key — the
         sequence number itself is OS-wide (any app's copy bumps it), so
@@ -2056,7 +2025,7 @@ class GekaiApp(App[None]):
             current = self._clipboard_sequence()
             if current != last:
                 last = current
-                edit = self._tiers_edit
+                edit = self._models_edit
                 if edit is not None and edit.key_editing:
                     self._show_copy_notice()
 
@@ -2128,13 +2097,13 @@ class GekaiApp(App[None]):
             or self.query_one("#history-panel", HistoryPanel).display
             or self.query_one(ChoiceBar).display
             or self.query_one(CommandPalette).display
-            or self.query_one(TiersPanel).display
+            or self.query_one(ModelsPanel).display
         )
 
     def _sync_prompt_lock(self) -> None:
         """The prompt must be visibly inert — no cursor, no blink, no typed
         input landing in it — whenever a panel navigated purely by arrow
-        keys/clicks (HistoryPanel/ChoiceBar/TiersPanel) is showing; typing
+        keys/clicks (HistoryPanel/ChoiceBar/ModelsPanel) is showing; typing
         only makes sense once that panel closes and the prompt is the active
         surface again. FilePanel and CommandPalette are excluded: they are
         typeahead filters over the prompt's own text ("@"/"/" + what's typed
@@ -2146,7 +2115,7 @@ class GekaiApp(App[None]):
         active = (
             self.query_one("#history-panel", HistoryPanel).display
             or self.query_one(ChoiceBar).display
-            or self.query_one(TiersPanel).display
+            or self.query_one(ModelsPanel).display
         )
         if active == prompt.read_only:
             return
@@ -2174,24 +2143,24 @@ class GekaiApp(App[None]):
     def action_scroll_page_down(self) -> None:
         self.query_one("#conversation", ConversationContainer).scroll_page_down(animate=False)
 
-    def _exit_tiers_key_edit(self) -> None:
+    def _exit_models_key_edit(self) -> None:
         """Navigating away from an in-progress key edit (arrows, or landing
         on a different cell) discards the typed/pasted buffer — per the
         locked design, the only way text reaches `key_input` is confirming
-        it in place with Enter (see `_handle_tiers_enter`)."""
-        edit = self._tiers_edit
+        it in place with Enter (see `_handle_models_enter`)."""
+        edit = self._models_edit
         if edit is not None and edit.key_editing:
             edit.key_editing = False
             edit.key_edit_buffer = ""
-            self._render_tiers_panel()
+            self._render_models_panel()
 
     def action_navigate_up(self) -> None:
         if self.query_one("#file-panel", FilePanel).display:
             self.query_one("#file-panel", FilePanel).move_up()
             return
-        if self.query_one(TiersPanel).display:
-            self._exit_tiers_key_edit()
-            self.query_one(TiersPanel).move_up()
+        if self.query_one(ModelsPanel).display:
+            self._exit_models_key_edit()
+            self.query_one(ModelsPanel).move_up()
             return
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
@@ -2215,9 +2184,9 @@ class GekaiApp(App[None]):
         if self.query_one("#file-panel", FilePanel).display:
             self.query_one("#file-panel", FilePanel).move_down()
             return
-        if self.query_one(TiersPanel).display:
-            self._exit_tiers_key_edit()
-            self.query_one(TiersPanel).move_down()
+        if self.query_one(ModelsPanel).display:
+            self._exit_models_key_edit()
+            self.query_one(ModelsPanel).move_down()
             return
         panel = self.query_one("#history-panel", HistoryPanel)
         if panel.display:
@@ -2239,7 +2208,7 @@ class GekaiApp(App[None]):
 
     def action_navigate_left(self) -> None:
         # `left`/`right` have no existing App-level binding (unlike up/down),
-        # so this — and `action_navigate_right` — are new. Both `TiersPanel`
+        # so this — and `action_navigate_right` — are new. Both `ModelsPanel`
         # and `ChoiceBar` previously relied on `on_key`'s left/right special
         # case (see `on_key` above) to move their cursor; since these are
         # `priority=True` bindings, that `on_key` path can no longer fire for
@@ -2247,9 +2216,9 @@ class GekaiApp(App[None]):
         # forwarded to the focused widget — see `action_navigate_up`'s own
         # comment/precedent for the same problem on up/down), so both panels'
         # left/right handling is reproduced here instead of left to `on_key`.
-        if self.query_one(TiersPanel).display:
-            self._exit_tiers_key_edit()
-            self.query_one(TiersPanel).move_left()
+        if self.query_one(ModelsPanel).display:
+            self._exit_models_key_edit()
+            self.query_one(ModelsPanel).move_left()
             return
         if self.query_one(ChoiceBar).display:
             self.query_one(ChoiceBar).move_left()
@@ -2259,9 +2228,9 @@ class GekaiApp(App[None]):
             prompt.action_cursor_left()
 
     def action_navigate_right(self) -> None:
-        if self.query_one(TiersPanel).display:
-            self._exit_tiers_key_edit()
-            self.query_one(TiersPanel).move_right()
+        if self.query_one(ModelsPanel).display:
+            self._exit_models_key_edit()
+            self.query_one(ModelsPanel).move_right()
             return
         if self.query_one(ChoiceBar).display:
             self.query_one(ChoiceBar).move_right()

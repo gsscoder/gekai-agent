@@ -38,14 +38,11 @@ def test_dedup_same_credential_key(_fake_keyring: dict[str, str]) -> None:
 
 
 def test_credential_key_format() -> None:
-    assert credentials.credential_key("fast", "deepseek-v4-flash", "low", False) == "fast-deepseek-v4-flash-low-n"
-    assert credentials.credential_key("core", "deepseek-v4-pro", "high", True) == "core-deepseek-v4-pro-high-y"
+    assert credentials.credential_key("openai", "deepseek-v4-flash") == "openai:deepseek-v4-flash"
+    assert credentials.credential_key("openai", "deepseek-v4-pro") == "openai:deepseek-v4-pro"
 
 
-def test_credential_key_distinguishes_tiers_sharing_a_model() -> None:
-    """Two tiers bound to the same model at the same effort/thinking still
-    get distinct keyring entries — the exact bug this scheme fixes (see
-    tests/test_tiers_grid_flow.py::test_key_is_scoped_to_the_row_it_was_pasted_in)."""
-    fast_key = credentials.credential_key("fast", "model-a", "low", False)
-    supp_key = credentials.credential_key("supp", "model-a", "low", False)
-    assert fast_key != supp_key
+def test_credential_key_is_namespaced_by_provider() -> None:
+    """The same model name reached through two wire protocols is two
+    credentials, not one."""
+    assert credentials.credential_key("openai", "model-a") != credentials.credential_key("anthropic", "model-a")

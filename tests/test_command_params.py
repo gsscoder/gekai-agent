@@ -3,7 +3,7 @@
 
 Source: agent/commands/base.py (`Command.params: str = ""`), agent/commands/
 clear.py, agent/commands/compact.py, agent/commands/exit.py, agent/commands/
-tiers.py (concrete `params` values), agent/subagents/__init__.py
+models.py, agent/commands/tier.py (concrete `params` values), agent/subagents/__init__.py
 (`Subagent.params: str = "<subagent prompt>"` default), agent/commands/
 registry.py (`CommandRegistry.get`).
 
@@ -17,7 +17,8 @@ from agent.commands.clear import ClearCommand
 from agent.commands.compact import CompactCommand
 from agent.commands.exit import ExitCommand
 from agent.commands.registry import CommandRegistry
-from agent.commands.tiers import TiersCommand
+from agent.commands.models import ModelsCommand
+from agent.commands.tier import TierCommand
 from agent.subagents import Subagent
 
 
@@ -31,9 +32,16 @@ def test_exit_command_has_no_params() -> None:
     assert ExitCommand.params == ""
 
 
-# REQ-003: TiersCommand declares no params (per agent/commands/tiers.py)
-def test_tiers_command_has_no_params() -> None:
-    assert TiersCommand.params == ""
+# REQ-003: ModelsCommand declares no params (per agent/commands/models.py)
+def test_models_command_has_no_params() -> None:
+    assert ModelsCommand.params == ""
+
+
+# REQ-003b: TierCommand declares its tier-name param spec (per
+# agent/commands/tier.py) — the listing form takes no args; model/effort/
+# thinking are picked interactively by the TUI's wizard, not typed
+def test_tier_command_declares_tier_name_param() -> None:
+    assert TierCommand.params == "<FAST|SUPP|CORE>"
 
 
 # REQ-004: CompactCommand declares an optional param spec (per

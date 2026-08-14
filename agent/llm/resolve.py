@@ -46,20 +46,19 @@ def resolve_tier(
     declares no override resolves exactly as passing none at all."""
     binding = bindings.get(tier)
     if binding is None:
-        raise TierResolutionError(f"tier {tier.value!r} is not configured — run /tiers")
+        raise TierResolutionError(f"tier {tier.value!r} is not configured — run /tier")
     try:
         validate_binding(tier, binding, catalog)
     except ValueError as exc:
         raise TierResolutionError(f"tier {tier.value!r} binding is stale: {exc}") from exc
-    # Deliberately built from the *binding's* operating point, never the
-    # touchpoint's: the key names what the user actually stored via /tiers, so
-    # a code-side override must not send credential lookup hunting for a key
-    # nobody was ever asked for (which would demand a fresh /tiers entry per
-    # override — precisely the churn overrides exist to avoid).
-    cred_key = credentials.credential_key(tier.value, binding.model, binding.default_effort, binding.thinking)
-    if not credentials.has_api_key(cred_key):
-        raise TierResolutionError(f"no stored credential for tier {tier.value!r} — run /tiers")
     entry = catalog[binding.model]
+    # Keyed by the model, not the tier's operating point: a credential is a
+    # property of the model (`/models`), independent of which tier currently
+    # points at it (`/tier`), so retuning effort/thinking never invalidates a
+    # stored key.
+    cred_key = credentials.credential_key(entry.provider, binding.model)
+    if not credentials.has_api_key(cred_key):
+        raise TierResolutionError(f"no stored credential for model {binding.model!r} — run /models")
     tp = touchpoint(touchpoint_name) if touchpoint_name is not None else None
     effort = binding.default_effort if tp is None or tp.effort is None else tp.effort
     thinking = binding.thinking if tp is None or tp.thinking is None else tp.thinking
@@ -90,7 +89,7 @@ def resolve_touchpoint(
 
 @dataclass(frozen=True)
 class TierRowStatus:
-    """Everything a `/tiers` UI (or the coherence check below) needs for one
+    """Everything `/tier`'s listing (or the coherence check below) needs for one
     tier, reported rather than raised — unlike `resolve_tier`, this never
     throws; every failure mode a real dispatch would hit instead shows up as
     a `None`/`False` field or a non-empty `invalid_reason`."""
@@ -148,9 +147,7 @@ def tier_status(
         tier=tier,
         binding=binding,
         entry=entry,
-        has_credential=credentials.has_api_key(
-            credentials.credential_key(tier.value, binding.model, binding.default_effort, binding.thinking)
-        ),
+        has_credential=credentials.has_api_key(credentials.credential_key(entry.provider, binding.model)),
         verdict=entry.suitability.verdict(tier, binding.thinking),
         invalid_reason=invalid_reason,
     )

@@ -89,7 +89,7 @@ def test_tiers_configured_false_when_bound_but_missing_credential(monkeypatch: p
     # raise on first use — tiers_configured() must now agree and report
     # False.
     _seed_catalog_and_bindings(monkeypatch)
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: not name.startswith("fast-"))
+    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: name != "openai:fast-model")
 
     assert settings.tiers_configured() is False
 

@@ -425,36 +425,37 @@ class FilePanel(Widget):
 
 
 @dataclass(frozen=True)
-class TierRowView:
-    """Fully-rendered strings for one tier row — the widget does no
+class ModelRowView:
+    """Fully-rendered strings for one model row — the widget does no
     formatting/derivation of its own, purely displays what it's given."""
 
-    tier_label: str  # "FAST" / "SUPP" / "CORE"
-    model: str  # e.g. "deepseek-v4-flash" or a placeholder like "…" if unset
-    effort: str  # e.g. "medium" or "…" or "n/a"
-    thinking: str  # "yes" / "no" / "n/a"
+    provider: str  # e.g. "openai" — catalog metadata, not editable
+    model: str  # e.g. "deepseek-v4-flash" — catalog metadata, not editable
     key: str  # masked value ("ab****xyz") if a key exists, "no key" if not, or the raw in-progress buffer while editing
-    status: str  # e.g. "✓ ready", "⚠ no key", "not configured", "warning", "deprecated"
+    status: str  # e.g. "✓ keyed", "no key"
 
 
-_TIER_ROW_COLUMNS = ("model", "effort", "thinking", "key")
+# The provider and model columns are catalog facts, so only the key cell is
+# ever selectable on a model row — a single-entry tuple keeps the same
+# cursor machinery the commit row uses without special-casing it.
+_MODEL_ROW_COLUMNS = ("key",)
 _COMMIT_ROW_COLUMNS = ("ok", "cancel")
 
 
-class TiersPanel(Widget):
-    """Cursor + display only — mirrors ChoiceBar. No model/tier/credential
-    domain logic lives here; the caller (agent/tui/app.py) supplies fully-
-    rendered TierRowView instances via `show()` and interprets what pressing
-    Enter on `selected_cell` means."""
+class ModelsPanel(Widget):
+    """Cursor + display only — mirrors ChoiceBar. No model/credential domain
+    logic lives here; the caller (agent/tui/app.py) supplies fully-rendered
+    ModelRowView instances via `show()` and interprets what pressing Enter on
+    `selected_cell` means."""
 
     DEFAULT_CSS = """
-    TiersPanel {
+    ModelsPanel {
         display: none;
         height: auto;
         background: ansi_default;
         border-top: solid #3a3a3a;
     }
-    TiersPanel #tiers-entries {
+    ModelsPanel #models-entries {
         height: auto;
         background: ansi_default;
         padding: 0 0 0 2;
@@ -463,33 +464,39 @@ class TiersPanel(Widget):
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
-        self._rows: list[TierRowView] = []
+        self._rows: list[ModelRowView] = []
         self._row: int = 0
-        self._column: str = "model"
+        self._column: str = "key"
         self._shown_once: bool = False
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="tiers-entries")
+        yield Static("", id="models-entries")
 
-    def show(self, rows: list[TierRowView]) -> None:
-        """rows must have exactly 3 entries, in FAST/SUPP/CORE order."""
+    def show(self, rows: list[ModelRowView]) -> None:
+        """One row per catalog model, in catalog order; the commit row is
+        appended by the widget itself."""
         self._rows = rows
         if not self._shown_once:
             # Only reset the cursor on the very first show() — subsequent
             # calls (e.g. re-rendering after an edit) preserve position.
             self._row = 0
-            self._column = "model"
+            self._column = "key"
             self._shown_once = True
+        self._clamp_row()
         self._refresh_display()
         self.display = True
 
     def hide(self) -> None:
         self.display = False
 
-    # Row navigation clamps at the top/bottom (rows 0 and 3) rather than
-    # wrapping like ChoiceBar's move_left/move_right does for its options —
-    # wrapping top-to-bottom across a 4-row grid via up/down would be
-    # disorienting, so this deliberately diverges from ChoiceBar here.
+    @property
+    def _commit_row(self) -> int:
+        return len(self._rows)
+
+    # Row navigation clamps at the top/bottom rather than wrapping like
+    # ChoiceBar's move_left/move_right does for its options — wrapping
+    # top-to-bottom across the grid via up/down would be disorienting, so
+    # this deliberately diverges from ChoiceBar here.
     def move_up(self) -> None:
         if self._row > 0:
             self._row -= 1
@@ -497,7 +504,7 @@ class TiersPanel(Widget):
             self._refresh_display()
 
     def move_down(self) -> None:
-        if self._row < 3:
+        if self._row < self._commit_row:
             self._row += 1
             self._clamp_column()
             self._refresh_display()
@@ -516,12 +523,18 @@ class TiersPanel(Widget):
             self._column = columns[idx + 1]
             self._refresh_display()
 
-    @staticmethod
-    def _columns_for_row(row: int) -> tuple[str, ...]:
-        return _COMMIT_ROW_COLUMNS if row == 3 else _TIER_ROW_COLUMNS
+    def _columns_for_row(self, row: int) -> tuple[str, ...]:
+        return _COMMIT_ROW_COLUMNS if row == self._commit_row else _MODEL_ROW_COLUMNS
+
+    def _clamp_row(self) -> None:
+        # A shorter catalog than the one the cursor was last positioned
+        # against would otherwise leave the cursor past the commit row.
+        if self._row > self._commit_row:
+            self._row = self._commit_row
+        self._clamp_column()
 
     def _clamp_column(self) -> None:
-        # Tier rows and the commit row have disjoint column sets, so a
+        # Model rows and the commit row have disjoint column sets, so a
         # column selected on one side is never valid on the other; land on
         # the first column of whichever side move_up/move_down lands on.
         columns = self._columns_for_row(self._row)
@@ -530,21 +543,19 @@ class TiersPanel(Widget):
 
     @property
     def selected_cell(self) -> tuple[int, str]:
-        """(row, column) where row is 0/1/2 for FAST/SUPP/CORE or 3 for the
-        commit row; column is one of "model"/"effort"/"thinking"/"key" for
-        rows 0-2, or "ok"/"cancel" for row 3. The status column is NOT
-        selectable — cursor navigation skips it entirely."""
+        """(row, column) where row indexes the catalog models, or equals the
+        model count for the commit row; column is "key" on a model row, or
+        "ok"/"cancel" on the commit row. The provider, model, and status
+        columns are NOT selectable — cursor navigation skips them."""
         return (self._row, self._column)
 
     def _refresh_display(self) -> None:
         if not self._rows:
-            self.query_one("#tiers-entries", Static).update("")
+            self.query_one("#models-entries", Static).update("")
             return
 
-        tier_w = max(4, max(len(r.tier_label) for r in self._rows))
+        provider_w = max(8, max(len(r.provider) for r in self._rows))
         model_w = max(5, max(len(r.model) for r in self._rows))
-        effort_w = max(6, max(len(r.effort) for r in self._rows))
-        thinking_w = max(8, max(len(r.thinking) for r in self._rows))
         key_w = max(3, max(len(r.key) for r in self._rows))
 
         def cell(row_i: int, column: str, text: str, width: int) -> str:
@@ -554,10 +565,8 @@ class TiersPanel(Widget):
             return f"  {escaped}"
 
         header = (
-            "tier".ljust(tier_w)
-            + "  " + "  model".ljust(2 + model_w)
-            + "  " + "  effort".ljust(2 + effort_w)
-            + "  " + "  thinking".ljust(2 + thinking_w)
+            "provider".ljust(provider_w)
+            + "  " + "model".ljust(model_w)
             + "  " + "  key".ljust(2 + key_w)
             + "  status"
         )
@@ -567,10 +576,8 @@ class TiersPanel(Widget):
             status_escaped = markup_escape(row.status)
             status_markup = status_escaped if row.status.startswith("✓") else f"[dim]{status_escaped}[/dim]"
             line = (
-                markup_escape(row.tier_label).ljust(tier_w)
-                + "  " + cell(i, "model", row.model, model_w)
-                + "  " + cell(i, "effort", row.effort, effort_w)
-                + "  " + cell(i, "thinking", row.thinking, thinking_w)
+                markup_escape(row.provider).ljust(provider_w)
+                + "  " + markup_escape(row.model).ljust(model_w)
                 + "  " + cell(i, "key", row.key, key_w)
                 + "  " + status_markup
             )
@@ -578,13 +585,13 @@ class TiersPanel(Widget):
 
         def commit_cell(column: str, label: str) -> str:
             escaped = markup_escape(label)
-            if (3, column) == (self._row, self._column):
+            if (self._commit_row, column) == (self._row, self._column):
                 return f"[bold #ffd700]{escaped}[/bold #ffd700]"
             return escaped
 
         lines.append(commit_cell("ok", "[ok]") + "  " + commit_cell("cancel", "[cancel]"))
 
-        self.query_one("#tiers-entries", Static).update("\n".join(lines))
+        self.query_one("#models-entries", Static).update("\n".join(lines))
 
 
 class DiffWidget(Widget):

@@ -37,7 +37,7 @@ class GekaiAgent:
         self.debug = debug
 
         # Resolution must NOT raise here: this constructor runs in
-        # agent/main.py before the TUI (and so before `/tiers`) exists —
+        # agent/main.py before the TUI (and so before `/models`/`/tier`) exists —
         # raising would permanently lock an unconfigured install out of the
         # only place that can fix it. `_configure_touchpoints` stashes
         # `self._tier_error` instead and `process_stream()` retries it
@@ -79,11 +79,11 @@ class GekaiAgent:
         """(Re)resolve every touchpoint against the *current* on-disk tier
         catalog+bindings, updating `self._main`/`self.model`/
         `self._api_key`/`self._api_base` in place. A single resolve-once-at-
-        construction attempt isn't enough: `/tiers` runs inside the same
+        construction attempt isn't enough: `/models`/`/tier` run inside the same
         already-constructed `GekaiAgent` and only touches disk, so without a
         retry here every touchpoint stays permanently stuck on whatever
         failed at process startup — the exact bug this fixes (config saved
-        mid-session, next prompt still reports the pre-`/tiers` error).
+        mid-session, next prompt still reports the pre-command error).
         Called once at construction and again lazily from
         `process_stream()` on every call while `self._tier_error` is set.
         Returns the four touchpoints' resolved model names (or all-`None` on
@@ -101,9 +101,9 @@ class GekaiAgent:
             # not a meaningful "this is the one broken thing" signal (e.g.
             # "tier 'fast' is not configured" reads as "you never configured
             # this" even when FAST *is* bound and it's actually SUPP that's
-            # missing a stored credential). A `/tiers` grid UI shows per-tier
+            # missing a stored credential). `/tier` with no args shows per-tier
             # detail in its own status column instead.
-            self._tier_error = "tier configuration is incomplete — run /tiers"
+            self._tier_error = "tier configuration is incomplete — run /models, then /tier"
             return (None, None, None, None)
 
         self._tier_error = None
@@ -118,7 +118,7 @@ class GekaiAgent:
         # closure plus each touchpoint's TierPolicy, so the harness can
         # re-resolve at a scaled tier per dispatch instead of the one
         # resolved above at `policy.default` (kept only for `run.start`
-        # telemetry, below). Rebuilt fresh every call so a `/tiers` save
+        # telemetry, below). Rebuilt fresh every call so a `/tier` save
         # mid-session is picked up the same way the frozen values used to be.
         # The touchpoint name rides along so a touchpoint's own operating
         # point (effort/thinking) still applies at whatever tier `scale()`
@@ -145,11 +145,11 @@ class GekaiAgent:
         """Force an immediate re-resolve of every touchpoint against the
         current on-disk tier catalog+bindings. `process_stream()`
         only retries `_configure_touchpoints()` lazily while resolution is
-        still *failing* (`self._main` is `None`) — a `/tiers`
+        still *failing* (`self._main` is `None`) — a `/tier`
         commit that changes an already-working tier's model/effort/thinking
         would otherwise sit stale (including `self.model`/`self.effort`,
         which the TUI status bar reads directly) until the next process
-        restart. Called by the TUI right after a `/tiers` commit."""
+        restart. Called by the TUI right after a `/tier` or `/models` commit."""
         self._configure_touchpoints()
 
     def start_session(
@@ -307,7 +307,7 @@ class GekaiAgent:
         if self._main is None:
             self._configure_touchpoints()
         if self._main is None:
-            raise RuntimeError(self._tier_error or "tiers are not configured — run /tiers")
+            raise RuntimeError(self._tier_error or "tiers are not configured — run /models, then /tier")
         if append_user:
             session.messages.append({"role": "user", "content": user_input})
             append_message(session, session.messages[-1], turn=turn_id)

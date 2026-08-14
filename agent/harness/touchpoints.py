@@ -7,7 +7,7 @@ deploys, not the harness itself. Adding a model interaction means adding an
 entry here, not scattering a new client call into a module.
 
 Inert: not yet consulted by any dispatch path. Phase 1 wires each entry's
-tier binding to the global /tiers config; Phase 2 lets the harness move a
+tier binding to the global tier config; Phase 2 lets the harness move a
 touchpoint's operating point within its declared space at assignment time.
 """
 
@@ -30,7 +30,7 @@ class Touchpoint:
     policy: TierPolicy | None = None
     # The touchpoint's own operating point, applied on top of whatever tier it
     # resolves at: the tier binding says WHICH model + credentials fill the
-    # capability slot (user config, /tiers), the touchpoint says HOW to operate
+    # capability slot (user config, /tier), the touchpoint says HOW to operate
     # that model for this particular job (harness engineering, code). `None` =
     # inherit the binding's value, which is what every touchpoint but the
     # sequencer does. Never used to build the credential key — that stays keyed

@@ -45,7 +45,7 @@ class TierPolicy:
     values but are a per-component axis after all — a touchpoint may declare
     its own (`Touchpoint.effort`/`.thinking`), because how hard to run a model
     for one specific harness job is an engineering decision belonging next to
-    the touchpoint, not a knob a user retunes in `/tiers` per workload (the
+    the touchpoint, not a knob a user retunes in `/tier` per workload (the
     sequencer is the standing case: CORE's model at effort=high, thinking
     off). A degenerate space (len(allowed) == 1) is how a non-scalable
     component is expressed — no separate freeze flag."""
@@ -102,6 +102,12 @@ MODEL_SUITABILITY: dict[str, TierSuitability] = {
     "deepseek-v4-flash":  TierSuitability(fast="ok", supp="ok", core="warning"),
 }
 
+# Wire protocols Gekai can actually speak. "openai" is the OpenAI-compatible
+# chat-completions shape (agent/llm/providers/openai.py) — the vendor behind
+# it varies (DeepSeek, QwenCloud), which is why base_url and credentials stay
+# per-model rather than per-provider.
+SUPPORTED_PROVIDERS: tuple[str, ...] = ("openai",)
+
 # Models with a genuinely public, documented canonical endpoint — filled in
 # from fact (confirmed via this project's own tests/.env.test), never guessed.
 _KNOWN_BASE_URLS: dict[str, str] = {
@@ -136,15 +142,21 @@ class ModelCatalogEntry:
     """One model known to Gekai (plan 28 Phase 1a): the durable registry
     entry, independent of whether/where it's currently bound to a tier.
     `base_url=None` means "not yet configured" — deployment-specific
-    (a proxy/gateway URL), never guessed or fabricated by the seed catalog."""
+    (a proxy/gateway URL), never guessed or fabricated by the seed catalog.
+    `provider` names the wire protocol that handles this model; it is what
+    `/models` groups by and what `credentials.credential_key` namespaces
+    with, so a model is never usable through a protocol Gekai can't speak."""
     name: str
     base_url: str | None
     efforts: tuple[str, ...]  # explicit, ascending — plan 28 decision 3a
     thinking: bool
     suitability: TierSuitability = TierSuitability()
+    provider: str = "openai"
 
     def __post_init__(self) -> None:
         _check_efforts_explicit_ascending(self.efforts)
+        if self.provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"model {self.name!r} declares provider {self.provider!r}; supported: {SUPPORTED_PROVIDERS}")
         if not self.thinking and self.suitability.core_thinking is not None:
             raise ValueError(f"model {self.name!r} has thinking=False but declares a core_thinking suitability override")
 
@@ -155,8 +167,8 @@ class TierBinding:
     catalog plus a default effort and a thinking flag. No base_url/creds
     here — base_url comes from the catalog entry (keyed by `model`),
     credentials from the keyring (keyed by `credentials.credential_key`:
-    tier-model-effort-thinking, so tiers sharing a model, or a tier whose
-    effort/thinking changes, still hold independent keys)."""
+    provider:model, so retuning a tier's effort/thinking never invalidates a
+    stored key, and two tiers on the same model share one)."""
     model: str
     default_effort: str
     thinking: bool = False
@@ -213,6 +225,7 @@ __all__ = [
     "Suitability",
     "TierSuitability",
     "MODEL_SUITABILITY",
+    "SUPPORTED_PROVIDERS",
     "ModelCatalogEntry",
     "TierBinding",
     "DEFAULT_MODEL_CATALOG",
