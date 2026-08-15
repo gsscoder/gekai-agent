@@ -92,12 +92,11 @@ def test_resolve_touchpoint_uses_nominal_tier(monkeypatch):
 def _record_credential_keys(monkeypatch) -> list[str]:
     seen: list[str] = []
 
-    def _has_api_key(name: str) -> bool:
+    def _get_api_key(name: str) -> str:
         seen.append(name)
-        return True
+        return f"key-for-{name}"
 
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", _has_api_key)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
+    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", _get_api_key)
     return seen
 
 

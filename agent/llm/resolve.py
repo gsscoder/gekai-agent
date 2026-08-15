@@ -57,7 +57,9 @@ def resolve_tier(
     # points at it (`/tier`), so retuning effort/thinking never invalidates a
     # stored key.
     cred_key = credentials.credential_key(entry.provider, binding.model)
-    if not credentials.has_api_key(cred_key):
+    try:
+        api_key = credentials.get_api_key(cred_key)
+    except LookupError:
         raise TierResolutionError(f"no stored credential for model {binding.model!r} — run /models")
     tp = touchpoint(touchpoint_name) if touchpoint_name is not None else None
     effort = binding.default_effort if tp is None or tp.effort is None else tp.effort
@@ -69,7 +71,7 @@ def resolve_tier(
         )
     return ResolvedTier(
         model=binding.model,
-        api_key=credentials.get_api_key(cred_key),
+        api_key=api_key,
         api_base=entry.base_url,
         extra_params=resolve_thinking_params(binding.model, effort, enabled=thinking),
     )

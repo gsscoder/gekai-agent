@@ -16,6 +16,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -116,6 +119,36 @@ def _cache_path(working_dir: Path) -> Path:
     return working_dir / ".gekai" / "directive-audit.json"
 
 
+# Per-path locks (plus a guard lock protecting the dict itself) serialize the
+# read-modify-write critical section below against concurrent background
+# audit tasks racing to update the same cache file.
+_locks: dict[Path, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    with _locks_guard:
+        lock = _locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _locks[path] = lock
+        return lock
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def file_sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
@@ -144,14 +177,15 @@ def load_cached_verdict(working_dir: Path, rel_path: str, file_sha_: str) -> Aud
 def save_cached_verdict(working_dir: Path, rel_path: str, file_sha_: str, verdict: AuditVerdict) -> None:
     path = _cache_path(working_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        data = {}
+    with _lock_for(path):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            data = {}
 
-    data[rel_path] = {
-        "file_sha": file_sha_,
-        "has_directives": verdict.has_directives,
-        "raw": verdict.raw,
-    }
-    path.write_text(json.dumps(data, indent=2) + "\n")
+        data[rel_path] = {
+            "file_sha": file_sha_,
+            "has_directives": verdict.has_directives,
+            "raw": verdict.raw,
+        }
+        _atomic_write(path, json.dumps(data, indent=2) + "\n")

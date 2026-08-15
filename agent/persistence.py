@@ -1,6 +1,8 @@
 from __future__ import annotations
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from .session import Session
@@ -11,8 +13,17 @@ def now_utc_str() -> str:
 
 
 def _normalize_path(p: Path) -> str:
-    r"""C:\MyCompany\My-Projects\Super_notepad -> cmycompanymyprojectssupernotepad"""
-    return re.sub(r"[^a-z0-9]", "", str(p).lower())
+    r"""C:\MyCompany\My-Projects\Super_notepad -> cmycompanymyprojectssupernotepad-a1b2c3d4
+
+    A short hash of the resolved absolute path is appended so that distinct
+    directories differing only by punctuation/case (which collapse to the same
+    stripped slug) don't collide on the same storage bucket.
+    """
+    resolved = str(p.resolve())
+    key = os.path.normcase(resolved)
+    slug = re.sub(r"[^a-z0-9]", "", resolved.lower())
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}"
 
 
 def _meta_path(workspace_folder: Path) -> Path:
