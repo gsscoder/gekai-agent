@@ -34,7 +34,7 @@ from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartE
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
-from ..tools.delegate import run_subagent
+from ..tools.delegate import make_delegate_tool, run_subagent
 from .tool_scope import scope as tool_scope
 
 if TYPE_CHECKING:
@@ -166,6 +166,7 @@ def _build_agent(
     subagent: Subagent | None = None,
     hidden_grant_callback: HiddenGrantCallback | None = None,
     tools_override: frozenset[str] | None = None,
+    can_delegate: bool = True,
 ) -> Agent:
     if subagent and subagent.permissions is not None:
         effective = Permissions(
@@ -188,6 +189,26 @@ def _build_agent(
     if tools_override is not None:
         selected = [t for t in selected if t.name in tools_override]
 
+    # `delegate` is declared, not ambient (plan-delegate-reintroduction Phase
+    # 3): only a subagent (never root — `subagent is None` excludes it by
+    # construction, no redundant check needed) that names targets in its own
+    # `delegates_to` gets the tool, and only when this build is itself
+    # allowed to delegate (`can_delegate`, the depth-1 cap — a subagent
+    # reached via delegation is always built with `can_delegate=False`, see
+    # `tools/delegate.py`'s `run_subagent`). Appended straight to `selected`
+    # after the `tools_override` filter above, never through `make_tools()`
+    # — `delegate` is not a filesystem/shell rung and must stay out of
+    # `tools/catalog.py`. `parent_tools` captures this build's own selected
+    # tool-name set (pre-delegate) so the child's effective grant can only
+    # ever be tightened, never widened, past it (tighten-only invariant).
+    if subagent is not None and subagent.delegates_to and can_delegate:
+        selected = selected + [make_delegate_tool(
+            subagent.delegates_to,
+            model, api_key, api_base, extra_params, working_dir,
+            permissions, permission_callback, bus, hidden_grant_callback,
+            frozenset(t.name for t in selected),
+        )]
+
     system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)}"
 
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
@@ -205,9 +226,13 @@ def _build_agent(
         on_request=permission_callback,
     ))
 
-    # No `delegate` tool is registered — root is a pure work-operator; the
-    # harness (sequencer + interpreter) owns all cross-agent control flow
-    # (plan 27 decision 11, superseding plan 25's agents-as-tools).
+    # Root still never receives `delegate` — it stays a pure work-operator;
+    # the harness (sequencer + interpreter) owns all cross-agent control flow
+    # for root's own dispatches (plan 27 decision 11, superseding plan 25's
+    # agents-as-tools). Subagent-level delegation, wired above, is a
+    # separate, bounded axis layered on top of that invariant, not a
+    # reversal of it: declared per-unit (`delegates_to`), depth-capped at 1,
+    # and tighten-only on tool capability.
     return agent
 
 

@@ -68,6 +68,9 @@ _TOOL_GUIDANCE: tuple[tuple[tuple[str, ...], str, str], ...] = (
      "run_command is stateless — cd does not persist across calls, each call starts in workspace root"),
     (("read_file",) + SHELL_TOOLS, "all",
      "prefer read_file/grep/list_files over shell equivalents for reading files"),
+    (("delegate",), "any",
+     "only use delegate for work discovered mid-task that is genuinely outside your own mandate, never as a substitute for doing the task yourself; "
+     "you stay accountable for the final report, so fold the delegated result into your own output instead of treating it as fire-and-forget"),
 )
 
 _SHELL_KIND_FACTS: dict[str, str] = {

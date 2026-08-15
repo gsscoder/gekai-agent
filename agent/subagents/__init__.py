@@ -58,6 +58,13 @@ class Subagent:
     # NAMESPACE_DIRECTIVE_RANK then name. A domain with no directives
     # (e.g. "generic") silently contributes nothing.
     directive_domains: tuple[str, ...] = ()
+    # additional roster names this unit may hand a task to via the `delegate`
+    # tool (hidden-bound in `_build_agent`). () = feature dormant for this
+    # unit — no `delegate` tool is registered at all, and this is the
+    # default for every subagent shipped today. Depth is capped at 1: a
+    # subagent built via delegation is built with `can_delegate=False`, so
+    # cycles are structurally impossible, not merely disallowed by policy.
+    delegates_to: tuple[str, ...] = ()
 
     def build_system_base(self) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body
@@ -144,6 +151,7 @@ def validate_registry() -> None:
     # since either can be typed in the slash palette; value tracks the owning
     # subagent's real name and whether it claimed the string via name/alias
     seen: dict[str, tuple[str, str]] = {}
+    names = {p.name for p in SUBAGENTS}
     for p in SUBAGENTS:
         if p.namespace not in NAMESPACES:
             raise ValueError(f"subagent {p.name!r} has unknown namespace: {p.namespace!r}")
@@ -175,3 +183,8 @@ def validate_registry() -> None:
                     f"subagent {p.name!r} lists unknown/directive-less domain {d!r} in directive_domains "
                     f"(not its own namespace and not a key in NAMESPACE_DIRECTIVES)"
                 )
+        for target in p.delegates_to:
+            if target == p.name:
+                raise ValueError(f"subagent {p.name!r} lists itself in delegates_to")
+            if target not in names:
+                raise ValueError(f"subagent {p.name!r} lists unknown delegate target {target!r} in delegates_to")

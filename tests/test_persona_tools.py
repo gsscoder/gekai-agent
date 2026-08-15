@@ -85,3 +85,21 @@ def test_shell_kind_omitted_adds_no_fact():
     assert "the shell is PowerShell" not in text
     assert "the shell is bash" not in text
     assert "the shell is sh" not in text
+
+
+_DELEGATE_FRAGMENT = (
+    "only use delegate for work discovered mid-task that is genuinely outside your own mandate, never as a substitute for doing the task yourself; "
+    "you stay accountable for the final report, so fold the delegated result into your own output instead of treating it as fire-and-forget"
+)
+
+
+def test_delegate_absent_leaves_instruction_unchanged():
+    assert render_tool_instruction(READ_TOOLS + SHELL_TOOLS) == (
+        _LEGACY_TOOL_INSTRUCTION
+    )
+
+
+def test_delegate_present_appends_only_its_own_fragment():
+    baseline = render_tool_instruction(READ_TOOLS + SHELL_TOOLS)
+    text = render_tool_instruction(READ_TOOLS + SHELL_TOOLS + ("delegate",))
+    assert text == baseline + "; " + _DELEGATE_FRAGMENT

@@ -236,6 +236,44 @@ def test_cold_dispatch_specialist_composes_generic_block(name):
     assert subagents_module.NAMESPACE_DIRECTIVES["generic"] in p.directives
 
 
+# ---------------------------------------------------------------------------
+# delegates_to (plan-delegate-reintroduction Phase 1) — declaration surface
+# only: every existing subagent keeps the default `()`, so the shipped
+# registry stays valid and the feature stays dormant
+# ---------------------------------------------------------------------------
+
+def test_delegates_to_defaults_to_empty_tuple():
+    assert _subagent().delegates_to == ()
+
+
+def test_validate_registry_raises_on_unknown_delegate_target(monkeypatch):
+    bad = dataclasses.replace(_subagent(), delegates_to=("no-such-agent",))
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
+    with pytest.raises(ValueError, match="no-such-agent"):
+        validate_registry()
+
+
+def test_validate_registry_raises_on_self_referential_delegate_target(monkeypatch):
+    bad = dataclasses.replace(_subagent(), delegates_to=("test-subagent",))
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
+    with pytest.raises(ValueError, match="itself"):
+        validate_registry()
+
+
+def test_validate_registry_accepts_delegate_target_naming_a_real_subagent(monkeypatch):
+    target = subagents_module.SUBAGENTS[0]
+    ok = dataclasses.replace(_subagent(), delegates_to=(target.name,))
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, ok])
+    validate_registry()  # must not raise
+
+
+def test_validate_registry_passes_unchanged_with_every_shipped_subagent_default():
+    # every real subagent keeps delegates_to=() -- the feature ships dormant
+    for p in subagents_module.SUBAGENTS:
+        assert p.delegates_to == ()
+    validate_registry()  # must not raise
+
+
 def test_code_refactorer_no_longer_instructs_asking_before_proceeding():
     # generic's cold contract says "never ask a clarifying question" — the
     # refactorer's own line on untraceable references must not contradict it

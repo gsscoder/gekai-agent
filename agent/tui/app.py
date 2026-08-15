@@ -73,6 +73,7 @@ class ConversationContainer(ScrollableContainer):
 _SPINNER_FRAMES = ["·", "•", "●", "•"]
 _BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _THINKING_WINDOW = 3  # max completed thinking "steps" (sentences) visible at once
+_INDENT_PER_DEPTH = 2  # left-margin cells per nesting level, applied by SubAgentRenderer._mount
 _DIAMOND = "◆"
 _SQUARE = "■"
 _SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
@@ -105,8 +106,9 @@ def _split_thinking_steps(buffer: str) -> tuple[list[str], str]:
 class SubAgentRenderer:
     """Manages header, L-connector, token accumulation, and Done line for subagent events."""
 
-    def __init__(self, conversation: ScrollableContainer) -> None:
+    def __init__(self, conversation: ScrollableContainer, depth: int = 0) -> None:
         self._conversation = conversation
+        self._depth = depth
         self.name: str = ""
         self._total_tokens: int = 0
         self._infer_count: int = 0
@@ -122,14 +124,32 @@ class SubAgentRenderer:
         self._tool_calls: int = 0
         self._is_thinking: bool = False
 
+    async def _mount(self, widget: Static | MessageWidget | ProgressBar, *, after: Static | MessageWidget | None = None) -> None:
+        """Single chokepoint every mount site routes through — stamps left
+        indentation proportional to `self._depth` (zero at depth 0, so
+        non-nested output is unchanged) before delegating to the real mount.
+        Indentation is applied as widget-level spacing (a CSS margin), never
+        as a string prefix: `log()`/`thinking_chunk()` build their
+        `rich.text.Text` content without markup-string interpolation
+        specifically so a literal "[" in a path/command can't be misparsed
+        as a markup tag, and splicing indent into that text would reopen
+        that hazard."""
+        if self._depth > 0:
+            widget.styles.margin = (0, 0, 0, self._depth * _INDENT_PER_DEPTH)
+        if after is not None:
+            await self._conversation.mount(widget, after=after)
+        else:
+            await self._conversation.mount(widget)
+
     async def _animate_dot(self) -> None:
         frame = 0
         dot_color = self._badge_color if self._badge_namespace is not None else "#666666"
+        prefix = "⎿ " if self._depth > 0 else ""
         try:
             while True:
                 if self._header_widget is not None:
                     char = _BRAILLE_FRAMES[frame % len(_BRAILLE_FRAMES)]
-                    self._header_widget.query_one(".header-dot", Static).update(f"[{dot_color}]{char}[/{dot_color}]")
+                    self._header_widget.query_one(".header-dot", Static).update(f"[{dot_color}]{prefix}{char}[/{dot_color}]")
                 frame += 1
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
@@ -139,13 +159,13 @@ class SubAgentRenderer:
         self.name = name
         self._badge_namespace = namespace
         self._badge_color = bg_color
-        await self._conversation.mount(Static("", classes="assistant-spacer"))
+        await self._mount(Static("", classes="assistant-spacer"))
         if namespace is not None:
             header_markup = _subagent_header_markup(name, bg_color, ui_label)
         else:
             header_markup = "[bold #666666]Triaging...[/bold #666666]"
-        widget = MessageWidget(MessageKind.HEADER, header_markup)
-        await self._conversation.mount(widget)
+        widget = MessageWidget(MessageKind.HEADER, header_markup, nested=self._depth > 0)
+        await self._mount(widget)
         self._header_widget = widget
         self._spinner_task = asyncio.create_task(self._animate_dot())
 
@@ -172,14 +192,14 @@ class SubAgentRenderer:
             widget = Static(line)
         else:
             widget = Static(f"{marker} {message}")
-        await self._conversation.mount(widget)
+        await self._mount(widget)
         self._log_widgets.append(widget)
         self._conversation.scroll_end(animate=False)
 
     async def status_update(self, event: "StatusUpdateEvent") -> None:
         if self._progress_bar is None:
             bar = ProgressBar(total=event.total, show_eta=False, show_percentage=True, classes="subagent-progress")
-            await self._conversation.mount(bar)
+            await self._mount(bar)
             self._progress_bar = bar
             self._conversation.scroll_end(animate=False)
         elif event.total is not None:
@@ -207,7 +227,7 @@ class SubAgentRenderer:
             # thinking chunks never ends up sandwiched above a later sentence
             # — tool usage always stacks below every visible sentence.
             anchor = self._thinking_widgets[-1] if self._thinking_widgets else self._header_widget
-            await self._conversation.mount(widget, after=anchor)
+            await self._mount(widget, after=anchor)
             self._thinking_widgets.append(widget)
             if len(self._thinking_widgets) > _THINKING_WINDOW:
                 await self._thinking_widgets.pop(0).remove()
@@ -249,12 +269,13 @@ class SubAgentRenderer:
             parts.append(_fmt_duration_verbose(elapsed))
             summary = " · ".join(parts)
             if self._header_widget is not None:
-                self._header_widget.query_one(".header-dot", Static).update(f"[{self._badge_color}]●[/{self._badge_color}]")
+                dot_prefix = "⎿ " if self._depth > 0 else ""
+                self._header_widget.query_one(".header-dot", Static).update(f"[{self._badge_color}]{dot_prefix}●[/{self._badge_color}]")
                 self._header_widget = None
             # badge header persists untouched — mount the Done summary as a
             # permanent connector line beneath it (it is now the sole survivor
             # under the header, so it always anchors the L-connector)
-            await self._conversation.mount(Static(f"  ⎿ Done ({summary})"))
+            await self._mount(Static(f"  ⎿ Done ({summary})"))
             self._conversation.scroll_end(animate=False)
             return summary
         else:
@@ -1551,7 +1572,23 @@ class GekaiApp(App[None]):
         stage[0] = "harness"
         ws_renderer: SubAgentRenderer | None = None
         active_renderer: SubAgentRenderer | None = None
-        delegation_renderer: SubAgentRenderer | None = None
+        # Stack of open delegation renderers, innermost last. A subagent P
+        # dispatched via a task-graph step (or a seed) can itself delegate to
+        # a child C through the `delegate` tool (agent/tools/delegate.py) —
+        # both P and C emit DelegationStart/DoneEvent on the same event bus,
+        # so a flat start(P) -> start(C) -> done(C) -> done(P) sequence must
+        # nest, not overwrite. Correlation here is positional (push on start,
+        # pop on done) rather than matched by an id, which is sound today
+        # because delegation on this bus is strictly sequential on two
+        # independent guarantees: `run_task_graph` (agent/harness/interpreter.py)
+        # is a plain `for` loop with `await`, and the delegate tool is
+        # registered `is_concurrency_safe=False`, so `ToolRegistry.run`
+        # (agent/llm/tools.py) serializes it instead of gathering concurrently.
+        # If either guarantee ever changes, `DelegationStarted`/`DelegationCompleted`
+        # (agent/llm/events.py) already carry a `run_id` that could be threaded
+        # through to `DelegationStartEvent`/`DelegationDoneEvent` for exact
+        # correlation instead of positional — not needed now.
+        delegation_stack: list[SubAgentRenderer] = []
         # Reset per-turn streaming state (plan 34 Phase 2): `_assistant_widget`
         # doubles as "has a TextChunkEvent already mounted the live answer
         # widget this turn" — stale state from a prior turn would otherwise
@@ -1561,7 +1598,7 @@ class GekaiApp(App[None]):
         self._streamed_answer = ""
 
         async def _on_event(item: AgentEvent | str) -> None:
-            nonlocal ws_renderer, active_renderer, delegation_renderer
+            nonlocal ws_renderer, active_renderer
             if isinstance(item, str):
                 return
             if isinstance(item, TaskGraphHaltedEvent):
@@ -1590,19 +1627,26 @@ class GekaiApp(App[None]):
             elif isinstance(item, DelegationStartEvent):
                 resolved = next((s for s in SUBAGENTS if s.name == item.agent_name), None)
                 if resolved is not None:
-                    delegation_renderer = SubAgentRenderer(conversation)
-                    await delegation_renderer.start(
+                    depth = len(delegation_stack) + 1  # ws_renderer occupies depth 0
+                    child_renderer = SubAgentRenderer(conversation, depth=depth)
+                    await child_renderer.start(
                         resolved.name,
                         namespace=resolved.namespace,
                         ui_label=item.mission or _fallback_ui_label(item.task),
                         bg_color=NAMESPACE_COLORS[resolved.namespace],
                     )
-                    active_renderer = delegation_renderer
+                    delegation_stack.append(child_renderer)
+                    active_renderer = child_renderer
             elif isinstance(item, DelegationDoneEvent):
-                if delegation_renderer is not None:
-                    await delegation_renderer.done()
-                    delegation_renderer = None
-                active_renderer = ws_renderer
+                if delegation_stack:
+                    closed = delegation_stack.pop()
+                    await closed.done()
+                else:
+                    # Unmatched done — today's positional correlation (see the
+                    # comment on `delegation_stack` above) should make this
+                    # unreachable; guard rather than crash if it ever isn't.
+                    pass
+                active_renderer = delegation_stack[-1] if delegation_stack else ws_renderer
             elif active_renderer:
                 if isinstance(item, LogEvent):
                     await active_renderer.log(item.message, tool_name=item.tool_name)

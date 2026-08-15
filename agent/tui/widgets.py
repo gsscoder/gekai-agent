@@ -101,6 +101,7 @@ class MessageWidget(Widget):
     MessageWidget.assistant > .assistant-body { width: 1fr; height: auto; }
     MessageWidget.header { layout: horizontal; height: auto; }
     MessageWidget.header > .header-dot { width: 2; height: auto; }
+    MessageWidget.header > .header-dot.nested { width: 4; height: auto; }
     MessageWidget.header > .header-text { width: 1fr; height: auto; }
     MessageWidget.interrupted { layout: horizontal; margin-top: 1; }
     MessageWidget.interrupted > Static { width: 2; height: auto; }
@@ -113,10 +114,15 @@ class MessageWidget(Widget):
     MessageWidget.warning > .assistant-body { width: 1fr; height: auto; }
     """
 
-    def __init__(self, kind: MessageKind, text: str, color: str | None = None) -> None:
+    def __init__(self, kind: MessageKind, text: str, color: str | None = None, nested: bool = False) -> None:
         self._kind = kind
         self._text = text
         self._color = color
+        # HEADER-only: a nested (depth > 0) subagent header widens its dot
+        # column to fit a "⎿ " connector ahead of the spinner/final dot — see
+        # SubAgentRenderer._animate_dot/.done in agent/tui/app.py. Depth 0
+        # (the default) renders exactly as before: no connector, width 2.
+        self._nested = nested
         super().__init__(classes=kind.value)
 
     def compose(self) -> ComposeResult:
@@ -151,7 +157,8 @@ class MessageWidget(Widget):
         elif self._kind == MessageKind.COMMAND_RESULT:
             yield Static(self._as_markup())
         elif self._kind == MessageKind.HEADER:
-            yield Static("[#666666]●[/#666666]", classes="header-dot")
+            dot_classes = "header-dot nested" if self._nested else "header-dot"
+            yield Static("[#666666]●[/#666666]", classes=dot_classes)
             yield Static(self._text, classes="header-text")
         elif self._kind == MessageKind.USER:
             yield Static(self._as_user_text())
