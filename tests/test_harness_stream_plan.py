@@ -289,6 +289,29 @@ def test_seed_dispatch_of_non_auto_assignable_test_fixer_succeeds(
     assert collected[-1] == "fixed"
 
 
+def test_seed_dispatch_of_non_auto_assignable_complexity_remover_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # third confirmation of the fix class -- `complexity-remover` is also
+    # `auto_assignable=False` (never sequencer-routable, dispatched only via
+    # its `/simplify` seed).
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
+    plan_mock = AsyncMock(side_effect=AssertionError("sequencer must not run when seeded"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="simplified")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "prune the dead code", seed="complexity-remover"))
+
+    assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+    assert collected[-1] == "simplified"
+
+
 def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))

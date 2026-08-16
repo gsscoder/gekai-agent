@@ -228,7 +228,7 @@ def test_validate_registry_passes_with_omni_worker_registered():
 
 @pytest.mark.parametrize(
     "name",
-    ["code-expert", "code-fixer", "code-refactorer", "test-expert", "test-fixer"],
+    ["code-expert", "code-fixer", "code-refactorer", "complexity-remover", "test-expert", "test-fixer"],
 )
 def test_cold_dispatch_specialist_composes_generic_block(name):
     p = next(s for s in subagents_module.SUBAGENTS if s.name == name)
@@ -267,11 +267,35 @@ def test_validate_registry_accepts_delegate_target_naming_a_real_subagent(monkey
     validate_registry()  # must not raise
 
 
-def test_validate_registry_passes_unchanged_with_every_shipped_subagent_default():
-    # every real subagent keeps delegates_to=() -- the feature ships dormant
-    for p in subagents_module.SUBAGENTS:
-        assert p.delegates_to == ()
+def test_validate_registry_passes_with_complexity_remover_as_sole_delegator():
+    # complexity-remover is the first live delegator (delegates dead-code-free
+    # structural refactors to code-refactorer); this is a regression guard
+    # against an accidental second delegator slipping into the registry,
+    # not an assertion that the feature stays universally dormant
+    delegators = [p.name for p in subagents_module.SUBAGENTS if p.delegates_to]
+    assert delegators == ["complexity-remover"]
     validate_registry()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# complexity-remover — first live delegator: dead-code/dead-file/unjustified-
+# abstraction pruning that hands true structural refactors to code-refactorer
+# via `delegate`; never sequencer-routable (auto_assignable stays False)
+# ---------------------------------------------------------------------------
+
+def test_complexity_remover_registered():
+    p = next(s for s in subagents_module.SUBAGENTS if s.name == "complexity-remover")
+    assert p.namespace == "coding"
+    assert p.alias == "simplify"
+    assert p.auto_assignable is False
+    assert p.user_invocable is True
+    assert p.delegates_to == ("code-refactorer",)
+
+
+def test_complexity_remover_composes_generic_block():
+    p = next(s for s in subagents_module.SUBAGENTS if s.name == "complexity-remover")
+    assert "generic" in p.directive_domains
+    assert subagents_module.NAMESPACE_DIRECTIVES["generic"] in p.directives
 
 
 def test_code_refactorer_no_longer_instructs_asking_before_proceeding():

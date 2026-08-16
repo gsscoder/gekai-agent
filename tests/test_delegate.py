@@ -328,6 +328,38 @@ def test_run_subagent_intersects_parent_tools_into_tools_override() -> None:
     assert mock_build.call_args.kwargs["tools_override"] == frozenset({"read_file"})
 
 
+# ---------------------------------------------------------------------------
+# complexity-remover — the first shipped subagent with a real (non-injected)
+# `delegates_to`; confirms the roster's own declaration wires the `delegate`
+# tool with the expected narrowed enum, and that `can_delegate=False` still
+# suppresses it as usual.
+# ---------------------------------------------------------------------------
+
+def _build_complexity_remover_agent(can_delegate=True):
+    from agent.harness.core import _build_agent
+    from agent.subagents import SUBAGENTS
+
+    complexity_remover = next(s for s in SUBAGENTS if s.name == "complexity-remover")
+    return _build_agent(
+        "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
+        complexity_remover.build_system_base(), None,
+        subagent=complexity_remover,
+        can_delegate=can_delegate,
+    )
+
+
+def test_complexity_remover_with_can_delegate_true_gets_delegate_tool_scoped_to_code_refactorer() -> None:
+    agent = _build_complexity_remover_agent(can_delegate=True)
+    assert "delegate" in agent.tools
+    delegate_def = next(d for d in agent.tools.definitions() if d.name == "delegate")
+    assert delegate_def.input_schema["properties"]["agent"]["enum"] == ["code-refactorer"]
+
+
+def test_complexity_remover_with_can_delegate_false_gets_no_delegate_tool() -> None:
+    agent = _build_complexity_remover_agent(can_delegate=False)
+    assert "delegate" not in agent.tools
+
+
 def test_run_subagent_uses_parent_tools_alone_when_no_tools_override_given() -> None:
     from agent.llm.types import Message, TextBlock
 
