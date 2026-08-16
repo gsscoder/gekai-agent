@@ -7,6 +7,16 @@ Checkpoint-oriented: built around frequent human validation, not long autonomous
 ## Core Technologies
 Python 3.11+, asyncio, PyPI
 
+## Layers
+- `agent/pipeline` — Router, FileLocator, blast-radius gate, PromptRewriter (the per-turn pipeline)
+- `agent/harness` and `agent/subagents` — the tool-calling loop and its specialist delegation
+- `agent/llm` — vendored provider adapter (retries, events, model caps)
+- `agent/tools` — tool catalog and implementations (files, shell)
+- `agent/workspace` — scanning, ignore rules, manifest parsing, symbol indexing
+- `agent/tui` — Textual UI
+- `agent/commands` — slash-command handling
+- Cross-cutting root modules (`permissions.py`, `session.py`, `events.py`, `logging.py`, `diff.py`, `shell.py`, `compact.py`) — support all layers above
+
 ## Architecture
 Textual TUI on top of a per-turn pipeline:
 - `Router` — single LLM call, classifies the turn as `main` / `trivial` / `rejected` / `<subagent>`
