@@ -49,7 +49,9 @@ _SHARED_BODY = (
 # is registered for root (harness/core.py `_build_agent`) — so this block no
 # longer instructs root to route to or name a specialist.
 _ROOT_DIRECTIVES = (
-    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing"
+    "when a request is ambiguous, contradictory, or missing information needed to proceed, ask before acting instead of guessing\n"
+    "unless explicitly requested otherwise, respond in Simplified Technical English (ASD-STE100); after processing text in another language, switch back to English\n"
+    "unless requested otherwise, name new files, symbols, and URI paths in English, even when the conversation or source material is in another language; when editing an existing non-English-named codebase, follow its established convention instead"
 )
 
 ROOT_SYSTEM_PROMPT = _IDENTITY_ROOT + _SHARED_BODY + "\n<directives>\n" + _ROOT_DIRECTIVES
