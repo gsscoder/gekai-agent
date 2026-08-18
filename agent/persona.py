@@ -64,7 +64,8 @@ _TOOL_GUIDANCE: tuple[tuple[tuple[str, ...], str, str], ...] = (
      "if the question requires file contents, implementation details, logic, or architecture depth, "
      "you MUST use tools to read actual files — do not guess or rely on training knowledge"),
     (("read_file",), "any",
-     "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads"),
+     "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; "
+     "before reading multiple files, use list_files to check their sizes first"),
     (SHELL_TOOLS, "any",
      "use run_command for build, test, and git operations; "
      "run_command is stateless — cd does not persist across calls, each call starts in workspace root"),

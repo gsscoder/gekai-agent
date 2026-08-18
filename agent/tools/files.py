@@ -8,7 +8,7 @@ from pathlib import Path
 from agent.llm import tool
 from agent.settings import load_allow_hidden, save_allow_hidden
 from agent.workspace import scanner
-from agent.workspace.ignore import load as _load_ignore_rules
+from agent.workspace.ignore import IgnoreRules, load as _load_ignore_rules
 from agent.workspace.symbols import _EXT_TO_LANG, _LANG_TO_MODULE, _LANG_QUERIES
 
 HiddenGrantCallback = Callable[[str, str], Awaitable[bool]]
@@ -149,9 +149,58 @@ async def _list_files(pattern: str, *, working_dir: Path) -> str:
             rel += "/"
         if rules.is_hidden(rel):
             continue
-        matches.append(rel)
+        if rel.endswith("/"):
+            matches.append(rel)
+        else:
+            matches.append(f"{rel} ({p.stat().st_size} bytes)")
     matches = sorted(matches)[:_MAX_RESULTS]
-    return "\n".join(matches) if matches else "(no matches)"
+    if matches:
+        return "\n".join(matches)
+    hint = _no_match_hint(pattern, working_dir=working_dir, rules=rules)
+    return hint if hint else "(no matches)"
+
+
+def _no_match_hint(pattern: str, *, working_dir: Path, rules: IgnoreRules) -> str:
+    """Find the deepest existing ancestor of `pattern` and list its children as a hint.
+
+    ponytail: single-ancestor hint, not a fuzzy/recursive search — if this
+    ceiling is ever hit, upgrade to a bounded basename walk instead of full
+    recursion.
+    """
+    parts = Path(pattern).parts
+    ancestor = working_dir
+    ancestor_rel = ""
+    for part in parts:
+        if any(ch in part for ch in "*?["):
+            break
+        candidate = ancestor / part
+        if not candidate.is_dir():
+            break
+        ancestor = candidate
+        ancestor_rel = str(ancestor.relative_to(working_dir)).replace("\\", "/")
+
+    if ancestor_rel and rules.is_hidden(ancestor_rel + "/"):
+        return ""
+
+    try:
+        children = sorted(ancestor.iterdir())
+    except OSError:
+        return ""
+
+    names: list[str] = []
+    for child in children:
+        rel = str(child.relative_to(working_dir)).replace("\\", "/")
+        name = child.name + "/" if child.is_dir() else child.name
+        if rules.is_hidden(rel + "/" if child.is_dir() else rel):
+            continue
+        names.append(name)
+        if len(names) >= _MAX_RESULTS:
+            break
+
+    if not names:
+        return ""
+    where = ancestor_rel if ancestor_rel else "."
+    return f"no matches for {pattern!r}; did you mean one of these in '{where}': {', '.join(names)}?"
 
 
 async def _file_info(
@@ -438,10 +487,11 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
     async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
         """Read a file in the workspace.
 
-        For large files, read a targeted range rather than the full file.
-        Use file_info to check line count first, or symbols/grep to locate
-        relevant lines. Then pass start_line/end_line (1-based, inclusive) to
-        read only what is needed. Omit both to read the full file.
+        For files over ~300 lines or ~15KB, read a targeted range rather than
+        the full file. Check the size first — list_files shows byte size per
+        entry, or use file_info for exact line count. Use symbols/grep to
+        locate relevant lines. Then pass start_line/end_line (1-based,
+        inclusive) to read only what is needed. Omit both to read the full file.
         When showing multiple symbols from the same file, make ONE call spanning
         from the lowest to the highest line (add ~5 line buffer) — never one
         call per symbol.
@@ -459,7 +509,11 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
     @tool(is_read_only=True, required_permission="read")
     async def list_files(pattern: str) -> str:
         """List files and directories matching a glob pattern (e.g. '**/*.py', '*').
-        Directories appear with a trailing '/'."""
+        Directories appear with a trailing '/'; files show their byte size,
+        e.g. 'agent/foo.py (1234 bytes)' — use this to decide whether
+        read_file needs a targeted range (see read_file for the size threshold)
+        before reading. On no match, returns a hint listing the nearest
+        existing ancestor directory's contents instead of a dead end."""
         return await _list_files(pattern, working_dir=working_dir)
 
     @tool(is_read_only=True, required_permission="read")
@@ -470,7 +524,8 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
     @tool(is_read_only=True, required_permission="read")
     async def file_info(path: str) -> str:
         """Return line count and byte size for a file. Use before read_file to decide
-        whether to read the full file or a targeted range."""
+        whether to read the full file or a targeted range — files over ~300 lines
+        or ~15KB are candidates for a targeted range instead of a full read."""
         return await _file_info(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=True, required_permission="read")

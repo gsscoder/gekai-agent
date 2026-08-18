@@ -18,6 +18,7 @@ _LEGACY_TOOL_INSTRUCTION = (
     "if the question requires file contents, implementation details, logic, or architecture depth, "
     "you MUST use tools to read actual files — do not guess or rely on training knowledge; "
     "when multiple targets are nearby, prefer one wider ranged read_file call over many individual reads; "
+    "before reading multiple files, use list_files to check their sizes first; "
     "use run_command for build, test, and git operations; "
     "run_command is stateless — cd does not persist across calls, each call starts in workspace root; "
     "prefer read_file/grep/list_files over shell equivalents for reading files"
