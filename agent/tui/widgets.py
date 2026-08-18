@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -13,6 +14,20 @@ from textual.widgets import Markdown, Static
 
 from agent import __version_core__, __version_label__
 from agent.diff import DiffLine, render_diff
+
+# A model that ignores the "no separator lines" directive still renders one:
+# Textual's Markdown widget treats a lone ---/***/___ line as a CommonMark
+# thematic break (an actual <hr> block, with block-level margin above and
+# below it — the "extra blank lines" is that margin, not stray whitespace).
+# Directive compliance is best-effort; this is the enforcement backstop for
+# assistant text specifically, applied right where that text enters the
+# Markdown widget.
+_THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$", re.MULTILINE)
+
+
+def _strip_thematic_breaks(text: str) -> str:
+    text = _THEMATIC_BREAK_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
 class MessageKind(Enum):
@@ -131,7 +146,7 @@ class MessageWidget(Widget):
             if self._color:
                 yield Static(markup_escape(self._text), classes="assistant-body")
             else:
-                yield Markdown(self._text)
+                yield Markdown(_strip_thematic_breaks(self._text))
         elif self._kind == MessageKind.INTERRUPTED:
             if self._text:
                 yield Static("[red]●[/red]")
@@ -193,7 +208,7 @@ class MessageWidget(Widget):
     def update(self, content: str) -> None:
         self._text = content
         if self._kind == MessageKind.ASSISTANT:
-            self.query_one(Markdown).update(content)
+            self.query_one(Markdown).update(_strip_thematic_breaks(content))
         elif self._kind == MessageKind.USER:
             self.query_one(Static).update(self._as_user_text())
         elif self._kind == MessageKind.HEADER:

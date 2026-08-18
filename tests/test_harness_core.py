@@ -44,7 +44,7 @@ import pytest
 
 from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, LogEvent, MaxIterationsEvent, TextChunkEvent
 from agent.harness import core as harness_core
-from agent.harness.core import Harness
+from agent.harness.core import Harness, _MAX_ITERATIONS
 from agent.llm.events import AgentStopped, EventBus
 from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
@@ -126,9 +126,6 @@ def _tool_call_response(call_id: str) -> CompletionResponse:
         content=[ToolUseBlock(id=call_id, name="read_file", input={"path": "x.py"})],
         stop_reason="tool_use",
     )
-
-
-_MAX_ITERATIONS = 10  # agent/llm/agent.py: Agent.max_iterations default
 
 
 def _make_session(tmp_path: Path) -> Session:

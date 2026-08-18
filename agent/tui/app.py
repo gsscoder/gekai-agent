@@ -123,6 +123,7 @@ class SubAgentRenderer:
         self._badge_color: str = ""
         self._tool_calls: int = 0
         self._is_thinking: bool = False
+        self._last_tool_name: str = ""
 
     async def _mount(self, widget: Static | MessageWidget | ProgressBar, *, after: Static | MessageWidget | None = None) -> None:
         """Single chokepoint every mount site routes through — stamps left
@@ -189,11 +190,16 @@ class SubAgentRenderer:
             line.append(kind, style="#666666")
             if detail:
                 line.append(f" {detail}", style="white")
+            if tool_name == self._last_tool_name and self._log_widgets:
+                self._log_widgets[-1].update(line)
+                self._conversation.scroll_end(animate=False)
+                return
             widget = Static(line)
         else:
             widget = Static(f"{marker} {message}")
         await self._mount(widget)
         self._log_widgets.append(widget)
+        self._last_tool_name = tool_name
         self._conversation.scroll_end(animate=False)
 
     async def status_update(self, event: "StatusUpdateEvent") -> None:
@@ -482,6 +488,7 @@ class _StepResult:
     outcome: str = "ok"  # "ok" | "max_iterations"
     answer: str = ""
     max_iter_hit: bool = False
+    budget_exhausted: bool = False
     query_tool_count: int = 0
     ui_label: str = ""
     ws_renderer: SubAgentRenderer | None = None
@@ -1688,6 +1695,7 @@ class GekaiApp(App[None]):
             outcome=turn_result.outcome,
             answer=turn_result.answer,
             max_iter_hit=turn_result.max_iter_hit,
+            budget_exhausted=turn_result.budget_exhausted,
             query_tool_count=turn_result.query_tool_count,
             ws_renderer=ws_renderer,
         )
@@ -1748,6 +1756,8 @@ class GekaiApp(App[None]):
                 else:
                     self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
                     await conversation.mount(self._assistant_widget)
+                if step_result.budget_exhausted:
+                    await conversation.mount(MessageWidget(MessageKind.WARNING, "response may be incomplete — the turn hit its tool-call budget before finishing"))
                 elapsed = time.monotonic() - start
                 operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({step_result.query_tool_count} {'tool' if step_result.query_tool_count == 1 else 'tools'})" if step_result.query_tool_count > 0 else "")
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, operation_text, color=color))

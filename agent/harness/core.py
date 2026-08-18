@@ -153,6 +153,16 @@ def _fmt_debug_tool_input(call: ToolUseBlock) -> dict:
     return {"name": call.name, "input": _truncate_debug_text(json.dumps(inp, default=str))}
 
 
+# Tool-calling rounds allowed per turn. `Agent`'s own default (10) is a
+# conservative library default; a turn here routinely spends rounds walking a
+# real repo — a single "explain this codebase" turn was observed spending all
+# ten on reads alone and never reaching an answer. Raised as harness policy so
+# the vendored default stays untouched. This is a ceiling, not a target: turns
+# that finish early still stop early, and the closing salvage call
+# (`Agent._salvage_kwargs`) still catches whatever does reach the ceiling.
+_MAX_ITERATIONS = 25
+
+
 def _build_agent(
     model: str,
     api_key: str | None,
@@ -218,6 +228,7 @@ def _build_agent(
         system=system,
         event_bus=bus,
         extra_params=extra_params,
+        max_iterations=_MAX_ITERATIONS,
     )
     for t in selected:
         agent.tools.register(t)

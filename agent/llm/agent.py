@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .errors import CostCeilingExceeded, MaxIterationsExceeded
+from .model_caps import resolve_thinking_params
 from .events import (
     AgentStarted,
     AgentStopped,
@@ -44,6 +45,21 @@ from .types import (
     ToolUseBlock,
     UsageTally,
 )
+
+
+# Sent as a closing user turn when the iteration budget runs out, so the model
+# stops trying to continue the task and writes up what it already has. Without
+# it the transcript just ends on a tool result with the tools taken away, and
+# the model has no way to know this call is its last.
+_SALVAGE_INSTRUCTION = (
+    "your tool-call budget for this turn is spent — no further tool calls are possible. "
+    "write your final answer now, using only what you have already gathered. "
+    "if you could not finish, say what you established and what is still open."
+)
+
+# Floor for the closing call's token allowance: a `max_tokens` tuned for
+# individual tool-calling steps is often too small to write up a whole turn.
+_SALVAGE_MAX_TOKENS = 8192
 
 
 @dataclass
@@ -87,10 +103,16 @@ class Agent:
             await asyncio.wait_for(self._run_loop(messages), self.wall_clock_timeout)
 
     async def _run_loop(self, messages: list[Message]) -> None:
-        async def _complete(*, with_tools: bool = True) -> CompletionResponse:
+        async def _complete(
+            *, with_tools: bool = True, kwargs: dict[str, Any] | None = None
+        ) -> CompletionResponse:
             self.usage.record_call()
             final: CompletionResponse | None = None
-            async for ev in self.provider.stream(**self._provider_kwargs(messages, with_tools=with_tools)):
+            stream_kwargs = (
+                kwargs if kwargs is not None
+                else self._provider_kwargs(messages, with_tools=with_tools)
+            )
+            async for ev in self.provider.stream(**stream_kwargs):
                 if isinstance(ev, ThinkingDelta):
                     self._emit(ThinkingChunkReceived(text=ev.text))
                 elif isinstance(ev, TextDelta):
@@ -118,17 +140,16 @@ class Agent:
                     self._emit(AgentStopped(stop_reason="complete", turns=self.usage.turns))
                     return
 
-            budget_exhausted = False
-            if not self._assistant_text(messages):
-                budget_exhausted = True
-                turn = self.max_iterations + 1
-                self._emit(TurnStarted(turn=turn))
-                self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
-                response = await retry_call(
-                    self._instrumented_policy(turn), lambda: _complete(with_tools=False)
-                )
-                self._emit(ModelResponseReceived(turn=turn, response=response))
-                await self._apply_response(response, messages, turn=turn)
+            budget_exhausted = True
+            turn = self.max_iterations + 1
+            self._emit(TurnStarted(turn=turn))
+            self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
+            response = await retry_call(
+                self._instrumented_policy(turn),
+                lambda: _complete(kwargs=self._salvage_kwargs(messages)),
+            )
+            self._emit(ModelResponseReceived(turn=turn, response=response))
+            await self._apply_response(response, messages, turn=turn)
 
             if self._assistant_text(messages):
                 self._emit(
@@ -195,27 +216,23 @@ class Agent:
                     self._emit(AgentStopped(stop_reason="complete", turns=self.usage.turns))
                     return
 
-            budget_exhausted = False
-            if not self._assistant_text(messages):
-                budget_exhausted = True
-                turn = self.max_iterations + 1
-                final_response = None
-                self.usage.record_call()
-                self._emit(TurnStarted(turn=turn))
-                self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
-                async for event in self.provider.stream(
-                    **self._provider_kwargs(messages, with_tools=False)
-                ):
-                    if isinstance(event, StreamDone):
-                        final_response = event.response
-                    yield event
+            budget_exhausted = True
+            turn = self.max_iterations + 1
+            final_response = None
+            self.usage.record_call()
+            self._emit(TurnStarted(turn=turn))
+            self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
+            async for event in self.provider.stream(**self._salvage_kwargs(messages)):
+                if isinstance(event, StreamDone):
+                    final_response = event.response
+                yield event
 
-                if final_response is None:
-                    raise RuntimeError(
-                        f"{type(self.provider).__name__}.stream() ended without a StreamDone event"
-                    )
-                self._emit(ModelResponseReceived(turn=turn, response=final_response))
-                await self._apply_response(final_response, messages, turn=turn)
+            if final_response is None:
+                raise RuntimeError(
+                    f"{type(self.provider).__name__}.stream() ended without a StreamDone event"
+                )
+            self._emit(ModelResponseReceived(turn=turn, response=final_response))
+            await self._apply_response(final_response, messages, turn=turn)
 
             if self._assistant_text(messages):
                 self._emit(
@@ -301,16 +318,14 @@ class Agent:
                     completed = True
                     break
 
-            if not completed and not self._assistant_text(messages):
+            if not completed:
                 budget_exhausted = True
                 turn = self.max_iterations + 1
                 final_response = None
                 self.usage.record_call()
                 self._emit(TurnStarted(turn=turn))
                 self._emit(ModelRequestSent(turn=turn, messages=list(messages)))
-                async for event in self.provider.stream(
-                    **self._provider_kwargs(messages, with_tools=False)
-                ):
+                async for event in self.provider.stream(**self._salvage_kwargs(messages)):
                     if isinstance(event, StreamDone):
                         final_response = event.response
                     yield event
@@ -395,6 +410,32 @@ class Agent:
             "max_tokens": self.max_tokens,
             **self.extra_params,
         }
+
+    def _salvage_kwargs(self, messages: list[Message]) -> dict[str, Any]:
+        """Provider kwargs for the closing call made once the iteration budget
+        is spent — dropping the tools alone is not enough to get an answer out.
+
+        Three things go wrong with a bare `_provider_kwargs(..., with_tools=False)`
+        here, and all three end in the same place: a response carrying no
+        `TextBlock`, which `_assistant_text` reads as "no answer" and turns
+        into `MaxIterationsExceeded`.
+
+        1. The model is never told the budget is gone. The transcript ends on a
+           tool result, so the obvious continuation is another tool call — which
+           it cannot make now that `tools` is None. `_SALVAGE_INSTRUCTION` says
+           it plainly instead of leaving the model to infer it.
+        2. Thinking shares the `max_tokens` budget with the answer, so a long
+           reasoning burst can consume the whole allowance and emit no text at
+           all. This call is a summary of work already done, not new reasoning,
+           so thinking is explicitly disabled.
+        3. `max_tokens` sized for a tool-calling step is too small to close out
+           a long turn, so the floor is raised for this one call.
+        """
+        nudged = messages + [Message(role="user", content=_SALVAGE_INSTRUCTION)]
+        kwargs = self._provider_kwargs(nudged, with_tools=False)
+        kwargs.update(resolve_thinking_params(self.model, enabled=False))
+        kwargs["max_tokens"] = max(self.max_tokens, _SALVAGE_MAX_TOKENS)
+        return kwargs
 
     async def _apply_response(
         self,

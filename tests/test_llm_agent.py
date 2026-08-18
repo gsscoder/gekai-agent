@@ -60,6 +60,16 @@ def _tool_call_response(call_id: str) -> CompletionResponse:
     )
 
 
+def _tool_call_response_with_narration(call_id: str, text: str) -> CompletionResponse:
+    return CompletionResponse(
+        content=[
+            TextBlock(text=text),
+            ToolUseBlock(id=call_id, name="read_file", input={"path": "x.py"}),
+        ],
+        stop_reason="tool_use",
+    )
+
+
 def _collect_agent_stopped(bus: EventBus) -> list[AgentStopped]:
     collected: list[AgentStopped] = []
 
@@ -140,6 +150,27 @@ def test_run_loop_salvages_closing_text_when_budget_exhausted() -> None:
     _assert_stopped_once(stopped, "complete", True)
 
 
+def test_run_loop_salvages_when_tool_calls_carry_narration_text() -> None:
+    max_iterations = 3
+    responses = [
+        _tool_call_response_with_narration(f"call-{i}", f"Now let me check {i}")
+        for i in range(1, max_iterations + 1)
+    ]
+    responses.append(
+        CompletionResponse(
+            content=[TextBlock(text="done: salvaged")],
+            stop_reason="end_turn",
+        )
+    )
+    agent, provider, stopped = _make_agent(responses, max_iterations)
+
+    messages = run(agent.run("do the thing"))
+
+    assert "done: salvaged" in agent._assistant_text(messages)
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "complete", True)
+
+
 def test_run_loop_raises_when_salvage_also_empty() -> None:
     max_iterations = 3
     responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
@@ -173,9 +204,63 @@ def test_run_stream_salvages_closing_text_when_budget_exhausted() -> None:
     _assert_stopped_once(stopped, "complete", True)
 
 
+def test_run_stream_salvages_when_tool_calls_carry_narration_text() -> None:
+    max_iterations = 3
+    responses = [
+        _tool_call_response_with_narration(f"call-{i}", f"Now let me check {i}")
+        for i in range(1, max_iterations + 1)
+    ]
+    responses.append(
+        CompletionResponse(
+            content=[TextBlock(text="done: salvaged")],
+            stop_reason="end_turn",
+        )
+    )
+    agent, provider, stopped = _make_agent(responses, max_iterations)
+
+    async def _drain() -> None:
+        async for _ in agent.run_stream("do the thing"):
+            pass
+
+    run(_drain())
+
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "complete", True)
+
+
 def test_run_stream_with_result_salvages_closing_text_when_budget_exhausted() -> None:
     max_iterations = 3
     responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
+    responses.append(
+        CompletionResponse(
+            content=[TextBlock(text="done: salvaged")],
+            stop_reason="end_turn",
+        )
+    )
+    agent, provider, stopped = _make_agent(responses, max_iterations)
+
+    async def _drain() -> AgentResultEvent:
+        result_event: AgentResultEvent | None = None
+        async for event in agent.run_stream_with_result("do the thing"):
+            if isinstance(event, AgentResultEvent):
+                result_event = event
+        assert result_event is not None
+        return result_event
+
+    result_event = run(_drain())
+
+    assert result_event.result.stop_reason == "complete"
+    assert "done: salvaged" in result_event.result.text
+    _assert_final_call_dropped_tools(provider, max_iterations)
+    _assert_stopped_once(stopped, "complete", True)
+
+
+def test_run_stream_with_result_salvages_when_tool_calls_carry_narration_text() -> None:
+    max_iterations = 3
+    responses = [
+        _tool_call_response_with_narration(f"call-{i}", f"Now let me check {i}")
+        for i in range(1, max_iterations + 1)
+    ]
     responses.append(
         CompletionResponse(
             content=[TextBlock(text="done: salvaged")],
@@ -301,3 +386,85 @@ def test_run_loop_streams_text_chunks_and_persists_assembled_answer() -> None:
     )
     assert assistant_text == final_text
     assert assistant_text == "".join(e.text for e in received)
+
+
+def _salvage_call(provider: "_ScriptedProvider", max_iterations: int) -> dict:
+    """The closing call the agent makes once the iteration budget is spent."""
+    assert len(provider.calls) == max_iterations + 1
+    return provider.calls[-1]
+
+
+def _assert_salvage_shaped(call: dict) -> None:
+    """The closing call must be able to actually produce an answer: no tools to
+    keep chasing, an explicit instruction to write up now (the transcript ends
+    on a tool result, so nothing else signals the budget is gone), and a token
+    allowance large enough to hold the write-up."""
+    assert call["tools"] is None
+    last = call["messages"][-1]
+    assert last.role == "user"
+    assert "tool-call budget" in last.content
+    assert call["max_tokens"] >= 8192
+
+
+def test_run_loop_salvage_call_instructs_and_widens_budget() -> None:
+    max_iterations = 3
+    responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
+    responses.append(
+        CompletionResponse(content=[TextBlock(text="done: salvaged")], stop_reason="end_turn")
+    )
+    agent, provider, _ = _make_agent(responses, max_iterations)
+
+    run(agent.run("do the thing"))
+
+    _assert_salvage_shaped(_salvage_call(provider, max_iterations))
+
+
+def test_run_stream_salvage_call_instructs_and_widens_budget() -> None:
+    max_iterations = 3
+    responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
+    responses.append(
+        CompletionResponse(content=[TextBlock(text="done: salvaged")], stop_reason="end_turn")
+    )
+    agent, provider, _ = _make_agent(responses, max_iterations)
+
+    async def _drain() -> None:
+        async for _ in agent.run_stream("do the thing"):
+            pass
+
+    run(_drain())
+
+    _assert_salvage_shaped(_salvage_call(provider, max_iterations))
+
+
+def test_run_stream_with_result_salvage_call_instructs_and_widens_budget() -> None:
+    max_iterations = 3
+    responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
+    responses.append(
+        CompletionResponse(content=[TextBlock(text="done: salvaged")], stop_reason="end_turn")
+    )
+    agent, provider, _ = _make_agent(responses, max_iterations)
+
+    async def _drain() -> None:
+        async for _ in agent.run_stream_with_result("do the thing"):
+            pass
+
+    run(_drain())
+
+    _assert_salvage_shaped(_salvage_call(provider, max_iterations))
+
+
+def test_salvage_instruction_does_not_persist_in_history() -> None:
+    """The nudge is scaffolding for the closing call only — it must not end up
+    in the returned transcript, where it would read as something the user said."""
+    max_iterations = 3
+    responses = [_tool_call_response(f"call-{i}") for i in range(1, max_iterations + 1)]
+    responses.append(
+        CompletionResponse(content=[TextBlock(text="done: salvaged")], stop_reason="end_turn")
+    )
+    agent, _, _ = _make_agent(responses, max_iterations)
+
+    messages = run(agent.run("do the thing"))
+
+    assert not any(
+        isinstance(m.content, str) and "tool-call budget" in m.content for m in messages
+    )
