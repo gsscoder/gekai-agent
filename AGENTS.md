@@ -1,4 +1,4 @@
-# AI guidance
+# Project Overview & AI Instructions
 
 ## Project Brief
 A precision-scoped AI coding agent designed for surgical interventions on codebases.
@@ -34,7 +34,7 @@ Textual TUI on top of a per-turn pipeline:
 ## Memory
 The development documents are organized in the `memory-bank` dir:
 - `detailed-spec`: primarily focuses on specific feature implementation details
-- `gen-directives`: content and code generation guidelines
+- `gen-directives`: language-specific code generation directives (see Operational Rules)
 
 ## Output
 - Code: match the architectural and stylistic conventions of the existing codebase
@@ -43,10 +43,10 @@ The development documents are organized in the `memory-bank` dir:
 - Markdown: compact, no linting compliance, formatting identical to this file
 
 ## Operational Rules:
-- Read a language-specific file in `gen-directives` only when a coding task is requested
+- MUST read the matching language-specific file in `gen-directives` before writing code, if one exists for that language
 - Read files in `detailed-spec` only when required by the current task; scan filenames first and read file contents only if they are relevant to the task
 - Review/audit/report requests end at the report; fixing findings needs its own separate request — authorization never carries across turns
-- NEVER update this file
+- NEVER update `AGENTS.md` without an explicit request
 - NEVER modify `*.md` files in `memory-bank` (at any depth in the dir tree) without an explicit request
 - NEVER initiate any codebase modifications without an explicit request
 - NEVER commit changes to Git history without explicit authorization
