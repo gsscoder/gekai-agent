@@ -267,13 +267,22 @@ def test_validate_registry_accepts_delegate_target_naming_a_real_subagent(monkey
     validate_registry()  # must not raise
 
 
-def test_validate_registry_passes_with_complexity_remover_as_sole_delegator():
-    # complexity-remover is the first live delegator (delegates dead-code-free
-    # structural refactors to code-refactorer); this is a regression guard
-    # against an accidental second delegator slipping into the registry,
-    # not an assertion that the feature stays universally dormant
-    delegators = [p.name for p in subagents_module.SUBAGENTS if p.delegates_to]
-    assert delegators == ["complexity-remover"]
+def test_validate_registry_passes_with_expected_delegators():
+    # complexity-remover delegates dead-code-free structural refactors to
+    # code-refactorer; code-expert/code-fixer/code-refactorer/test-expert/
+    # test-fixer each also delegate broad lookups to ws-explorer (read-only
+    # exploration helper). Regression guard against an accidental extra
+    # delegator slipping into the registry.
+    delegators = {p.name for p in subagents_module.SUBAGENTS if p.delegates_to}
+    assert delegators == {
+        "code-expert",
+        "code-fixer",
+        "code-refactorer",
+        "complexity-remover",
+        "omni-worker",
+        "test-expert",
+        "test-fixer",
+    }
     validate_registry()  # must not raise
 
 
@@ -289,7 +298,7 @@ def test_complexity_remover_registered():
     assert p.alias == "simplify"
     assert p.auto_assignable is False
     assert p.user_invocable is True
-    assert p.delegates_to == ("code-refactorer",)
+    assert p.delegates_to == ("code-refactorer", "ws-explorer")
 
 
 def test_complexity_remover_composes_generic_block():
@@ -304,3 +313,30 @@ def test_code_refactorer_no_longer_instructs_asking_before_proceeding():
     p = next(s for s in subagents_module.SUBAGENTS if s.name == "code-refactorer")
     assert "ask before proceeding" not in p.directives
     assert "state the limitation as the blocker and stop" in p.directives
+
+
+# ---------------------------------------------------------------------------
+# discovery_stage / max_iterations — ws-explorer promoted to a sequenceable
+# discovery precursor, with a per-unit iteration ceiling bounding the cost
+# of a misplaced/wasted step
+# ---------------------------------------------------------------------------
+
+def test_discovery_stage_defaults_to_false():
+    assert _subagent().discovery_stage is False
+
+
+def test_max_iterations_defaults_to_none():
+    assert _subagent().max_iterations is None
+
+
+def test_ws_explorer_registered_as_auto_assignable_discovery_stage():
+    p = next(s for s in subagents_module.SUBAGENTS if s.name == "ws-explorer")
+    assert p.auto_assignable is True
+    assert p.user_invocable is False
+    assert p.discovery_stage is True
+    assert p.max_iterations == 8
+
+
+def test_only_ws_explorer_is_a_discovery_stage():
+    discovery_agents = {s.name for s in subagents_module.SUBAGENTS if s.discovery_stage}
+    assert discovery_agents == {"ws-explorer"}

@@ -30,6 +30,7 @@ async def run_subagent(
     hidden_grant_callback: Any | None,
     tools_override: frozenset[str] | None = None,
     parent_tools: frozenset[str] | None = None,
+    can_delegate: bool = False,
 ) -> str:
     """Run `agent` (any roster name, invocable or post-planning-only) on `task`
     as a cold, fire-and-forget nested run — the interpreter's `dispatch` for a
@@ -42,9 +43,14 @@ async def run_subagent(
     caller's own effective tool-name set — intersected into `tools_override`
     before the child is built, so a delegating unit can never hand its child
     more capability than it holds itself, regardless of `agent`'s own
-    declared `tools`/`tool_policy`. The nested agent is always built with
-    `can_delegate=False`: a subagent reached via delegation never itself
-    receives the `delegate` tool, so cycles are structurally impossible.
+    declared `tools`/`tool_policy`. `can_delegate` defaults to `False` — a
+    subagent reached via delegation never itself receives the `delegate`
+    tool, so cycles are structurally impossible. The interpreter's `dispatch`
+    (harness/core.py) is the one caller that passes `True`: a graph-spawned
+    step is depth 0, not a delegation target, so the depth-1 cap does not
+    apply to it — it applies one hop further, to whatever that step itself
+    delegates to (`make_delegate_tool`'s own closure never forwards this
+    flag, so that next hop is still built with the `False` default).
     """
     roster = {s.name: s for s in SUBAGENTS}
     resolved = roster.get(agent)
@@ -65,7 +71,7 @@ async def run_subagent(
         subagent=resolved,
         hidden_grant_callback=hidden_grant_callback,
         tools_override=effective_override,
-        can_delegate=False,
+        can_delegate=can_delegate,
     )
     nested_run_id = uuid.uuid4().hex
     if bus is not None:
@@ -144,8 +150,9 @@ def make_delegate_tool(
         description=(
             f"Delegate a self-contained task to a specialist subagent. "
             f"Available agents — {roster_str}. "
-            "Prefer handling the task yourself; delegate only work genuinely "
-            "outside your own mandate that a listed specialist covers."
+            "Prefer handling the task yourself for work inside your own mandate; "
+            "a read-only lookup specialist in the list above is the exception — hand it "
+            "a broad or open-ended search instead of running many grep/read calls yourself."
         ),
         required_permission="none",
         is_concurrency_safe=False,

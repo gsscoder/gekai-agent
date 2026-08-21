@@ -133,10 +133,12 @@ class MessageWidget(Widget):
         self._kind = kind
         self._text = text
         self._color = color
-        # HEADER-only: a nested (depth > 0) subagent header widens its dot
-        # column to fit a "⎿ " connector ahead of the spinner/final dot — see
+        # HEADER-only: a truly nested (depth > 1 — a subagent delegating to
+        # another subagent) subagent header widens its dot column to fit a
+        # "⎿ " connector ahead of the spinner/final dot — see
         # SubAgentRenderer._animate_dot/.done in agent/tui/app.py. Depth 0
-        # (the default) renders exactly as before: no connector, width 2.
+        # (root) and depth 1 (first-level activation, the default) render
+        # with no connector, width 2.
         self._nested = nested
         super().__init__(classes=kind.value)
 

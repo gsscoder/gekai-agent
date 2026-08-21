@@ -591,6 +591,31 @@ def test_graph_step_scope_read_excludes_write_tools_for_full_ceiling_agent(
     assert scope_events == [ToolScopeEvent(unit="omni-worker", chosen_rung="read", reason="narrowed to 'read'")]
 
 
+def test_graph_step_dispatch_forwards_can_delegate_true_to_build_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # a graph-spawned step is depth 0, not itself a delegation target -- the
+    # interpreter's `dispatch` (harness/core.py) must pass `can_delegate=True`
+    # through `run_subagent` so a unit declaring `delegates_to` (e.g.
+    # omni-worker -> ws-explorer) actually receives its `delegate` tool.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="audit",
+        steps=[Task(agent="omni-worker", instruction="audit stuff", mission="audit stuff", scope="read")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    calls = _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+
+    session = _make_session(tmp_path)
+    run(_drain(harness, session, "audit stuff"))
+
+    # calls[0] is the step's dispatch; calls[1] is the trailing root-dispatch
+    # synthesis call (`_respond`, plan 32 Phase 3) -- not under test here.
+    assert calls[0]["can_delegate"] is True
+
+
 def test_graph_step_scope_fs_gets_full_tools_for_full_ceiling_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

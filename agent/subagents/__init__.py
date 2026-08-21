@@ -65,6 +65,19 @@ class Subagent:
     # subagent built via delegation is built with `can_delegate=False`, so
     # cycles are structurally impossible, not merely disallowed by policy.
     delegates_to: tuple[str, ...] = ()
+    # marks a unit as a discovery precursor whose whole value is a report a
+    # *later* step consumes via `{{step_k}}` — never a deliverable on its
+    # own. Structurally, not name-specifically, prevents the sequencer from
+    # placing such a step alone or last in a graph, or placing more than one
+    # (see `plan.py`'s `parse_task_graph`); generic so any future read-only
+    # precursor unit gets the same guardrail for free. False = an ordinary
+    # step, the default for every subagent shipped today.
+    discovery_stage: bool = False
+    # per-unit override of the global iteration ceiling (`harness/core.py`'s
+    # `_MAX_ITERATIONS`) — bounds the cost of a step whose whole job is
+    # cheap-and-bounded (e.g. a discovery precursor) even if it goes astray.
+    # None = inherit the default.
+    max_iterations: int | None = None
 
     def build_system_base(self) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body

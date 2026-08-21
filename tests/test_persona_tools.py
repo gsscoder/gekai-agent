@@ -89,7 +89,9 @@ def test_shell_kind_omitted_adds_no_fact():
 
 
 _DELEGATE_FRAGMENT = (
-    "only use delegate for work discovered mid-task that is genuinely outside your own mandate, never as a substitute for doing the task yourself; "
+    "judge the investigation radius before you search: when the target is already named and tight — a specific file, symbol, or directory — use your own read tools directly; "
+    "delegate to a read-only lookup specialist when the radius is wide or unknown, when the answer could live anywhere, or when the question crosses layers you have not mapped yet; "
+    "delegate work-shaped tasks only when they fall outside your own mandate and a listed specialist covers them, never as a substitute for doing your own task; "
     "you stay accountable for the final report, so fold the delegated result into your own output instead of treating it as fire-and-forget"
 )
 

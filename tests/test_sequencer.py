@@ -91,6 +91,19 @@ def test_scope_field_from_model_parses_into_plain_string() -> None:
     assert graph[0].scope == "edit"
 
 
+def test_prompt_describes_discovery_step_placement() -> None:
+    sequencer = _make_sequencer()
+    assert "more than ~5" in sequencer._prompt
+    assert "only step" in sequencer._prompt
+    assert "last step" in sequencer._prompt
+
+
+def test_prompt_describes_step_ref_templating() -> None:
+    sequencer = _make_sequencer()
+    assert "{{step_1}}" in sequencer._prompt
+    assert "{{step_2}}" in sequencer._prompt
+
+
 def test_no_json_object_in_output_raises() -> None:
     sequencer = _make_sequencer()
     sequencer._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("not json at all"))

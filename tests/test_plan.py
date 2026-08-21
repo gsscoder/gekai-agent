@@ -9,6 +9,7 @@ _ROSTER = [
     Subagent(name="code-expert", namespace="coding", description="d", auto_assignable=True),
     Subagent(name="test-expert", namespace="testing", description="d", auto_assignable=True),
     Subagent(name="fact-checker", namespace="testing", description="d", auto_assignable=False),
+    Subagent(name="ws-explorer", namespace="generic", description="d", auto_assignable=True, discovery_stage=True),
 ]
 
 
@@ -134,3 +135,57 @@ def test_malformed_scope_rejects_whole_graph(scope, match) -> None:
     }
     with pytest.raises(ValueError, match=match):
         parse_task_graph(raw, _ROSTER)
+
+
+# ---------------------------------------------------------------------------
+# discovery-stage steps (e.g. ws-explorer) — a precursor whose report a
+# *later* step consumes via {{step_k}}, never a deliverable on its own
+# ---------------------------------------------------------------------------
+
+def test_discovery_stage_rejected_as_only_step() -> None:
+    raw = {
+        "summary": "s",
+        "steps": [{"agent": "ws-explorer", "instruction": "explore the codebase", "mission": "explore"}],
+    }
+    with pytest.raises(ValueError, match="only step"):
+        parse_task_graph(raw, _ROSTER)
+
+
+def test_discovery_stage_rejected_as_last_step() -> None:
+    raw = {
+        "summary": "s",
+        "steps": [
+            {"agent": "code-expert", "instruction": "scaffold repo", "mission": "scaffold the repo"},
+            {"agent": "ws-explorer", "instruction": "explore the codebase", "mission": "explore"},
+        ],
+    }
+    with pytest.raises(ValueError, match="last step"):
+        parse_task_graph(raw, _ROSTER)
+
+
+def test_two_discovery_stages_rejected() -> None:
+    raw = {
+        "summary": "s",
+        "steps": [
+            {"agent": "ws-explorer", "instruction": "explore area A", "mission": "explore A"},
+            {"agent": "ws-explorer", "instruction": "explore area B", "mission": "explore B"},
+            {"agent": "code-expert", "instruction": "use {{step_1}} and {{step_2}}", "mission": "implement"},
+        ],
+    }
+    with pytest.raises(ValueError, match="discovery-stage steps"):
+        parse_task_graph(raw, _ROSTER)
+
+
+def test_well_formed_discovery_stage_graph_accepted() -> None:
+    raw = {
+        "summary": "investigate then implement",
+        "steps": [
+            {"agent": "ws-explorer", "instruction": "explore the codebase", "mission": "explore"},
+            {"agent": "code-expert", "instruction": "implement using {{step_1}}", "mission": "implement"},
+        ],
+    }
+    graph = parse_task_graph(raw, _ROSTER)
+    assert graph == [
+        Task(agent="ws-explorer", instruction="explore the codebase", mission="explore"),
+        Task(agent="code-expert", instruction="implement using {{step_1}}", mission="implement"),
+    ]

@@ -15,5 +15,6 @@ subagent = Subagent(
         "interface holds but behavior may change; never a bug fix, that is code-fixer's domain"
     ),
     auto_assignable=True,
+    delegates_to=("ws-explorer",),
     directive_domains=("generic",),
 )

@@ -41,5 +41,6 @@ subagent = Subagent(
         "unchanged; recommend tests be run (do not run them yourself)"
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + FS_TOOLS),
+    delegates_to=("ws-explorer",),
     directive_domains=("generic",),
 )

@@ -145,7 +145,11 @@ class SubAgentRenderer:
     async def _animate_dot(self) -> None:
         frame = 0
         dot_color = self._badge_color if self._badge_namespace is not None else "#666666"
-        prefix = "⎿ " if self._depth > 0 else ""
+        # depth 0 is root's own header, depth 1 is a subagent's first-level
+        # activation — neither draws a connector; only depth > 1 (a subagent
+        # delegating to another subagent) is genuinely nested under a peer
+        # badge line, so only that gets the "⎿" connector.
+        prefix = "⎿ " if self._depth > 1 else ""
         try:
             while True:
                 if self._header_widget is not None:
@@ -165,7 +169,7 @@ class SubAgentRenderer:
             header_markup = _subagent_header_markup(name, bg_color, ui_label)
         else:
             header_markup = "[bold #666666]Triaging...[/bold #666666]"
-        widget = MessageWidget(MessageKind.HEADER, header_markup, nested=self._depth > 0)
+        widget = MessageWidget(MessageKind.HEADER, header_markup, nested=self._depth > 1)
         await self._mount(widget)
         self._header_widget = widget
         self._spinner_task = asyncio.create_task(self._animate_dot())
@@ -275,13 +279,17 @@ class SubAgentRenderer:
             parts.append(_fmt_duration_verbose(elapsed))
             summary = " · ".join(parts)
             if self._header_widget is not None:
-                dot_prefix = "⎿ " if self._depth > 0 else ""
+                dot_prefix = "⎿ " if self._depth > 1 else ""
                 self._header_widget.query_one(".header-dot", Static).update(f"[{self._badge_color}]{dot_prefix}●[/{self._badge_color}]")
                 self._header_widget = None
             # badge header persists untouched — mount the Done summary as a
-            # permanent connector line beneath it (it is now the sole survivor
-            # under the header, so it always anchors the L-connector)
-            await self._mount(Static(f"  ⎿ Done ({summary})"))
+            # permanent line beneath it. Depth > 1 (true nested delegation,
+            # a subagent delegating to another subagent) still anchors an
+            # L-connector to its parent badge; depth 1 (first-level
+            # activation, root's own subagent) has no peer badge line to
+            # connect to, so no connector.
+            done_prefix = "  ⎿ " if self._depth > 1 else "  "
+            await self._mount(Static(f"{done_prefix}Done ({summary})"))
             self._conversation.scroll_end(animate=False)
             return summary
         else:
@@ -885,7 +893,7 @@ class GekaiApp(App[None]):
                         bg_color = entry.get("bg_color", "")
                         last_subagent_header.query_one(".header-dot", Static).update(f"[{bg_color}]●[/{bg_color}]")
                         last_subagent_header = None
-                    await conversation.mount(Static(f"  ⎿ Done ({entry.get('summary', '')})"))
+                    await conversation.mount(Static(f"  Done ({entry.get('summary', '')})"))
                 elif kind == "operation":
                     await conversation.mount(MessageWidget(MessageKind.OPERATION, entry.get("content", ""), color=entry.get("color")))
             self.call_after_refresh(conversation.scroll_end)

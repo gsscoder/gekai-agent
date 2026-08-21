@@ -198,6 +198,32 @@ def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
     assert "prefer read_file/grep/list_files over shell equivalents" in system
 
 
+# ---------------------------------------------------------------------------
+# _build_agent: max_iterations — a subagent's own override
+# (`Subagent.max_iterations`) bounds the per-unit ceiling; None inherits the
+# harness-wide default (`_MAX_ITERATIONS`).
+# ---------------------------------------------------------------------------
+
+def test_build_agent_uses_subagent_max_iterations_override(tmp_path: Path):
+    sub = Subagent(name="t", namespace="coding", description="d", max_iterations=8)
+    agent = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
+        subagent=sub,
+    )
+    assert agent.max_iterations == 8
+
+
+def test_build_agent_falls_back_to_global_default_max_iterations(tmp_path: Path):
+    sub = Subagent(name="t", namespace="coding", description="d")  # max_iterations=None -> inherit
+    agent = _build_agent(
+        "dummy-model", "dummy-key", None, {},
+        tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
+        subagent=sub,
+    )
+    assert agent.max_iterations == harness_core._MAX_ITERATIONS
+
+
 def test_direct_mode_tools_block_uses_full_set(tmp_path: Path):
     system, registered = _build(tmp_path, subagent=None)
     # root has the full workspace tool set; no delegate tool (plan 27

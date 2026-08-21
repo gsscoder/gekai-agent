@@ -221,6 +221,11 @@ def _build_agent(
 
     system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)}"
 
+    max_iterations = (
+        subagent.max_iterations
+        if subagent is not None and subagent.max_iterations is not None
+        else _MAX_ITERATIONS
+    )
     adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
     agent = Agent(
         provider=adapter,
@@ -228,7 +233,7 @@ def _build_agent(
         system=system,
         event_bus=bus,
         extra_params=extra_params,
-        max_iterations=_MAX_ITERATIONS,
+        max_iterations=max_iterations,
     )
     for t in selected:
         agent.tools.register(t)
@@ -557,6 +562,7 @@ class Harness:
                 permissions=permissions, permission_callback=permission_callback,
                 bus=bus, hidden_grant_callback=hidden_grant_callback,
                 tools_override=tools_override,
+                can_delegate=True,
             )
 
         async def verify_agent(step: Task, out: str) -> bool:

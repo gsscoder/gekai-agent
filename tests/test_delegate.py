@@ -105,10 +105,13 @@ def test_emits_delegation_completed_when_nested_run_raises() -> None:
 def test_no_delegate_tool_registered_for_main_or_subagent() -> None:
     """decision 11: `delegate` is removed from main outright — no hybrid.
     `_build_agent` must never register a `delegate` tool, subagent or not."""
+    import dataclasses
+
     from agent.harness.core import _build_agent
     from agent.subagents import SUBAGENTS
 
     code_expert = next(s for s in SUBAGENTS if s.name == "code-expert")
+    code_expert_no_delegate = dataclasses.replace(code_expert, delegates_to=())
 
     with (
         patch("agent.harness.core.OpenAIAdapter"),
@@ -119,8 +122,8 @@ def test_no_delegate_tool_registered_for_main_or_subagent() -> None:
         )
         sub_agent = _build_agent(
             "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
-            code_expert.build_system_base(), None,
-            subagent=code_expert,
+            code_expert_no_delegate.build_system_base(), None,
+            subagent=code_expert_no_delegate,
         )
 
     assert "delegate" not in main_agent.tools
@@ -217,7 +220,7 @@ def _build_real_agent(subagent=None, tools_override=None, can_delegate=True):
     code_expert = next(s for s in SUBAGENTS if s.name == "code-expert")
     resolved_subagent = None
     if subagent == "code-expert-no-delegate":
-        resolved_subagent = code_expert
+        resolved_subagent = dataclasses.replace(code_expert, delegates_to=())
     elif subagent == "code-expert-delegates":
         resolved_subagent = dataclasses.replace(code_expert, delegates_to=("test-expert",))
 
@@ -257,9 +260,14 @@ def test_can_delegate_false_suppresses_delegate_tool_even_with_targets() -> None
     assert "delegate" not in agent.tools
 
 
-def test_run_subagent_builds_child_with_can_delegate_false() -> None:
-    # depth-1 cap: `run_subagent` must always suppress the child's own
-    # ability to delegate, regardless of the target's own `delegates_to`.
+def test_run_subagent_defaults_child_to_can_delegate_false() -> None:
+    # depth-1 cap: `run_subagent`'s own `can_delegate` default suppresses the
+    # child's ability to delegate further, regardless of the target's own
+    # `delegates_to`. `make_delegate_tool`'s closure never overrides this
+    # default, so a subagent reached via the `delegate` tool always lands
+    # here. The interpreter's `dispatch` (harness/core.py) is the one caller
+    # that opts in with `can_delegate=True` — see
+    # test_run_subagent_forwards_can_delegate_true below.
     from agent.llm.types import Message, TextBlock
 
     fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
@@ -273,6 +281,25 @@ def test_run_subagent_builds_child_with_can_delegate_false() -> None:
         run(_call_run_subagent("code-expert"))
 
     assert mock_build.call_args.kwargs["can_delegate"] is False
+
+
+def test_run_subagent_forwards_can_delegate_true() -> None:
+    # the interpreter's `dispatch` calls `run_subagent(..., can_delegate=True)`
+    # for a graph step: depth 0, not itself a delegation target, so the
+    # depth-1 cap does not apply to it.
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=fake_history)
+
+    with (
+        patch("agent.harness.core._build_agent", return_value=mock_agent) as mock_build,
+        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+    ):
+        run(_call_run_subagent("code-expert", can_delegate=True))
+
+    assert mock_build.call_args.kwargs["can_delegate"] is True
 
 
 def test_read_scoped_parent_produces_child_with_no_edit_or_fs_tools() -> None:
@@ -352,7 +379,7 @@ def test_complexity_remover_with_can_delegate_true_gets_delegate_tool_scoped_to_
     agent = _build_complexity_remover_agent(can_delegate=True)
     assert "delegate" in agent.tools
     delegate_def = next(d for d in agent.tools.definitions() if d.name == "delegate")
-    assert delegate_def.input_schema["properties"]["agent"]["enum"] == ["code-refactorer"]
+    assert delegate_def.input_schema["properties"]["agent"]["enum"] == ["code-refactorer", "ws-explorer"]
 
 
 def test_complexity_remover_with_can_delegate_false_gets_no_delegate_tool() -> None:

@@ -29,5 +29,6 @@ subagent = Subagent(
         "expected values are semantically correct"
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + SHELL_TOOLS),
+    delegates_to=("ws-explorer",),
     directive_domains=("coding", "generic"),
 )

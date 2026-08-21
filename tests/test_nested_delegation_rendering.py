@@ -162,11 +162,15 @@ async def test_nested_delegation_closes_both_blocks_and_attributes_correctly(
         assert len(headers) == 3
 
         # Two "Done" summary lines — one for each badge-style (P, C) renderer.
+        # Only C (depth 2, genuinely nested under P's badge) draws the "⎿"
+        # connector; P (depth 1, first-level activation under root) does not.
         done_lines = [
             w for w in conversation.children
-            if isinstance(w, Static) and "⎿ Done" in str(w.content)
+            if isinstance(w, Static) and "Done (" in str(w.content)
         ]
         assert len(done_lines) == 2
+        connector_done_lines = [w for w in done_lines if "⎿ Done" in str(w.content)]
+        assert len(connector_done_lines) == 1
 
         # The LogEvent that arrived between done(C) and done(P) was
         # attributed to P, not the outer/root renderer.
@@ -214,11 +218,13 @@ async def test_single_level_delegation_matches_current_main_behavior(
 
         headers = [w for w in _messages(conversation) if w.has_class("header")]
         assert len(headers) == 2
+        # P is depth 1 (first-level activation) — no "⎿" connector.
         done_lines = [
             w for w in conversation.children
-            if isinstance(w, Static) and "⎿ Done" in str(w.content)
+            if isinstance(w, Static) and "Done (" in str(w.content)
         ]
         assert len(done_lines) == 1
+        assert "⎿ Done" not in str(done_lines[0].content)
 
 
 async def test_depth_indent_applied_only_below_depth_zero(
@@ -268,17 +274,18 @@ async def test_depth_indent_applied_only_below_depth_zero(
 
         done_line = next(
             w for w in conversation.children
-            if isinstance(w, Static) and "⎿ Done" in str(w.content)
+            if isinstance(w, Static) and "Done (" in str(w.content)
         )
         assert tuple(done_line.styles.margin) == expected_margin
 
 
-async def test_nested_header_renders_connector_depth_zero_does_not(
+async def test_first_level_activation_renders_no_connector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 3: a nested header's dot column gets the `nested` CSS class (and
-    the "⎿" connector, written by `_animate_dot`/`.done()`); a depth-0 header
-    does not. Badge text/namespace-color/ui_label content is unchanged."""
+    """A single delegation (root -> P, P at depth 1) is a first-level
+    activation, not nested under a peer badge — its header dot column
+    carries no `nested` CSS class and no "⎿" connector, same as root's own
+    header. Badge text/namespace-color/ui_label content is unaffected."""
 
     async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
         assert on_event is not None
@@ -309,10 +316,56 @@ async def test_nested_header_renders_connector_depth_zero_does_not(
         p_dot = p_header.query_one(".header-dot", Static)
 
         assert not root_dot.has_class("nested")
-        assert p_dot.has_class("nested")
+        assert not p_dot.has_class("nested")
         assert "⎿" not in str(root_dot.content)
-        assert "⎿" in str(p_dot.content)
+        assert "⎿" not in str(p_dot.content)
 
-        # Badge content unaffected by nesting.
+        # Badge content unaffected.
         assert "code-expert" in p_header.text
         assert "fix things" in p_header.text
+
+
+async def test_true_nested_delegation_renders_connector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subagent delegating to another subagent (C at depth 2, nested under
+    P's own badge line) draws the `nested` CSS class and the "⎿" connector;
+    P (depth 1) does not."""
+
+    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
+        assert on_event is not None
+        await on_event(SubAgentStartEvent(name="root", description="d", color="#000000"))
+        await on_event(DelegationStartEvent(agent_name="code-expert", task="parent task"))
+        await on_event(DelegationStartEvent(agent_name="code-refactorer", task="child task"))
+        await on_event(DelegationDoneEvent(agent_name="code-refactorer"))
+        await on_event(DelegationDoneEvent(agent_name="code-expert"))
+        await on_event(DoneEvent(thinking_chars=0, files_touched=[]))
+        return TurnResult(outcome="ok", answer="done")
+
+    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
+
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        conversation = app.query_one("#conversation", ScrollableContainer)
+
+        await app._run_step(
+            "do the thing", None,
+            turn_id="t1", session_id="s1", conversation=conversation, stage=["harness"],
+        )
+        await pilot.pause()
+
+        headers = [w for w in _messages(conversation) if w.has_class("header")]
+        assert len(headers) == 3
+        root_header, p_header, c_header = headers
+
+        root_dot = root_header.query_one(".header-dot", Static)
+        p_dot = p_header.query_one(".header-dot", Static)
+        c_dot = c_header.query_one(".header-dot", Static)
+
+        assert not root_dot.has_class("nested")
+        assert not p_dot.has_class("nested")
+        assert c_dot.has_class("nested")
+        assert "⎿" not in str(root_dot.content)
+        assert "⎿" not in str(p_dot.content)
+        assert "⎿" in str(c_dot.content)
