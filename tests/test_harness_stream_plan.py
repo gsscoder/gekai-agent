@@ -19,7 +19,6 @@ from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm import model_caps
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
-from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier, resolve_tier
 from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierPolicy
 from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock
@@ -74,7 +73,7 @@ async def _drain(harness: Harness, session: Session, prompt: str, **kwargs) -> l
     return collected
 
 
-class _ScriptedAdapter(ProviderAdapter):
+class _ScriptedAdapter:
     """Zero-arg-instantiable fake provider, mirroring tests/test_harness_core.py's
     pattern, so the single-agent path actually emits AgentStopped on the bus
     (a hand-rolled fake Agent that skips the bus never terminates the queue)."""
@@ -128,7 +127,7 @@ def _make_scaling_harness(resolve: Callable[[TierName, str], ResolvedTier]) -> H
     return harness
 
 
-class _RecordingAdapter(ProviderAdapter):
+class _RecordingAdapter:
     """Captures the `model` kwarg passed to `stream()` per instance
     (agent/llm/agent.py's `_provider_kwargs` threads `self.model` into every
     provider call) — lets a test tell which resolved tier's config a given

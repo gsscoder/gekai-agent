@@ -1,5 +1,5 @@
 """Provider adapters. Import the specific adapter you need — vendor SDKs are lazy."""
 
-from .base import ProviderAdapter
+from .openai import OpenAIAdapter
 
-__all__ = ["ProviderAdapter"]
+__all__ = ["OpenAIAdapter"]

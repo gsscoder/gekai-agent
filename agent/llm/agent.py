@@ -26,7 +26,7 @@ from .events import (
     TurnStarted,
     UsageUpdated,
 )
-from .providers.base import ProviderAdapter
+from .providers.openai import OpenAIAdapter
 from .result import AgentResult, AgentResultEvent
 from .retry import RetryAttempt, RetryPolicy, retry_call
 from .tools import ToolRegistry
@@ -64,7 +64,7 @@ _SALVAGE_MAX_TOKENS = 8192
 
 @dataclass
 class Agent:
-    provider: ProviderAdapter
+    provider: OpenAIAdapter
     model: str
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     system: str | None = None
@@ -366,7 +366,7 @@ class Agent:
 
     def with_provider(
         self,
-        provider: ProviderAdapter,
+        provider: OpenAIAdapter,
         *,
         tools: ToolRegistry | None = None,
         event_bus: EventBus | None = None,

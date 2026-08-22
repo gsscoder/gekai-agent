@@ -26,7 +26,6 @@ from agent.events import ForeignFileDetectedEvent
 from agent.harness import core as harness_core
 from agent.harness import turn as harness_turn
 from agent.harness.core import Harness
-from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
@@ -39,7 +38,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-class _ScriptedAdapter(ProviderAdapter):
+class _ScriptedAdapter:
     responses: list[CompletionResponse] = []
 
     def __init__(self, *args, **kwargs) -> None:

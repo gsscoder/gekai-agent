@@ -9,7 +9,6 @@ import pytest
 from agent.llm.agent import Agent
 from agent.llm.errors import MaxIterationsExceeded
 from agent.llm.events import AgentStopped, Event, EventBus, TextChunkReceived
-from agent.llm.providers.base import ProviderAdapter
 from agent.llm.result import AgentResultEvent
 from agent.llm.tools import ToolRegistry, tool
 from agent.llm.types import (
@@ -27,7 +26,7 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-class _ScriptedProvider(ProviderAdapter):
+class _ScriptedProvider:
     """Fake provider that replays a scripted sequence of responses."""
 
     def __init__(self, responses: list[CompletionResponse]) -> None:
@@ -335,7 +334,7 @@ def test_run_stream_with_result_raises_when_salvage_also_empty() -> None:
     _assert_stopped_once(stopped, "max_iterations", True)
 
 
-class _ChunkedTextProvider(ProviderAdapter):
+class _ChunkedTextProvider:
     """Fake provider that streams a response as multiple `TextDelta` chunks
     (mirrors `OpenAIAdapter.stream()`'s real shape) before the final
     `StreamDone` — used to prove `_run_loop` forwards `TextDelta` as

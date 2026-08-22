@@ -18,6 +18,7 @@ from ..types import (
     TextDelta,
     ThinkingBlock,
     ThinkingDelta,
+    TokenCount,
     ToolDefinition,
     ToolResultBlock,
     ToolUseBlock,
@@ -25,7 +26,6 @@ from ..types import (
     ToolUseStart,
     ToolUseStop,
 )
-from .base import ProviderAdapter
 
 # DeepSeek (and similar DeepSeek-derived models) can leak their native
 # tool-call sentinel format as literal text when the "salvage" completion
@@ -43,7 +43,7 @@ def _strip_leaked_tool_markup(text: str) -> str:
     return _LEAKED_TOOL_CALL_RE.sub("", text)
 
 
-class OpenAIAdapter(ProviderAdapter):
+class OpenAIAdapter:
     """Adapter for OpenAI's Chat Completions API (the `openai` SDK, >= 1.50)."""
 
     def __init__(self, api_key: str | None = None, **client_kwargs: Any) -> None:
@@ -274,6 +274,18 @@ class OpenAIAdapter(ProviderAdapter):
                 usage=usage,
                 raw=None,
             )
+        )
+
+    async def count_tokens(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        system: str | None = None,
+        tools: list[ToolDefinition] | None = None,
+    ) -> TokenCount:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement count_tokens."
         )
 
     @classmethod

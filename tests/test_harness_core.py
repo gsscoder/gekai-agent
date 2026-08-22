@@ -16,7 +16,7 @@ salvage mechanism itself is already covered by tests/test_llm_agent.py.
 (agent/harness/core.py), so `agent.harness.core.OpenAIAdapter` is
 monkeypatched with a fake adapter class for the duration of each test —
 mirroring tests/test_llm_agent.py's `_ScriptedProvider` pattern but adapted to
-`ProviderAdapter`'s interface (agent/llm/providers/base.py).
+`OpenAIAdapter`'s method surface (agent/llm/providers/openai.py).
 
 Plan 27 note: no `supp_model` is passed to `Harness(...)` in this file, so
 `self._estimator` is None and every `Harness.stream(subagent=None)` call here
@@ -46,7 +46,6 @@ from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectiveP
 from agent.harness import core as harness_core
 from agent.harness.core import Harness, _MAX_ITERATIONS
 from agent.llm.events import AgentStopped, EventBus
-from agent.llm.providers.base import ProviderAdapter
 from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.tools import Tool
@@ -62,7 +61,7 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-class _ScriptedAdapter(ProviderAdapter):
+class _ScriptedAdapter:
     """Fake provider adapter that replays a scripted sequence of responses.
 
     Mirrors tests/test_llm_agent.py's `_ScriptedProvider`, but constructed as
@@ -88,7 +87,7 @@ class _ScriptedAdapter(ProviderAdapter):
         yield StreamDone(response=self._responses[index])
 
 
-class _ChunkedScriptedAdapter(ProviderAdapter):
+class _ChunkedScriptedAdapter:
     """Like `_ScriptedAdapter`, but each call can also replay a list of
     `TextDelta` chunks before its `StreamDone` — mirrors `OpenAIAdapter`'s
     real streaming shape, so a test can exercise the harness's
