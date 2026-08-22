@@ -1324,6 +1324,7 @@ class GekaiApp(App[None]):
         if history_panel.display:
             history_panel.hide()
         prompt.clear()
+        self._hide_directive_notice()
         conversation = self.query_one("#conversation", ScrollableContainer)
         if not tiers_configured():
             _slash_name = stripped.lstrip("/").split(None, 1)[0] if stripped.startswith("/") else ""
