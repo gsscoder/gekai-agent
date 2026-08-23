@@ -25,7 +25,6 @@ import pytest
 from textual.containers import ScrollableContainer
 from textual.widgets import Static
 
-import agent.tui.app as tui_app
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.events import DelegationDoneEvent, DelegationStartEvent, DoneEvent, LogEvent, StatusUpdateEvent, SubAgentStartEvent
@@ -157,9 +156,11 @@ async def test_nested_delegation_closes_both_blocks_and_attributes_correctly(
         assert p_renderer._spinner_task is None
         assert c_renderer._spinner_task is None
 
-        # Three header widgets mounted: root's generic header + P's + C's badge.
+        # Two header widgets mounted: P's + C's badge — root's own plain
+        # turn mounts no header of its own (the shared thinking line covers
+        # it).
         headers = [w for w in _messages(conversation) if w.has_class("header")]
-        assert len(headers) == 3
+        assert len(headers) == 2
 
         # Two "Done" summary lines — one for each badge-style (P, C) renderer.
         # Only C (depth 2, genuinely nested under P's badge) draws the "⎿"
@@ -216,8 +217,10 @@ async def test_single_level_delegation_matches_current_main_behavior(
         assert p_renderer._depth == 1
         assert p_renderer._spinner_task is None
 
+        # One header widget mounted: P's badge — root's own plain turn
+        # mounts no header of its own (the shared thinking line covers it).
         headers = [w for w in _messages(conversation) if w.has_class("header")]
-        assert len(headers) == 2
+        assert len(headers) == 1
         # P is depth 1 (first-level activation) — no "⎿" connector.
         done_lines = [
             w for w in conversation.children
@@ -230,14 +233,18 @@ async def test_single_level_delegation_matches_current_main_behavior(
 async def test_depth_indent_applied_only_below_depth_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 2: a depth-0 renderer's mounted widgets carry no added indent; a
-    nested renderer's log/thinking/progress/Done widgets all carry the same
-    left indent, consistently."""
+    """No card is left-indented regardless of nesting depth — depth is
+    conveyed only by the "⎿" connector, never by margin. Root's own plain
+    turn mounts no header at all (the shared thinking line covers it), so the
+    depth-0 baseline here is a seed-dispatched subagent badge
+    (`SubAgentStartEvent` resolved against `SUBAGENTS`, same as
+    `test_slash_alias_dispatch.py`), which does still get a header at
+    depth 0."""
     created = _track_renderer_instances(monkeypatch)
 
     async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
         assert on_event is not None
-        await on_event(SubAgentStartEvent(name="root", description="d", color="#000000"))
+        await on_event(SubAgentStartEvent(name="code-refactorer", description="d", color="#000000"))
         await on_event(DelegationStartEvent(agent_name="code-expert", task="parent task"))
         await on_event(LogEvent(message="Read foo.py", tool_name="read_file"))
         await on_event(StatusUpdateEvent(total=10, progress=1))
@@ -258,38 +265,40 @@ async def test_depth_indent_applied_only_below_depth_zero(
         )
         await pilot.pause()
 
-        root_renderer, p_renderer = created
-        assert root_renderer._depth == 0
+        depth0_renderer, p_renderer = created
+        assert depth0_renderer._depth == 0
         assert p_renderer._depth == 1
 
-        # root's header widgets carry no margin.
-        root_header = next(w for w in _messages(conversation) if w.has_class("header"))
-        assert tuple(root_header.styles.margin) == (0, 0, 0, 0)
+        # the depth-0 badge's header widget carries no margin.
+        depth0_header = next(w for w in _messages(conversation) if w.has_class("header"))
+        assert tuple(depth0_header.styles.margin) == (0, 0, 0, 0)
 
-        # P's header, its Done line, are all indented consistently.
+        # P's header and its Done line are depth 1, but still carry no margin
+        # — nesting depth is conveyed only by the "⎿" connector, never indent.
         headers = [w for w in _messages(conversation) if w.has_class("header")]
         p_header = headers[1]
-        expected_margin = (0, 0, 0, tui_app._INDENT_PER_DEPTH)
-        assert tuple(p_header.styles.margin) == expected_margin
+        assert tuple(p_header.styles.margin) == (0, 0, 0, 0)
 
         done_line = next(
             w for w in conversation.children
             if isinstance(w, Static) and "Done (" in str(w.content)
         )
-        assert tuple(done_line.styles.margin) == expected_margin
+        assert tuple(done_line.styles.margin) == (0, 0, 0, 0)
 
 
 async def test_first_level_activation_renders_no_connector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A single delegation (root -> P, P at depth 1) is a first-level
-    activation, not nested under a peer badge — its header dot column
-    carries no `nested` CSS class and no "⎿" connector, same as root's own
-    header. Badge text/namespace-color/ui_label content is unaffected."""
+    """A single delegation (depth-0 badge -> P, P at depth 1) is a
+    first-level activation, not nested under a peer badge — its header dot
+    column carries no `nested` CSS class and no "⎿" connector, same as the
+    depth-0 badge's own header (a seed-dispatched subagent, since root's own
+    plain turn mounts no header at all — the shared thinking line covers
+    it). Badge text/namespace-color/ui_label content is unaffected."""
 
     async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
         assert on_event is not None
-        await on_event(SubAgentStartEvent(name="root", description="d", color="#000000"))
+        await on_event(SubAgentStartEvent(name="code-refactorer", description="d", color="#000000"))
         await on_event(DelegationStartEvent(agent_name="code-expert", task="parent task", mission="fix things"))
         await on_event(DelegationDoneEvent(agent_name="code-expert"))
         await on_event(DoneEvent(thinking_chars=0, files_touched=[]))
@@ -310,14 +319,14 @@ async def test_first_level_activation_renders_no_connector(
 
         headers = [w for w in _messages(conversation) if w.has_class("header")]
         assert len(headers) == 2
-        root_header, p_header = headers
+        depth0_header, p_header = headers
 
-        root_dot = root_header.query_one(".header-dot", Static)
+        depth0_dot = depth0_header.query_one(".header-dot", Static)
         p_dot = p_header.query_one(".header-dot", Static)
 
-        assert not root_dot.has_class("nested")
+        assert not depth0_dot.has_class("nested")
         assert not p_dot.has_class("nested")
-        assert "⎿" not in str(root_dot.content)
+        assert "⎿" not in str(depth0_dot.content)
         assert "⎿" not in str(p_dot.content)
 
         # Badge content unaffected.
@@ -355,17 +364,17 @@ async def test_true_nested_delegation_renders_connector(
         )
         await pilot.pause()
 
+        # Two header widgets mounted: P's + C's badge — root's own plain
+        # turn mounts no header of its own (the shared thinking line covers
+        # it).
         headers = [w for w in _messages(conversation) if w.has_class("header")]
-        assert len(headers) == 3
-        root_header, p_header, c_header = headers
+        assert len(headers) == 2
+        p_header, c_header = headers
 
-        root_dot = root_header.query_one(".header-dot", Static)
         p_dot = p_header.query_one(".header-dot", Static)
         c_dot = c_header.query_one(".header-dot", Static)
 
-        assert not root_dot.has_class("nested")
         assert not p_dot.has_class("nested")
         assert c_dot.has_class("nested")
-        assert "⎿" not in str(root_dot.content)
         assert "⎿" not in str(p_dot.content)
         assert "⎿" in str(c_dot.content)

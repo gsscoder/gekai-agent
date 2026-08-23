@@ -72,8 +72,8 @@ class ConversationContainer(ScrollableContainer):
 
 _SPINNER_FRAMES = ["·", "•", "●", "•"]
 _BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-_THINKING_WINDOW = 3  # max completed thinking "steps" (sentences) visible at once
-_INDENT_PER_DEPTH = 2  # left-margin cells per nesting level, applied by SubAgentRenderer._mount
+_THINKING_LINE_CAP = 80  # max characters of the rolling thinking-buffer tail shown on the shared line
+_THINKING_LINE_SENTENCE_RESET = 5  # completed-step count that triggers a full wipe/restart of the block
 _DIAMOND = "◆"
 _SQUARE = "■"
 _SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
@@ -117,26 +117,16 @@ class SubAgentRenderer:
         self._progress_bar: ProgressBar | None = None
         self._header_widget: MessageWidget | None = None
         self._spinner_task: asyncio.Task | None = None
-        self._thinking_tail: str = ""
-        self._thinking_widgets: list[Static] = []
         self._badge_namespace: str | None = None
         self._badge_color: str = ""
         self._tool_calls: int = 0
-        self._is_thinking: bool = False
         self._last_tool_name: str = ""
 
     async def _mount(self, widget: Static | MessageWidget | ProgressBar, *, after: Static | MessageWidget | None = None) -> None:
-        """Single chokepoint every mount site routes through — stamps left
-        indentation proportional to `self._depth` (zero at depth 0, so
-        non-nested output is unchanged) before delegating to the real mount.
-        Indentation is applied as widget-level spacing (a CSS margin), never
-        as a string prefix: `log()`/`thinking_chunk()` build their
-        `rich.text.Text` content without markup-string interpolation
-        specifically so a literal "[" in a path/command can't be misparsed
-        as a markup tag, and splicing indent into that text would reopen
-        that hazard."""
-        if self._depth > 0:
-            widget.styles.margin = (0, 0, 0, self._depth * _INDENT_PER_DEPTH)
+        """Single chokepoint every mount site routes through. Every card
+        aligns to column 0 regardless of `self._depth` — nesting depth beyond
+        1 is conveyed only by the "⎿" connector (`_animate_dot`/`done`), not
+        by left indentation."""
         if after is not None:
             await self._conversation.mount(widget, after=after)
         else:
@@ -164,15 +154,21 @@ class SubAgentRenderer:
         self.name = name
         self._badge_namespace = namespace
         self._badge_color = bg_color
-        await self._mount(Static("", classes="assistant-spacer"))
+        # Root's own plain turn (namespace is None) mounts no header of its
+        # own — the shared `_ThinkingLine` above already shows "Thinking..."
+        # then "Thought for ..." for it, and a second "Triaging..."/"Thought
+        # for X" header here would just duplicate that. The lead-in spacer
+        # only exists to set a badge header apart, so it moves inside this
+        # branch too — otherwise it strands a stray blank row between the
+        # shared thinking line and the answer, on top of the answer's own
+        # `margin-top: 1` (MessageWidget.assistant, agent/tui/widgets.py).
         if namespace is not None:
+            await self._mount(Static("", classes="assistant-spacer"))
             header_markup = _subagent_header_markup(name, bg_color, ui_label)
-        else:
-            header_markup = "[bold #666666]Triaging...[/bold #666666]"
-        widget = MessageWidget(MessageKind.HEADER, header_markup, nested=self._depth > 1)
-        await self._mount(widget)
-        self._header_widget = widget
-        self._spinner_task = asyncio.create_task(self._animate_dot())
+            widget = MessageWidget(MessageKind.HEADER, header_markup, nested=self._depth > 1)
+            await self._mount(widget)
+            self._header_widget = widget
+            self._spinner_task = asyncio.create_task(self._animate_dot())
 
     async def log(self, message: str, tool_name: str = "") -> None:
         if tool_name:
@@ -185,7 +181,7 @@ class SubAgentRenderer:
             # command/path) — split via Text.append with explicit styles
             # (not markup interpolation) so a detail containing "[" (a
             # plausible path/command fragment) can never be misparsed as a
-            # markup tag, same reasoning as the thinking-step rendering.
+            # markup tag, same reasoning as the shared thinking-line rendering.
             # Not gated on a debug flag: that gate existed only to skip the
             # old "(N calls)" aggregation, which no longer exists — every
             # call gets its own line now, styled the same way in every mode.
@@ -215,35 +211,6 @@ class SubAgentRenderer:
         elif event.total is not None:
             self._progress_bar.update(total=event.total, progress=event.progress)
 
-    async def thinking_chunk(self, text: str) -> None:
-        if self._badge_namespace is not None:
-            return  # badge header is persistent — never overwrite it with a thinking preview
-        if not self._is_thinking:
-            self._is_thinking = True
-            if self._header_widget is not None:
-                self._header_widget.update("[bold #666666]Thinking...[/bold #666666]")
-        self._thinking_tail += text
-        steps, self._thinking_tail = _split_thinking_steps(self._thinking_tail)
-        for step in steps:
-            # rich.text.Text (not markup interpolation) so a sentence
-            # containing e.g. "[0]" can never be misparsed as a markup tag;
-            # no_wrap+ellipsis keeps each step to exactly one line.
-            step_text = Text(no_wrap=True, overflow="ellipsis")
-            step_text.append(_DIAMOND, style="white")
-            step_text.append(f" {step}", style="#666666")
-            widget = Static(step_text, classes="thinking-step")
-            # anchored right after the last thinking widget (or the header,
-            # for the first one) so a tool-log line mounted in between two
-            # thinking chunks never ends up sandwiched above a later sentence
-            # — tool usage always stacks below every visible sentence.
-            anchor = self._thinking_widgets[-1] if self._thinking_widgets else self._header_widget
-            await self._mount(widget, after=anchor)
-            self._thinking_widgets.append(widget)
-            if len(self._thinking_widgets) > _THINKING_WINDOW:
-                await self._thinking_widgets.pop(0).remove()
-        if steps:
-            self._conversation.scroll_end(animate=False)
-
     def stop_spinner(self) -> None:
         if self._spinner_task is not None:
             self._spinner_task.cancel()
@@ -263,9 +230,6 @@ class SubAgentRenderer:
         for w in self._log_widgets:
             await w.remove()
         self._log_widgets.clear()
-        for w in self._thinking_widgets:
-            await w.remove()
-        self._thinking_widgets.clear()
         if self._progress_bar is not None:
             await self._progress_bar.remove()
             self._progress_bar = None
@@ -293,19 +257,139 @@ class SubAgentRenderer:
             self._conversation.scroll_end(animate=False)
             return summary
         else:
-            parts = [_fmt_duration_verbose(elapsed)]
-            if self._total_tokens > 0:
-                parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
-            if self._infer_count > 0:
-                calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
-                parts.append(calls)
-            summary = " · ".join(parts)
+            summary = self.turn_summary_text()
             if self._header_widget is not None:
                 self._header_widget.query_one(".header-dot", Static).update(f"[white]{_DIAMOND}[/white]")
                 self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought for {summary}[/#666666]")
                 self._header_widget = None
             self._conversation.scroll_end(animate=False)
             return summary
+
+    def turn_summary_text(self) -> str:
+        """Root-style `"{elapsed} · {tokens} tokens · {N} call(s)"` summary
+        computed from this renderer's tracked `_start_time`/`_total_tokens`/
+        `_infer_count` — the same fields regardless of badge status, so this
+        is also what the shared per-turn thinking line uses to render its
+        final `"Thought for ..."` text even when `ws_renderer` itself has a
+        badge (explicit `/alias` seed dispatch)."""
+        elapsed = time.monotonic() - self._start_time
+        parts = [_fmt_duration_verbose(elapsed)]
+        if self._total_tokens > 0:
+            parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
+        if self._infer_count > 0:
+            calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
+            parts.append(calls)
+        return " · ".join(parts)
+
+
+class _ThinkingLine:
+    """The turn's single shared thinking-preview block. Unlike a
+    `SubAgentRenderer`'s own header/badge (one per renderer), there is
+    exactly one of these per turn — mounted once at the very top of the
+    turn's output before any renderer can mount anything else, and fed by
+    every `ThinkingTokenEvent` regardless of which renderer (root, subagent,
+    nested delegation) is currently active. Renders as up to
+    `_THINKING_LINE_SENTENCE_RESET` stacked lines — each completed sentence
+    becomes its own line, the newest (still in-progress) one carries the
+    spinner dot — and once a line beyond that count would be needed, the
+    whole block wipes and restarts from a bare "Thinking...". Built as a
+    plain `Static`, not a `MessageWidget`, so it stays invisible to every
+    `isinstance(w, MessageWidget)` filter the rest of the app/tests use to
+    count header lines.
+
+    Kept pinned to the top of the visible viewport while the turn is active
+    by re-scrolling `conversation` to this widget's own top on every redraw
+    (`scroll_to_widget(..., top=True)`) — not a second widget, just active
+    scroll management on the one in-flow copy — so it stays in view even as
+    the turn's own subagent cards/logs grow beneath it."""
+
+    def __init__(self, conversation: ScrollableContainer) -> None:
+        self._conversation = conversation
+        self._widget: Static | None = None
+        self._buffer: str = ""
+        self._frame: int = 0
+        self._spinner_task: asyncio.Task | None = None
+
+    async def mount(self) -> None:
+        await self._conversation.mount(Static("", classes="assistant-spacer"))
+        self._widget = Static(self._render())
+        await self._conversation.mount(self._widget)
+        self._pin_to_top()
+        self._spinner_task = asyncio.create_task(self._animate())
+
+    async def _animate(self) -> None:
+        try:
+            while True:
+                self._frame += 1
+                self._redraw()
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass
+
+    def update_chunk(self, text: str) -> None:
+        self._buffer += text
+        steps, _ = _split_thinking_steps(self._buffer)
+        if len(steps) >= _THINKING_LINE_SENTENCE_RESET:
+            # Full cycle wipe: once a 5th line would be needed, clear
+            # everything and restart from "Thinking..." rather than scrolling.
+            self._buffer = ""
+        self._redraw()
+
+    @staticmethod
+    def _cap(text: str) -> str:
+        tail = text[-_THINKING_LINE_CAP:]
+        ellipsis = "…" if len(text) > _THINKING_LINE_CAP else ""
+        return f"{ellipsis}{tail}"
+
+    def _render(self) -> Text:
+        # One Text redraw per frame (dot + lines together) — this widget is
+        # a plain Static, not a MessageWidget, so unlike SubAgentRenderer's
+        # header it has no separate `.header-dot`/`.header-text` to update
+        # independently. Completed sentences stack as lines above the
+        # current in-progress one; the dot always marks the active (last)
+        # line, same dim color throughout.
+        dot_char = _BRAILLE_FRAMES[self._frame % len(_BRAILLE_FRAMES)]
+        steps, tail = _split_thinking_steps(self._buffer)
+        lines = [*steps, tail] if tail else list(steps)
+        text = Text(no_wrap=True)
+        if not lines:
+            text.append(dot_char, style="#666666")
+            text.append(" Thinking...", style="#666666")
+            return text
+        # rich.text.Text, never a markup string, so a literal "[" streamed
+        # by the model can never be misparsed as a markup tag — same
+        # reasoning as `SubAgentRenderer.log()`.
+        for i, line in enumerate(lines):
+            if i > 0:
+                text.append("\n")
+            prefix = dot_char if i == len(lines) - 1 else " "
+            text.append(f"{prefix} {self._cap(line)}", style="#666666")
+        return text
+
+    def _redraw(self) -> None:
+        if self._widget is not None:
+            self._widget.update(self._render())
+        self._pin_to_top()
+
+    def _pin_to_top(self) -> None:
+        # Fired on every 0.1s animation tick, so any scroll-to-bottom another
+        # event triggers in between (e.g. `DiffEvent`'s `scroll_end`) is
+        # corrected back within one frame.
+        if self._widget is not None:
+            self._conversation.scroll_to_widget(self._widget, animate=False, top=True)
+
+    def stop_spinner(self) -> None:
+        if self._spinner_task is not None:
+            self._spinner_task.cancel()
+            self._spinner_task = None
+
+    def finish(self, summary_text: str) -> None:
+        self.stop_spinner()
+        if self._widget is not None:
+            line = Text(no_wrap=True)
+            line.append(_DIAMOND, style="white")
+            line.append(f" {summary_text}", style="#666666")
+            self._widget.update(line)
 
 
 def _subagent_header_markup(name: str, bg_color: str, ui_label: str) -> str:
@@ -578,10 +662,6 @@ class GekaiApp(App[None]):
         background: ansi_default;
         padding: 0;
         display: none;
-    }
-
-    .thinking-step {
-        height: 1;
     }
 
     #status-spacer {
@@ -1613,6 +1693,13 @@ class GekaiApp(App[None]):
         self._assistant_widget = None
         self._streamed_answer = ""
 
+        # One shared thinking-preview line for the whole turn, mounted here
+        # — before `run_step` below can emit a single event — so it always
+        # sits at the very top of the turn's output, above every
+        # renderer's own header/badge, and never moves.
+        thinking_line = _ThinkingLine(conversation)
+        await thinking_line.mount()
+
         async def _on_event(item: AgentEvent | str) -> None:
             nonlocal ws_renderer, active_renderer
             if isinstance(item, str):
@@ -1632,7 +1719,8 @@ class GekaiApp(App[None]):
                 # against the roster so a seed dispatch gets its own colored
                 # badge, same as a task-graph step's DelegationStartEvent
                 # handler just below, instead of falling through to root's
-                # generic "Triaging..."/"Thought for X" header.
+                # turn, which mounts no header of its own (the shared
+                # `_ThinkingLine` covers it).
                 resolved = next((s for s in SUBAGENTS if s.name == item.name), None)
                 if resolved is not None:
                     await ws_renderer.start(
@@ -1663,6 +1751,12 @@ class GekaiApp(App[None]):
                     # unreachable; guard rather than crash if it ever isn't.
                     pass
                 active_renderer = delegation_stack[-1] if delegation_stack else ws_renderer
+            elif isinstance(item, ThinkingTokenEvent):
+                # Unconditional — regardless of which renderer (root,
+                # subagent, nested delegation) is currently active, every
+                # thinking token feeds the one shared line, not a
+                # per-renderer preview.
+                thinking_line.update_chunk(item.text)
             elif active_renderer:
                 if isinstance(item, LogEvent):
                     await active_renderer.log(item.message, tool_name=item.tool_name)
@@ -1674,8 +1768,6 @@ class GekaiApp(App[None]):
                 elif isinstance(item, InferEndEvent):
                     active_renderer.accumulate_tokens(item)
                     self._other_ops_tokens += (item.prompt_tokens or 0) + (item.completion_tokens or 0)
-                elif isinstance(item, ThinkingTokenEvent):
-                    await active_renderer.thinking_chunk(item.text)
                 elif isinstance(item, TextChunkEvent):
                     self._streamed_answer += item.text
                     if self._assistant_widget is None:
@@ -1689,16 +1781,28 @@ class GekaiApp(App[None]):
                 elif isinstance(item, DoneEvent):
                     if ws_renderer is not None:
                         await ws_renderer.done(item.thinking_chars)
+                        # Unconditional even when `ws_renderer` itself has a
+                        # badge (explicit `/alias` seed dispatch) — the
+                        # shared line always ends with the root-style
+                        # "Thought for X" summary.
+                        thinking_line.finish(f"Thought for {ws_renderer.turn_summary_text()}")
 
-        turn_result = await harness_turn.run_step(
-            self._agent, self._session, raw, seed,
-            turn_id=turn_id, session_id=session_id,
-            permission_callback=self._permission_callback,
-            hidden_grant_callback=self._hidden_grant_callback,
-            append_user=append_user,
-            on_event=_on_event,
-            on_directive_verdict=self._apply_directive_verdict,
-        )
+        try:
+            turn_result = await harness_turn.run_step(
+                self._agent, self._session, raw, seed,
+                turn_id=turn_id, session_id=session_id,
+                permission_callback=self._permission_callback,
+                hidden_grant_callback=self._hidden_grant_callback,
+                append_user=append_user,
+                on_event=_on_event,
+                on_directive_verdict=self._apply_directive_verdict,
+            )
+        finally:
+            # Safety net matching `ws_renderer.stop_spinner()` in `_stream`'s
+            # own finally block below — guards against a leaked spinner task
+            # if `DoneEvent` never arrives (e.g. an error mid-turn). A no-op
+            # if `thinking_line.finish()` already stopped it above.
+            thinking_line.stop_spinner()
 
         return _StepResult(
             outcome=turn_result.outcome,

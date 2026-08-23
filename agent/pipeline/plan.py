@@ -125,27 +125,17 @@ def _check_scope_field(index: int, value: str | None) -> None:
 
 
 def _check_discovery_stages(steps: list[Task], by_name: dict[str, Subagent]) -> None:
-    """A discovery-stage step (e.g. ws-explorer) is a precursor whose whole
-    value is a report a *later* step consumes via `{{step_k}}` — never a
-    deliverable on its own. Reject a graph where one is the only step, the
-    last step (nothing would consume its report), or more than one appears."""
+    """A discovery-stage step (e.g. ws-explorer) may stand alone, be last, or
+    sit anywhere else in the graph: every step's output reaches the user via
+    `_respond`'s outputs_block regardless of position. Only `{{step_k}}`
+    chaining into a *later* step needs an explicit ref, and that is not this
+    function's job to enforce. The one rule kept here: at most one
+    discovery-stage step per graph."""
     discovery_indices = [i for i, s in enumerate(steps) if by_name[s.agent].discovery_stage]
-    if not discovery_indices:
-        return
     if len(discovery_indices) > 1:
         raise ValueError(
             f"task graph has {len(discovery_indices)} discovery-stage steps at indices "
             f"{discovery_indices} — at most one is allowed"
-        )
-    if len(steps) == 1:
-        raise ValueError(
-            f"step {discovery_indices[0]}: discovery-stage agent {steps[0].agent!r} cannot be the only step "
-            "in the graph — its report has nothing to feed"
-        )
-    if discovery_indices[0] == len(steps) - 1:
-        raise ValueError(
-            f"step {discovery_indices[0]}: discovery-stage agent {steps[discovery_indices[0]].agent!r} "
-            "cannot be the last step in the graph — its report has nothing to feed"
         )
 
 

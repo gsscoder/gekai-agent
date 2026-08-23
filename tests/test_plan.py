@@ -142,16 +142,19 @@ def test_malformed_scope_rejects_whole_graph(scope, match) -> None:
 # *later* step consumes via {{step_k}}, never a deliverable on its own
 # ---------------------------------------------------------------------------
 
-def test_discovery_stage_rejected_as_only_step() -> None:
+def test_discovery_stage_accepted_as_only_step() -> None:
+    """A pure-investigation turn: the discovery step's report reaches the
+    user via `_respond`'s outputs_block directly — no later step is needed
+    to consume it."""
     raw = {
         "summary": "s",
         "steps": [{"agent": "ws-explorer", "instruction": "explore the codebase", "mission": "explore"}],
     }
-    with pytest.raises(ValueError, match="only step"):
-        parse_task_graph(raw, _ROSTER)
+    graph = parse_task_graph(raw, _ROSTER)
+    assert graph == [Task(agent="ws-explorer", instruction="explore the codebase", mission="explore")]
 
 
-def test_discovery_stage_rejected_as_last_step() -> None:
+def test_discovery_stage_accepted_as_last_step() -> None:
     raw = {
         "summary": "s",
         "steps": [
@@ -159,8 +162,11 @@ def test_discovery_stage_rejected_as_last_step() -> None:
             {"agent": "ws-explorer", "instruction": "explore the codebase", "mission": "explore"},
         ],
     }
-    with pytest.raises(ValueError, match="last step"):
-        parse_task_graph(raw, _ROSTER)
+    graph = parse_task_graph(raw, _ROSTER)
+    assert graph == [
+        Task(agent="code-expert", instruction="scaffold repo", mission="scaffold the repo"),
+        Task(agent="ws-explorer", instruction="explore the codebase", mission="explore"),
+    ]
 
 
 def test_two_discovery_stages_rejected() -> None:

@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import DoneEvent, EstimateEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
+from agent.events import DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm import model_caps
@@ -329,6 +329,35 @@ def test_graph_halt_yields_halted_event_and_recap(monkeypatch: pytest.MonkeyPatc
     assert len(halted) == 1
     assert halted[0].step_index == 0
     assert "prior steps" in collected[-1] or "HALTED" in collected[-1]
+
+
+def test_sequencer_value_error_falls_back_to_solo_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: a Sequencer failure (e.g. the model returned an unparseable/
+    # invalid task graph) must never dump its raw ValueError text into the
+    # turn's answer -- the turn instead completes via the solo fallback
+    # (`_stream_solo`), reusing the sequencer's own `SubAgentStartEvent`
+    # rather than emitting a second one.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    plan_mock = AsyncMock(side_effect=ValueError("sequencer returned no JSON object: 'garbage'"))
+    _patch_sequencer_sequence(monkeypatch, plan_mock)
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="solo answer")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "get context on the banking pane cause I'm about to ask for a change"))
+
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+    assert collected[-1] == "solo answer"
+    assert not any(isinstance(e, str) and "sequencer returned no JSON" in e for e in collected)
+    # exactly one SubAgentStartEvent for the whole turn -- the sequencer's own,
+    # reused by the solo fallback (`emit_start_event=False`), never a second one
+    assert len(_only(collected, SubAgentStartEvent)) == 1
 
 
 # --- plan 28 Phase 2 (assignment-time tier scaling) end-to-end coverage ---

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` (top of file) makes this
     # type-checking-only import safe for the annotations below.
     from ..llm.resolve import ResolvedTier
+
+_log = logging.getLogger(__name__)
 
 _ROOT_COLOR = "#4169E1"
 _RECENCY_N = 2
@@ -340,12 +343,40 @@ class Harness:
                 yield item
             return
 
-        # No-graph turn: trivial single-agent (root), or a seed-dispatched
-        # subagent run bound to this session (warm context, no directive
-        # pump/GEKAI.md — decision 2/3 of the seed-dispatch fix). Runs at
-        # root-dispatch's configured default, always — there is no per-node
-        # signal here (no verify/retry concept exists in this path), so it
-        # never modulates (plan 28 Phase 2 guardrail).
+        async for item in self._stream_solo(
+            session, user_input, permission_callback, subagent, extra_params,
+            hidden_grant_callback, bus, chat_rung=(estimate_decision == "chat"),
+        ):
+            yield item
+
+    async def _stream_solo(
+        self,
+        session: Session,
+        user_input: str,
+        permission_callback: PermissionCallback | None,
+        subagent: Subagent | None,
+        extra_params: dict | None,
+        hidden_grant_callback: HiddenGrantCallback | None,
+        bus: EventBus,
+        *,
+        chat_rung: bool,
+        emit_start_event: bool = True,
+    ) -> AsyncIterator[AgentEvent | str]:
+        """No-graph turn: trivial single-agent (root), a seed-dispatched
+        subagent run bound to this session (warm context, no directive
+        pump/GEKAI.md — decision 2/3 of the seed-dispatch fix), or the
+        Sequencer-failure fallback (`_stream_graph`'s `except ValueError`) —
+        the same solo run any of those cases would have taken had the turn
+        never been routed into a task graph. Runs at root-dispatch's
+        configured default, always — there is no per-node signal here (no
+        verify/retry concept exists in this path), so it never modulates
+        (plan 28 Phase 2 guardrail).
+
+        `emit_start_event=False` is only for the Sequencer-failure fallback:
+        `_stream_graph` already yielded a `SubAgentStartEvent` for
+        name="sequencer" before falling back here, and a turn must carry
+        exactly one such event, not two.
+        """
         pumped_domains: list[str] = []
         if subagent is None:
             system_base, pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
@@ -357,7 +388,6 @@ class Harness:
             yield DirectivePumpEvent(domains=pumped_domains)
 
         root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
-        chat_rung = estimate_decision == "chat"
         if extra_params is not None:
             effective_extra_params = extra_params
         elif chat_rung:
@@ -419,11 +449,12 @@ class Harness:
             if subagent is None:
                 _maybe_flag_foreign_instruction_file(event, queue)
 
-        yield SubAgentStartEvent(
-            name=subagent.name if subagent else "root",
-            description=subagent.description if subagent else "thinking",
-            color=_ROOT_COLOR,
-        )
+        if emit_start_event:
+            yield SubAgentStartEvent(
+                name=subagent.name if subagent else "root",
+                description=subagent.description if subagent else "thinking",
+                color=_ROOT_COLOR,
+            )
 
         # `stream()`'s own `subagent` param is only ever bound by the
         # seed-dispatch path above — a genuine graph-spawned subagent run
@@ -521,9 +552,12 @@ class Harness:
             graph = await sequencer.sequence(user_input)
         except ValueError as exc:
             unsubscribe()
-            yield TaskGraphHaltedEvent(step_index=-1, agent="sequencer", reason=str(exc))
-            yield DoneEvent(thinking_chars=0, files_touched=[])
-            yield f"[sequencer failed to produce a valid task graph: {exc}]"
+            _log.warning("sequencer failed to produce a valid task graph; falling back to solo: %s", exc)
+            async for item in self._stream_solo(
+                session, user_input, permission_callback, None, None,
+                hidden_grant_callback, bus, chat_rung=False, emit_start_event=False,
+            ):
+                yield item
             return
 
         yield TaskGraphStartedEvent(
@@ -600,7 +634,7 @@ class Harness:
                 yield TaskGraphHaltedEvent(step_index=halted.index, agent=halted.step.agent, reason=halted.reason)
                 yield DoneEvent(thinking_chars=0, files_touched=files_touched)
                 answer, responder_event = await self._respond(
-                    user_input, session, graph, [], halted=halted,
+                    user_input, session, graph, halted.results, halted=halted,
                     permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
                 )
                 if responder_event is not None:
@@ -662,7 +696,8 @@ class Harness:
                 )
             else:
                 synthesis_prompt = (
-                    f"the task graph you planned halted before finishing. summary: {graph.summary}\n"
+                    f"the task graph you planned halted before finishing. summary: {graph.summary}\n\n"
+                    f"<step_outputs>\n{outputs_block}\n</step_outputs>\n\n"
                     f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
                     "prior steps' work is kept; nothing was rolled back.\n\n"
                     "write the reply the user will see: report what was completed and name the step "

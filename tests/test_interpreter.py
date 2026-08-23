@@ -6,7 +6,9 @@ import pytest
 
 from agent.harness.interpreter import TaskGraphHalted, resolve_refs, run_task_graph
 from agent.harness.scaling import WorkSignal
-from agent.pipeline.plan import Task, TaskGraph
+from agent.pipeline.plan import Task, TaskGraph, parse_task_graph
+from agent.subagents import SUBAGENTS
+from agent.tools.delegate import ERROR_PREFIX
 
 
 def run(coro):
@@ -88,6 +90,52 @@ def test_empty_dispatch_output_halts() -> None:
     graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
     with pytest.raises(TaskGraphHalted, match="empty dispatch output"):
         run(run_task_graph(graph, empty_dispatch))
+
+
+def test_error_sentinel_dispatch_output_halts() -> None:
+    """A crashed/unresolvable dispatch (`run_subagent`'s own `ERROR_PREFIX`-
+    prefixed sentinel) must halt the graph, not flow into verify/`{{step_k}}`
+    substitution as if it were a legitimate output."""
+    async def crashed_dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(), scope: str | None = None) -> str:
+        return f"{ERROR_PREFIX}{agent} failed: boom"
+
+    graph = TaskGraph(
+        summary="s",
+        steps=[Task(agent="code-expert", instruction="write it", mission="write it", verify="mechanical")],
+    )
+    verify_calls: list[str] = []
+
+    async def verify(step: Task, out: str) -> bool:
+        verify_calls.append(out)
+        return True  # would wrongly pass "mechanical" verify if the crash string ever reached here
+
+    with pytest.raises(TaskGraphHalted) as exc_info:
+        run(run_task_graph(graph, crashed_dispatch, verify_agent=verify))
+    assert exc_info.value.index == 0
+    assert verify_calls == []  # halted before ever reaching verify
+    assert exc_info.value.results == []
+
+
+def test_one_step_ws_explorer_graph_parses_and_produces_step_result() -> None:
+    """Change 1 end to end: a pure-investigation graph is exactly one
+    ws-explorer step. It parses (a lone discovery step is no longer
+    rejected) and running it produces a `StepResult` whose output is what
+    `_respond`'s outputs_block reads."""
+    raw = {
+        "summary": "investigate the banking pane",
+        "steps": [{"agent": "ws-explorer", "instruction": "explore the banking pane", "mission": "explore"}],
+    }
+    graph = parse_task_graph(raw, SUBAGENTS)
+
+    async def dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(), scope: str | None = None) -> str:
+        return "found the banking pane in src/panes/banking.py"
+
+    results = run(run_task_graph(graph, dispatch))
+    assert len(results) == 1
+    assert results[0].output == "found the banking pane in src/panes/banking.py"
+
+    outputs_block = "\n\n".join(f"--- step {i + 1} output ---\n{r.output}" for i, r in enumerate(results))
+    assert "found the banking pane in src/panes/banking.py" in outputs_block
 
 
 def test_repair_uses_named_repair_agent_not_original() -> None:

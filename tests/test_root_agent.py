@@ -336,3 +336,39 @@ def test_respond_halted_path_falls_back_to_recap_on_synthesis_error(monkeypatch:
 
     assert "HALTED" in answer
     assert event is not None and event.fell_back is True
+
+
+def test_respond_halted_path_carries_completed_step_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: a halted graph's synthesis prompt must draw on the completed
+    # steps' real outputs, not just the graph summary and the halt reason --
+    # root is asked to "report what was completed" and needs something to
+    # report from.
+    harness = _make_respond_harness()
+    fake_agent = _spy_build_agent_capturing_run(monkeypatch)
+
+    session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
+    graph = TaskGraph(
+        summary="build a library with tests",
+        steps=[
+            Task(agent="code-expert", instruction="write it", mission="write it"),
+            Task(agent="test-expert", instruction="test it", mission="test it"),
+        ],
+    )
+    results = [StepResult(step=graph[0], output="code-expert finished the library")]
+    halted = TaskGraphHalted(1, graph[1], "empty dispatch output", results)
+
+    answer, event = _run(harness._respond(
+        "current request", session, graph, halted.results,
+        halted=halted, permission_callback=None, hidden_grant_callback=None,
+    ))
+
+    assert answer == "synthesized answer"
+    assert event is not None and event.fell_back is False
+
+    prior_messages = fake_agent.run.await_args.args[0]
+    contents = [m.content for m in prior_messages]
+    # the completed step's real output must reach the synthesis prompt, not
+    # just the graph's own summary/halt reason
+    assert any("code-expert finished the library" in c for c in contents)

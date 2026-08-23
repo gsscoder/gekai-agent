@@ -94,8 +94,7 @@ def test_scope_field_from_model_parses_into_plain_string() -> None:
 def test_prompt_describes_discovery_step_placement() -> None:
     sequencer = _make_sequencer()
     assert "more than ~5" in sequencer._prompt
-    assert "only step" in sequencer._prompt
-    assert "last step" in sequencer._prompt
+    assert "a single discovery step is the whole graph" in sequencer._prompt
 
 
 def test_prompt_describes_step_ref_templating() -> None:

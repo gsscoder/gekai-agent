@@ -13,6 +13,13 @@ from ..permissions import PermissionCallback
 from ..settings import Permissions
 from ..subagents import SUBAGENTS
 
+# Shared sentinel prefix for a crashed/unresolvable delegated run (both
+# failure messages below carry it) — the interpreter's `run_task_graph`
+# imports this to halt a step whose dispatch crashed, instead of letting the
+# error string flow into verify/`{{step_k}}` substitution as if it were a
+# legitimate output.
+ERROR_PREFIX = "[error] "
+
 
 async def run_subagent(
     agent: str,
@@ -55,7 +62,7 @@ async def run_subagent(
     roster = {s.name: s for s in SUBAGENTS}
     resolved = roster.get(agent)
     if resolved is None:
-        return f"[error] unknown agent '{agent}'; available: {', '.join(sorted(roster))}"
+        return f"{ERROR_PREFIX}unknown agent '{agent}'; available: {', '.join(sorted(roster))}"
 
     effective_override = tools_override
     if parent_tools is not None:
@@ -79,7 +86,7 @@ async def run_subagent(
     try:
         history = await nested.run(task, run_id=nested_run_id)
     except Exception as exc:
-        return f"[error] {agent} failed: {exc}"
+        return f"{ERROR_PREFIX}{agent} failed: {exc}"
     finally:
         if bus is not None:
             bus.emit(DelegationCompleted(agent=agent, run_id=nested_run_id))
@@ -172,4 +179,4 @@ def make_delegate_tool(
     return dataclasses.replace(t, input_schema=schema)
 
 
-__all__ = ["run_subagent", "make_delegate_tool"]
+__all__ = ["ERROR_PREFIX", "run_subagent", "make_delegate_tool"]

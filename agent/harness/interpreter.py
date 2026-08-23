@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..pipeline.plan import Task, TaskGraph
+from ..tools.delegate import ERROR_PREFIX
 from .scaling import WorkSignal, node_signal
 
 DispatchFn = Callable[[str, str, str, WorkSignal, str | None], Awaitable[str]]
@@ -29,10 +30,11 @@ class StepResult:
 
 
 class TaskGraphHalted(Exception):
-    def __init__(self, index: int, step: Task, reason: str) -> None:
+    def __init__(self, index: int, step: Task, reason: str, results: list[StepResult] | None = None) -> None:
         self.index = index
         self.step = step
         self.reason = reason
+        self.results = results if results is not None else []
         super().__init__(f"step {index} ({step.agent}) halted: {reason}")
 
 
@@ -88,9 +90,11 @@ async def run_task_graph(
 ) -> list[StepResult]:
     """Walk `graph` with the fixed execute->verify->repair->re-verify->halt policy.
 
-    Raises TaskGraphHalted on an empty dispatch output or a second verify
+    Raises TaskGraphHalted on an empty dispatch output, a dispatch output
+    that is a crashed-run error sentinel (`ERROR_PREFIX`), or a second verify
     failure — completed steps' results are not rolled back (halt-and-report,
-    no resume).
+    no resume) and are carried on the exception's own `results` so the caller
+    can still report what finished.
     """
     prior_outputs: list[str] = []
     results: list[StepResult] = []
@@ -100,7 +104,9 @@ async def run_task_graph(
         instruction = _inject_request_summary(graph, index, instruction)
         out = await dispatch(step.agent, instruction, step.mission, node_signal(step), step.scope)
         if not out:
-            raise TaskGraphHalted(index, step, "empty dispatch output")
+            raise TaskGraphHalted(index, step, "empty dispatch output", results)
+        if out.startswith(ERROR_PREFIX):
+            raise TaskGraphHalted(index, step, out, results)
 
         if step.verify and verify_agent is not None:
             if not await verify_agent(step, out):
@@ -111,7 +117,7 @@ async def run_task_graph(
                 retry_signal = WorkSignal(direction=base.direction, retry=base.retry + 1)
                 out = await dispatch(step.repair or step.agent, _repair_instruction(step, out), step.mission, retry_signal)
                 if not await verify_agent(step, out):
-                    raise TaskGraphHalted(index, step, "failed verification twice")
+                    raise TaskGraphHalted(index, step, "failed verification twice", results)
 
         prior_outputs.append(out)
         results.append(StepResult(step=step, output=out))
