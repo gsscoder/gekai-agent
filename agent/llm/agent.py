@@ -125,6 +125,7 @@ class Agent:
                 )
             return final
 
+        leaked_retry_used = False
         try:
             for turn in range(1, self.max_iterations + 1):
                 self._emit(TurnStarted(turn=turn))
@@ -132,6 +133,19 @@ class Agent:
                 response = await retry_call(self._instrumented_policy(turn), _complete)
                 self._emit(ModelResponseReceived(turn=turn, response=response))
                 if not await self._apply_response(response, messages, turn=turn):
+                    if response.leaked_tool_call and not leaked_retry_used:
+                        leaked_retry_used = True
+                        messages.append(
+                            Message(
+                                role="user",
+                                content=(
+                                    "Your previous tool call was not emitted in the "
+                                    "required structured format and was discarded. "
+                                    "Re-issue it as an actual tool call."
+                                ),
+                            )
+                        )
+                        continue
                     if not self._assistant_text(messages):
                         nudge = await retry_call(
                             self._instrumented_policy(turn), lambda: _complete(with_tools=False)
@@ -176,6 +190,8 @@ class Agent:
     async def run_stream(
         self, prompt: str | list[Message], *, run_id: str | None = None
     ) -> AsyncIterator[StreamEvent]:
+        # Note: unlike `_run_loop`, this path does not retry on a leaked tool
+        # call (`response.leaked_tool_call`) — it is unused by the harness.
         self._run_id = run_id or uuid.uuid4().hex
         messages = self._normalize_prompt(prompt)
         self._emit(AgentStarted(prompt=prompt, model=self.model))

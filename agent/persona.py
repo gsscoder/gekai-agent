@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .tools.catalog import READ_TOOLS, SHELL_TOOLS
+from .tools.catalog import EDIT_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 # Identity blocks: root IS Gekai; a subagent is a scoped role played within
 # Gekai — keeping these separate avoids stacking two competing "you are"
@@ -72,6 +72,8 @@ _TOOL_GUIDANCE: tuple[tuple[tuple[str, ...], str, str], ...] = (
      "run_command is stateless — cd does not persist across calls, each call starts in workspace root"),
     (("read_file",) + SHELL_TOOLS, "all",
      "prefer read_file/grep/list_files over shell equivalents for reading files"),
+    (EDIT_TOOLS, "any",
+     "to make a change you MUST actually call edit_file/write_file — never describe or narrate a change as done without having called the tool"),
     (("delegate",), "any",
      "judge the investigation radius before you search: when the target is already named and tight — a specific file, symbol, or directory — use your own read tools directly; "
      "delegate to a read-only lookup specialist when the radius is wide or unknown, when the answer could live anywhere, or when the question crosses layers you have not mapped yet; "

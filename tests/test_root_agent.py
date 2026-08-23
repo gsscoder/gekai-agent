@@ -282,6 +282,7 @@ def test_respond_success_path_carries_session_recency(monkeypatch: pytest.Monkey
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
         halted=None, permission_callback=None, hidden_grant_callback=None,
+        files_touched=["some/file.py"],
     ))
 
     assert answer == "synthesized answer"
@@ -311,9 +312,10 @@ def test_respond_falls_back_to_recap_on_synthesis_error(monkeypatch: pytest.Monk
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
         halted=None, permission_callback=None, hidden_grant_callback=None,
+        files_touched=[],
     ))
 
-    assert answer == "did the thing"  # mechanical `_recap` fallback (graph.summary)
+    assert answer == "did the thing\n\nno files were modified this turn"  # mechanical `_recap` fallback (graph.summary)
     assert event is not None and event.fell_back is True
 
 
@@ -332,6 +334,7 @@ def test_respond_halted_path_falls_back_to_recap_on_synthesis_error(monkeypatch:
     answer, event = _run(harness._respond(
         "current request", session, graph, [],
         halted=halted, permission_callback=None, hidden_grant_callback=None,
+        files_touched=[],
     ))
 
     assert "HALTED" in answer
@@ -362,6 +365,7 @@ def test_respond_halted_path_carries_completed_step_outputs(
     answer, event = _run(harness._respond(
         "current request", session, graph, halted.results,
         halted=halted, permission_callback=None, hidden_grant_callback=None,
+        files_touched=["some/file.py"],
     ))
 
     assert answer == "synthesized answer"

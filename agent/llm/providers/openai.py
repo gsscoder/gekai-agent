@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Any
@@ -37,10 +38,22 @@ _LEAKED_TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 
+_log = logging.getLogger(__name__)
 
-def _strip_leaked_tool_markup(text: str) -> str:
-    """Strip leaked DeepSeek-style native tool-call markup from completion text."""
-    return _LEAKED_TOOL_CALL_RE.sub("", text)
+
+def _strip_leaked_tool_markup(text: str) -> tuple[str, bool]:
+    """Strip leaked DeepSeek-style native tool-call markup from completion text.
+
+    Returns the stripped text and whether a leak was found.
+    """
+    match = _LEAKED_TOOL_CALL_RE.search(text)
+    if match is None:
+        return text, False
+    _log.warning(
+        "Leaked DeepSeek tool-call markup detected in completion text: %s",
+        match.group(0)[:500],
+    )
+    return _LEAKED_TOOL_CALL_RE.sub("", text), True
 
 
 class OpenAIAdapter:
@@ -154,8 +167,9 @@ class OpenAIAdapter:
         if reasoning:
             content.append(ThinkingBlock(text=reasoning))
         text = getattr(message, "content", None)
+        leaked_tool_call = False
         if text:
-            text = _strip_leaked_tool_markup(text)
+            text, leaked_tool_call = _strip_leaked_tool_markup(text)
             if text.strip():
                 content.append(TextBlock(text=text))
         for call in getattr(message, "tool_calls", None) or []:
@@ -176,6 +190,7 @@ class OpenAIAdapter:
             stop_reason=choice.finish_reason or "stop",
             usage=usage,
             raw=response,
+            leaked_tool_call=leaked_tool_call,
         )
 
     async def stream(
@@ -256,8 +271,9 @@ class OpenAIAdapter:
         if thinking:
             content.append(ThinkingBlock(text=thinking))
         text = "".join(text_buf)
+        leaked_tool_call = False
         if text:
-            text = _strip_leaked_tool_markup(text)
+            text, leaked_tool_call = _strip_leaked_tool_markup(text)
             if text.strip():
                 content.append(TextBlock(text=text))
         for idx in tool_call_order:
@@ -273,6 +289,7 @@ class OpenAIAdapter:
                 stop_reason=stop_reason,
                 usage=usage,
                 raw=None,
+                leaked_tool_call=leaked_tool_call,
             )
         )
 

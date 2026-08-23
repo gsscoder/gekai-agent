@@ -18,10 +18,11 @@ from agent.events import DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEven
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm import model_caps
+from agent.llm.events import ToolExecutionCompleted
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
 from agent.llm.resolve import ResolvedTier, resolve_tier
 from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierPolicy
-from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock
+from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock, ToolResultBlock, ToolUseBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
@@ -209,7 +210,7 @@ def test_mutate_estimate_routes_through_sequencer(monkeypatch: pytest.MonkeyPatc
     assert started[0].step_count == 2
     assert started[0].agents == ["code-expert", "test-expert"]
     assert any(isinstance(e, DoneEvent) for e in collected)
-    assert collected[-1] == "build a library with tests"
+    assert collected[-1] == "build a library with tests\n\nno files were modified this turn"
 
 
 def test_seed_dispatches_directly_without_sequencer_or_estimator(
@@ -716,3 +717,136 @@ def test_graph_step_scope_read_excludes_write_tools_for_subagent(
 
     scope_events = _only(collected, ToolScopeEvent)
     assert scope_events == [ToolScopeEvent(unit="code-expert", chosen_rung="read", reason="narrowed to 'read'")]
+
+
+# --- mechanical verify must also require the step's own dispatch to have
+# actually touched a file when the step is scoped `edit`/`fs` ---
+
+
+def _make_touchless_run_subagent(text: str = "done, looks good"):
+    """A fake `run_subagent` that returns non-empty text but never emits a
+    `ToolExecutionCompleted` on the bus -- i.e. it never touches a file."""
+
+    async def _run_subagent(agent, task, **kwargs):
+        return text
+
+    return _run_subagent
+
+
+def _make_file_writing_run_subagent(path: str = "src/thing.py", text: str = "done, looks good"):
+    """A fake `run_subagent` that emits a real `write_file`
+    `ToolExecutionCompleted` on the bus before returning, so
+    `_bridge_llm_event` records the path into `files_touched` exactly like a
+    real tool-calling run would."""
+
+    async def _run_subagent(agent, task, *, bus, **kwargs):
+        bus.emit(ToolExecutionCompleted(
+            turn=0,
+            call=ToolUseBlock(id="1", name="write_file", input={"path": path, "content": "x"}),
+            result=ToolResultBlock(tool_use_id="1", content="ok"),
+            duration_s=0.0,
+        ))
+        return text
+
+    return _run_subagent
+
+
+def test_mechanical_verify_fails_edit_step_that_touched_no_files_then_halts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: a scope="edit" step whose dispatch produced non-empty text but
+    # touched zero files must fail mechanical verification -- not fail-open
+    # on text alone. The repair dispatch here is also touchless, so the
+    # existing repair/re-verify/halt policy (interpreter.py) halts on the
+    # second failure -- no new retry mechanism needed.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="edit a file",
+        steps=[Task(
+            agent="code-expert", instruction="edit the file", mission="edit the file",
+            scope="edit", verify="mechanical",
+        )],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "edit the file"))
+
+    halted = _only(collected, TaskGraphHaltedEvent)
+    assert len(halted) == 1
+    assert halted[0].step_index == 0
+    assert "failed verification twice" in halted[0].reason
+
+
+def test_mechanical_verify_passes_edit_step_that_actually_touched_a_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: unchanged happy path -- scope="edit" plus a real file touch still
+    # passes mechanical verification and the graph completes normally.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="edit a file",
+        steps=[Task(
+            agent="code-expert", instruction="edit the file", mission="edit the file",
+            scope="edit", verify="mechanical",
+        )],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_file_writing_run_subagent())
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "edit the file"))
+
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+
+
+def test_mechanical_verify_still_passes_read_scoped_step_with_no_files_touched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: unchanged behavior for scope in (None, "read") -- text-only check,
+    # zero files touched is legitimate and must not fail verification.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="read a file",
+        steps=[Task(
+            agent="code-expert", instruction="read the file", mission="read the file",
+            scope="read", verify="mechanical",
+        )],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "read the file"))
+
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+
+
+def test_mechanical_verify_still_passes_unscoped_step_with_no_files_touched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: unchanged behavior for scope=None -- same as above, no scope
+    # means no filesystem-touch requirement.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="do something",
+        steps=[Task(
+            agent="code-expert", instruction="do it", mission="do it",
+            scope=None, verify="mechanical",
+        )],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "do it"))
+
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)

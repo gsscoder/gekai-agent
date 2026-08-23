@@ -578,6 +578,13 @@ class Harness:
                 ))
             return resolved
 
+        # ponytail: single-element cell smuggling "files touched by the most
+        # recent dispatch() call" from `dispatch` to `verify_agent`. Safe
+        # without locking because run_task_graph (interpreter.py) awaits
+        # every dispatch() strictly sequentially, one step at a time —
+        # never concurrently — so there's no race on this shared slot.
+        last_dispatch_files_delta = [0]
+
         async def dispatch(
             agent_name: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(),
             step_scope: str | None = None,
@@ -587,7 +594,8 @@ class Harness:
             tools_override, scope_reason = tool_scope(matched.tool_policy if matched else None, step_scope)
             if scope_reason != "default":
                 queue.put_nowait(ToolScopeEvent(unit=agent_name, chosen_rung=step_scope, reason=scope_reason))
-            return await run_subagent(
+            files_before = len(files_touched)
+            result = await run_subagent(
                 agent_name, instruction,
                 mission=mission,
                 model=resolved.model, api_key=resolved.api_key,
@@ -598,6 +606,8 @@ class Harness:
                 tools_override=tools_override,
                 can_delegate=True,
             )
+            last_dispatch_files_delta[0] = len(files_touched) - files_before
+            return result
 
         async def verify_agent(step: Task, out: str) -> bool:
             # No dedicated verdict-emitting verify agent exists yet (open point 2,
@@ -612,6 +622,10 @@ class Harness:
                     f"on the first line.\n\ninstruction: {step.instruction}\n\noutput:\n{out}",
                 )
                 return verdict.strip().upper().startswith("PASS")
+            if step.scope in ("edit", "fs") and last_dispatch_files_delta[0] == 0:
+                # Fail-open gap: a step scoped to touch the filesystem must
+                # actually have touched it — non-empty text alone isn't proof.
+                return False
             return bool(out.strip())
 
         graph_task: asyncio.Task[list[StepResult]] = asyncio.create_task(
@@ -636,6 +650,7 @@ class Harness:
                 answer, responder_event = await self._respond(
                     user_input, session, graph, halted.results, halted=halted,
                     permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
+                    files_touched=files_touched,
                 )
                 if responder_event is not None:
                     yield responder_event
@@ -646,6 +661,7 @@ class Harness:
             answer, responder_event = await self._respond(
                 user_input, session, graph, results, halted=None,
                 permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
+                files_touched=files_touched,
             )
             if responder_event is not None:
                 yield responder_event
@@ -663,6 +679,7 @@ class Harness:
         halted: TaskGraphHalted | None,
         permission_callback: PermissionCallback | None,
         hidden_grant_callback: HiddenGrantCallback | None,
+        files_touched: list[str],
     ) -> tuple[str, ResponderEvent | None]:
         """Synthesizes the turn's user-facing answer from what actually ran —
         a real root call (plan 32 Phase 3: root absorbs the Responder), run
@@ -687,9 +704,11 @@ class Harness:
             outputs_block = "\n\n".join(
                 f"--- step {i + 1} output ---\n{r.output}" for i, r in enumerate(results)
             )
+            files_touched_line = f"files actually modified this turn: {', '.join(files_touched) if files_touched else '(none)'}"
             if halted is None:
                 synthesis_prompt = (
                     f"the task graph you planned has finished. summary: {graph.summary}\n\n"
+                    f"{files_touched_line}\n\n"
                     f"<step_outputs>\n{outputs_block}\n</step_outputs>\n\n"
                     "write the reply the user will see: state what was done and answer any question "
                     "asked, using only the step outputs above; be terse, no preamble, no markdown headers"
@@ -697,6 +716,7 @@ class Harness:
             else:
                 synthesis_prompt = (
                     f"the task graph you planned halted before finishing. summary: {graph.summary}\n\n"
+                    f"{files_touched_line}\n\n"
                     f"<step_outputs>\n{outputs_block}\n</step_outputs>\n\n"
                     f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
                     "prior steps' work is kept; nothing was rolled back.\n\n"
@@ -710,9 +730,14 @@ class Harness:
             answer = _last_assistant_text(history)
             if not answer:
                 raise ValueError("root synthesis returned empty text")
+            if not files_touched:
+                answer = f"{answer}\n\nno files were modified this turn"
             return answer, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=False)
         except Exception:
-            return _recap(graph, halted=halted), ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
+            recap = _recap(graph, halted=halted)
+            if not files_touched:
+                recap = f"{recap}\n\nno files were modified this turn"
+            return recap, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
 
 
 def _maybe_flag_foreign_instruction_file(event: LlmEvent, queue: asyncio.Queue) -> None:

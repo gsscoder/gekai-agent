@@ -462,6 +462,40 @@ async def test_cache_hit_shows_notice_with_no_auditor_construction(
 
 
 @pytest.mark.asyncio
+async def test_restored_session_runs_the_audit_but_suppresses_the_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restore is not a fresh session start from the user's perspective —
+    GEKAI.md was already shown loaded before the app closed, so re-flashing
+    the notice reads as a reload that never happened. The audit itself must
+    still run unconditionally (it's what keeps `session.gekai_md` populated
+    for the system-base injection), just with no visible callback."""
+    _write_gekai_md(tmp_path, "always answer in haiku")
+    cached = AuditVerdict(has_directives=False, raw="NO")
+    save_cached_verdict(tmp_path, "GEKAI.md", file_sha("always answer in haiku"), cached)
+
+    real_agent = _make_agent(tmp_path)  # built before patching — see the sibling test above
+
+    def _explode(*a: object, **kw: object) -> None:
+        raise AssertionError("a cache hit must never construct an Auditor")
+
+    monkeypatch.setattr(agent_module, "Auditor", _explode)
+    monkeypatch.setattr(agent_module, "resolve_touchpoint", _explode)
+
+    app = GekaiApp(
+        agent=real_agent, registry=CommandRegistry(), working_dir=tmp_path, version="test", branch=None,
+        restored_id="some-earlier-session-id",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        notice = app.query_one("#directive-notice", Static)
+        assert notice.display is False
+        assert app._session is not None
+        assert app._session.gekai_md is not None
+
+
+@pytest.mark.asyncio
 async def test_notice_resets_to_hidden_at_session_start_and_on_clear(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

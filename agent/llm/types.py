@@ -109,6 +109,7 @@ class CompletionResponse:
     stop_reason: str
     usage: dict[str, int] | None = None
     raw: Any = field(default=None, repr=False)
+    leaked_tool_call: bool = False
 
     def tool_uses(self) -> list[ToolUseBlock]:
         return [b for b in self.content if isinstance(b, ToolUseBlock)]

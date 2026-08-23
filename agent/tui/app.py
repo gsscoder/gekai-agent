@@ -926,7 +926,13 @@ class GekaiApp(App[None]):
             session_id=self._restored_id,
         )
         self._agent.events.emit("session.start", session=self._session.id, resumed=self._restored_id is not None)
-        self._agent.start_directive_audit(self._session, self._apply_directive_verdict)
+        # ponytail: audit still fires unconditionally (it's the source of truth
+        # for whether project instructions are actually in the system base) —
+        # only the visible notice is skipped on restore, since GEKAI.md was
+        # already shown loaded before the app closed and re-flashing it reads
+        # as a reload that never happened.
+        on_verdict = None if self._restored_id is not None else self._apply_directive_verdict
+        self._agent.start_directive_audit(self._session, on_verdict)
 
         history_path = (
             Path.home() / ".gekai" / "workspaces"

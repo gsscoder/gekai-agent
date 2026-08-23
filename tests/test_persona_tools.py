@@ -25,8 +25,14 @@ _LEGACY_TOOL_INSTRUCTION = (
 )
 
 
-def test_full_toolset_reproduces_legacy_instruction_verbatim():
-    assert render_tool_instruction(ALL_TOOLS) == _LEGACY_TOOL_INSTRUCTION
+_EDIT_FRAGMENT = (
+    "to make a change you MUST actually call edit_file/write_file — "
+    "never describe or narrate a change as done without having called the tool"
+)
+
+
+def test_full_toolset_reproduces_legacy_instruction_plus_edit_fragment():
+    assert render_tool_instruction(ALL_TOOLS) == _LEGACY_TOOL_INSTRUCTION + "; " + _EDIT_FRAGMENT
 
 
 def test_read_only_set_omits_shell_guidance():
@@ -54,9 +60,14 @@ def test_read_and_shell_together_include_cross_tool_line():
     assert "prefer read_file/grep/list_files over shell equivalents for reading files" in text
 
 
-def test_edit_and_fs_only_set_yields_no_guidance():
-    # neither read nor shell present — no fragment should fire
-    assert render_tool_instruction(EDIT_TOOLS + FS_TOOLS) == ""
+def test_edit_and_fs_only_set_yields_only_edit_fragment():
+    # neither read nor shell present — only the edit-tools fragment should fire
+    assert render_tool_instruction(EDIT_TOOLS + FS_TOOLS) == _EDIT_FRAGMENT
+
+
+def test_fs_only_set_yields_no_guidance():
+    # FS_TOOLS alone triggers no fragment
+    assert render_tool_instruction(FS_TOOLS) == ""
 
 
 def test_empty_toolset_yields_empty_instruction():
@@ -106,3 +117,12 @@ def test_delegate_present_appends_only_its_own_fragment():
     baseline = render_tool_instruction(READ_TOOLS + SHELL_TOOLS)
     text = render_tool_instruction(READ_TOOLS + SHELL_TOOLS + ("delegate",))
     assert text == baseline + "; " + _DELEGATE_FRAGMENT
+
+
+def test_edit_tools_present_includes_edit_fragment():
+    assert _EDIT_FRAGMENT in render_tool_instruction(EDIT_TOOLS)
+    assert _EDIT_FRAGMENT in render_tool_instruction(("write_file",))
+
+
+def test_edit_tools_absent_omits_edit_fragment():
+    assert _EDIT_FRAGMENT not in render_tool_instruction(READ_TOOLS + SHELL_TOOLS)
