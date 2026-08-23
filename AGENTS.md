@@ -27,6 +27,9 @@ Textual TUI on top of a per-turn pipeline:
 - Permissions (read/write/exec) gate filesystem/shell tools, persisted to `.gekai/settings.local.json`
 - Persistence: `session.jsonl` (visible, resumable chat history) + always-on `events-*.jsonl` telemetry; `--debug` adds `debug.jsonl` (internal-only)
 
+### Session Storage
+Sessions live at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`, one JSON object per line, each with a `ts` and a `kind` (`turn`, `command`, or `event`; entries without `kind` are legacy `turn`). `{session-id}.debug.jsonl` holds internal-only plumbing (system prompts, tool calls) and exists only with `--debug`. Separately, `~/.gekai/logs/events-{YYYYMMDD}-{HHMMSS}-{run_id}.jsonl` holds always-on per-run telemetry, linked back to a session turn via the shared `turn` field. See `memory-bank/detailed-spec/logging.md` and `docs/architecture.md → Session Persistence` for full record shapes
+
 ## Maturity
 - The system is currently under development
 - Backward compatibility is not required when changing existing features
