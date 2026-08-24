@@ -30,11 +30,15 @@ class StepResult:
 
 
 class TaskGraphHalted(Exception):
-    def __init__(self, index: int, step: Task, reason: str, results: list[StepResult] | None = None) -> None:
+    def __init__(
+        self, index: int, step: Task, reason: str, results: list[StepResult] | None = None,
+        last_output: str = "",
+    ) -> None:
         self.index = index
         self.step = step
         self.reason = reason
         self.results = results if results is not None else []
+        self.last_output = last_output
         super().__init__(f"step {index} ({step.agent}) halted: {reason}")
 
 
@@ -115,9 +119,9 @@ async def run_task_graph(
                 # WorkSignal(retry=1) replacing it (plan 28 Phase 2).
                 base = node_signal(step)
                 retry_signal = WorkSignal(direction=base.direction, retry=base.retry + 1)
-                out = await dispatch(step.repair or step.agent, _repair_instruction(step, out), step.mission, retry_signal)
+                out = await dispatch(step.repair or step.agent, _repair_instruction(step, out), step.mission, retry_signal, step.scope)
                 if not await verify_agent(step, out):
-                    raise TaskGraphHalted(index, step, "failed verification twice", results)
+                    raise TaskGraphHalted(index, step, "failed verification twice", results, last_output=out)
 
         prior_outputs.append(out)
         results.append(StepResult(step=step, output=out))

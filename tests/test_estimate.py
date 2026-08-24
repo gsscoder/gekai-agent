@@ -127,3 +127,11 @@ def test_estimate_no_extra_params_defaults_to_empty() -> None:
     run(e.estimate("hi"))
 
     assert "extra_body" not in mock_create.call_args.kwargs
+
+
+def test_estimate_prompt_flags_multi_layer_requests_as_mutate() -> None:
+    """Regression: the estimator under-called a backend+frontend request as SOLO,
+    exhausting the solo harness's 25-iteration budget instead of routing to the
+    sequencer's per-step budgets (session 2d573c47, turn fb02cf81, 2026-08-23)."""
+    from agent.pipeline.estimate import _ESTIMATE_PROMPT
+    assert "more than one layer of the stack" in _ESTIMATE_PROMPT

@@ -188,6 +188,79 @@ class TestGrep:
 
 
 # ---------------------------------------------------------------------------
+# _edit_file — batch `edits` form
+# ---------------------------------------------------------------------------
+
+class TestEditFileBatch:
+    def test_single_hunk_call_unchanged(self, tmp_path):
+        _write(tmp_path / "a.txt", "hello world")
+        result = run(_edit_file("a.txt", "hello", "goodbye", working_dir=tmp_path))
+        assert result == "ok"
+        assert (tmp_path / "a.txt").read_text() == "goodbye world"
+
+    def test_batch_applies_all_hunks_in_order(self, tmp_path):
+        _write(tmp_path / "a.txt", "one two three")
+        edits = [
+            {"old_str": "one", "new_str": "1"},
+            {"old_str": "two", "new_str": "2"},
+            {"old_str": "three", "new_str": "3"},
+        ]
+        result = run(_edit_file("a.txt", edits=edits, working_dir=tmp_path))
+        assert result == "ok"
+        assert (tmp_path / "a.txt").read_text() == "1 2 3"
+
+    def test_batch_hunk_sees_prior_hunks_edits(self, tmp_path):
+        _write(tmp_path / "a.txt", "foo")
+        edits = [
+            {"old_str": "foo", "new_str": "bar"},
+            {"old_str": "bar", "new_str": "baz"},
+        ]
+        result = run(_edit_file("a.txt", edits=edits, working_dir=tmp_path))
+        assert result == "ok"
+        assert (tmp_path / "a.txt").read_text() == "baz"
+
+    def test_batch_fails_atomically_when_hunk_not_found(self, tmp_path):
+        original = "one two three"
+        _write(tmp_path / "a.txt", original)
+        edits = [
+            {"old_str": "one", "new_str": "1"},
+            {"old_str": "missing", "new_str": "x"},
+            {"old_str": "three", "new_str": "3"},
+        ]
+        result = run(_edit_file("a.txt", edits=edits, working_dir=tmp_path))
+        assert result == "error: edits[1].old_str not found in a.txt"
+        assert (tmp_path / "a.txt").read_text() == original
+
+    def test_batch_fails_atomically_when_prior_hunk_consumed_text(self, tmp_path):
+        original = "foo bar"
+        _write(tmp_path / "a.txt", original)
+        edits = [
+            {"old_str": "foo", "new_str": "baz"},
+            {"old_str": "foo", "new_str": "qux"},
+        ]
+        result = run(_edit_file("a.txt", edits=edits, working_dir=tmp_path))
+        assert result == "error: edits[1].old_str not found in a.txt"
+        assert (tmp_path / "a.txt").read_text() == original
+
+    def test_both_old_str_and_edits_rejected(self, tmp_path):
+        original = "hello"
+        _write(tmp_path / "a.txt", original)
+        result = run(_edit_file(
+            "a.txt", "hello", "goodbye", edits=[{"old_str": "hello", "new_str": "x"}],
+            working_dir=tmp_path,
+        ))
+        assert result == "error: pass either old_str/new_str or edits, not both"
+        assert (tmp_path / "a.txt").read_text() == original
+
+    def test_neither_old_str_nor_edits_rejected(self, tmp_path):
+        original = "hello"
+        _write(tmp_path / "a.txt", original)
+        result = run(_edit_file("a.txt", working_dir=tmp_path))
+        assert result == "error: old_str/new_str required when edits is not given"
+        assert (tmp_path / "a.txt").read_text() == original
+
+
+# ---------------------------------------------------------------------------
 # .aiignore red zone (forbidden, even via explicit path)
 # ---------------------------------------------------------------------------
 

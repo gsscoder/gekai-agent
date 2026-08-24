@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.harness import core as harness_core
-from agent.harness.core import Harness, _recency_turns, _build_agent, _RECENCY_N
+from agent.harness.core import Harness, _recency_turns, _build_agent, _RECENCY_N, _recap
 from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.types import Message, TextBlock
@@ -376,3 +376,37 @@ def test_respond_halted_path_carries_completed_step_outputs(
     # the completed step's real output must reach the synthesis prompt, not
     # just the graph's own summary/halt reason
     assert any("code-expert finished the library" in c for c in contents)
+
+
+def test_respond_halted_path_carries_failed_step_own_last_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: the failed repair attempt's own output (its reasoning, a stated
+    # blocker, a partial plan) must reach the synthesis prompt, not just
+    # prior completed steps' outputs and the bare halt reason string.
+    harness = _make_respond_harness()
+    fake_agent = _spy_build_agent_capturing_run(monkeypatch)
+
+    session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
+    graph = TaskGraph(summary="build a library with tests", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
+    halted = TaskGraphHalted(0, graph[0], "failed verification twice", [], last_output="i could not find the target file to edit")
+
+    answer, event = _run(harness._respond(
+        "current request", session, graph, halted.results,
+        halted=halted, permission_callback=None, hidden_grant_callback=None,
+        files_touched=[],
+    ))
+
+    assert answer.startswith("synthesized answer")
+    prior_messages = fake_agent.run.await_args.args[0]
+    contents = [m.content for m in prior_messages]
+    assert any("i could not find the target file to edit" in c for c in contents)
+
+
+def test_recap_halted_path_includes_failed_step_own_last_output() -> None:
+    graph = TaskGraph(summary="build a library with tests", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
+    halted = TaskGraphHalted(0, graph[0], "failed verification twice", [], last_output="i could not find the target file to edit")
+
+    recap = _recap(graph, halted=halted)
+
+    assert "i could not find the target file to edit" in recap

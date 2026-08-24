@@ -581,6 +581,7 @@ class _StepResult:
     answer: str = ""
     max_iter_hit: bool = False
     budget_exhausted: bool = False
+    review_report: str | None = None
     query_tool_count: int = 0
     ui_label: str = ""
     ws_renderer: SubAgentRenderer | None = None
@@ -1815,6 +1816,7 @@ class GekaiApp(App[None]):
             answer=turn_result.answer,
             max_iter_hit=turn_result.max_iter_hit,
             budget_exhausted=turn_result.budget_exhausted,
+            review_report=turn_result.review_report,
             query_tool_count=turn_result.query_tool_count,
             ws_renderer=ws_renderer,
         )
@@ -1842,28 +1844,16 @@ class GekaiApp(App[None]):
                 else:
                     self._compact_failure_count += 1
 
-        try:
-            await self._start_status_animation(verb[0], color)
-
-            step_result = await self._run_step(
-                user_input, forced_seed,
-                turn_id=turn_id, session_id=session_id, conversation=conversation,
-                stage=stage,
-            )
-            ws_renderer = step_result.ws_renderer
-
-            if step_result.outcome == "max_iterations":
-                outcome = "max_iterations"
-
+        async def _render_step_result(result: _StepResult, render_turn_id: str) -> None:
             if self._session is not None:
                 self._refresh_status_bar()
-            if step_result.max_iter_hit and not step_result.answer:
+            if result.max_iter_hit and not result.answer:
                 if self._assistant_widget is not None:
                     await self._assistant_widget.remove()
                     self._assistant_widget = None
                 await conversation.mount(MessageWidget(MessageKind.ERROR, "agent hit iteration limit without producing a response"))
             else:
-                answer = step_result.answer
+                answer = result.answer
                 # If TextChunkEvents already mounted the live-streaming widget
                 # this turn (plan 34 Phase 2, no-graph direct dispatch), finish
                 # it in place with the same persisted answer rather than
@@ -1875,14 +1865,55 @@ class GekaiApp(App[None]):
                 else:
                     self._assistant_widget = MessageWidget(MessageKind.ASSISTANT, answer)
                     await conversation.mount(self._assistant_widget)
-                if step_result.budget_exhausted:
+                if result.budget_exhausted:
                     await conversation.mount(MessageWidget(MessageKind.WARNING, "response may be incomplete — the turn hit its tool-call budget before finishing"))
+                if result.review_report is not None:
+                    review_text = f"review findings:\n{result.review_report}"
+                    await conversation.mount(MessageWidget(MessageKind.WARNING, review_text))
+                    if self._session is not None:
+                        append_event(self._session, review_text, source="review")
                 elapsed = time.monotonic() - start
-                operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({step_result.query_tool_count} {'tool' if step_result.query_tool_count == 1 else 'tools'})" if step_result.query_tool_count > 0 else "")
+                operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({result.query_tool_count} {'tool' if result.query_tool_count == 1 else 'tools'})" if result.query_tool_count > 0 else "")
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, operation_text, color=color))
                 if self._session is not None:
-                    append_operation(self._session, operation_text, color, turn=turn_id)
+                    append_operation(self._session, operation_text, color, turn=render_turn_id)
             conversation.scroll_end(animate=False)
+
+        try:
+            await self._start_status_animation(verb[0], color)
+
+            step_result = await self._run_step(
+                user_input, forced_seed,
+                turn_id=turn_id, session_id=session_id, conversation=conversation,
+                stage=stage,
+            )
+            ws_renderer = step_result.ws_renderer
+            await _render_step_result(step_result, turn_id)
+
+            # Auto-continue exactly once when the turn hit its tool-call
+            # budget but still salvaged an answer: fire a single follow-up
+            # turn seeded with that answer (the model's own "what remains"
+            # summary) instead of leaving the user to retype a "resume your
+            # work" prompt that forces a cold-restart rediscovery of files
+            # the model already knew about. If the continuation ALSO
+            # exhausts its budget, stop here — no third attempt.
+            if step_result.budget_exhausted and step_result.answer:
+                continuation_prompt = (
+                    "the previous attempt hit its tool-call budget before finishing. "
+                    "here is what you reported as done and remaining — continue from there:\n\n"
+                    + step_result.answer
+                )
+                continuation_turn_id = events.new_turn()
+                step_result = await self._run_step(
+                    continuation_prompt, None,
+                    turn_id=continuation_turn_id, session_id=session_id, conversation=conversation,
+                    stage=stage,
+                )
+                ws_renderer = step_result.ws_renderer
+                await _render_step_result(step_result, continuation_turn_id)
+
+            if step_result.outcome == "max_iterations":
+                outcome = "max_iterations"
         except Exception as error:
             error_msg = str(error) or type(error).__name__
             await conversation.mount(MessageWidget(MessageKind.ERROR, error_msg))

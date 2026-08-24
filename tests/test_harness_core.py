@@ -42,7 +42,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, LogEvent, MaxIterationsEvent, TextChunkEvent
+from agent.directive_pump import PUMP_BUDGET
+from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, LogEvent, MaxIterationsEvent, ReviewFindingsEvent, TextChunkEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness, _MAX_ITERATIONS
 from agent.llm.events import AgentStopped, EventBus
@@ -55,6 +56,8 @@ from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
 from agent.session import Session
 from agent.settings import Permissions
+from agent.subagents import NAMESPACE_DIRECTIVES, NAMESPACE_DIRECTIVE_RANK
+from agent.tools.delegate import ERROR_PREFIX
 
 
 def run(coro: Any) -> Any:
@@ -228,6 +231,150 @@ def test_write_file_emits_diff_event(
     assert diff_events[0].path == "hello.py"
 
 
+# --- automatic post-turn "fresh eyes" change review (Harness.stream's
+# `_maybe_review`, dispatched after each of the two passthrough loops) ---
+
+
+def _write_file_then_done_responses(path: str = "hello.py") -> list[CompletionResponse]:
+    return [
+        CompletionResponse(
+            content=[ToolUseBlock(id="wf-1", name="write_file", input={"path": path, "content": "x"})],
+            stop_reason="tool_use",
+        ),
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+
+
+def test_stream_dispatches_change_reviewer_when_files_touched_and_not_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    calls: list[str] = []
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        calls.append(agent)
+        return "CLEAN"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    run(_drain(harness, session, "write hello.py"))
+
+    assert calls == ["change-reviewer"]
+
+
+def test_stream_skips_reviewer_when_no_files_touched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="just an answer, no tools used")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    calls: list[str] = []
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        calls.append(agent)
+        return "FINDINGS\nshould never be dispatched"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "just chat"))
+
+    assert calls == []
+    assert not _only(collected, ReviewFindingsEvent)
+
+
+def test_stream_skips_reviewer_when_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    write_call = CompletionResponse(
+        content=[ToolUseBlock(id="wf-x", name="write_file", input={"path": "hello.py", "content": "x"})],
+        stop_reason="tool_use",
+    )
+    responses = [write_call] * _MAX_ITERATIONS
+    responses.append(CompletionResponse(content=[TextBlock(text="salvaged answer")], stop_reason="end_turn"))
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    calls: list[str] = []
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        calls.append(agent)
+        return "FINDINGS\nshould never be dispatched"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "do something"))
+
+    assert any(isinstance(e, BudgetExhaustedEvent) for e in collected)
+    assert calls == []
+    assert not _only(collected, ReviewFindingsEvent)
+
+
+def test_review_findings_event_strips_the_findings_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        return "FINDINGS\n1. hello.py: off-by-one in the loop bound — fails on an empty input list"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    findings = _only(collected, ReviewFindingsEvent)
+    assert len(findings) == 1
+    assert findings[0].report == "1. hello.py: off-by-one in the loop bound — fails on an empty input list"
+
+
+def test_stream_yields_nothing_on_clean_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        return "CLEAN"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    assert not _only(collected, ReviewFindingsEvent)
+
+
+def test_stream_yields_nothing_on_reviewer_dispatch_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        return f"{ERROR_PREFIX}change-reviewer failed: boom"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    assert not _only(collected, ReviewFindingsEvent)
+
+
 def test_no_graph_path_never_passes_tools_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -257,25 +404,32 @@ def test_no_graph_path_never_passes_tools_override(
     assert calls[0].get("tools_override") is None
 
 
-def test_coding_prompt_emits_directive_pump_event_on_root_dispatch(
+def test_plain_english_prompt_emits_directive_pump_event_on_root_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Plan 28 Phase 3: a Python-file-shaped prompt on the no-graph
-    (trivial, subagent=None) path pumps the coding domain's escaping
-    directives into root and reports it via `DirectivePumpEvent` —
-    `test_directive_pump.py` covers the pump function itself; this proves
-    the harness wiring at the `Harness.stream` call site."""
+    """Revised design: the pump no longer detects domains from prompt-text
+    shape (the backtick-path detection it used to key off was dead code —
+    its trigger, `PromptRewriter`, is never wired up). Root now pumps the
+    top `PUMP_BUDGET` registered namespaces' escaping directives into every
+    non-chat no-graph (trivial, subagent=None) turn, even a plain-English
+    prompt with no backticks — `test_directive_pump.py` covers the pump
+    function itself; this proves the harness wiring at the `Harness.stream`
+    call site."""
     responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
     monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
-    collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
+    collected = run(_drain(harness, session, "sum 10 numbers"))
+
+    expected_domains = sorted(
+        NAMESPACE_DIRECTIVES, key=lambda d: (NAMESPACE_DIRECTIVE_RANK.get(d, 100), d),
+    )[:PUMP_BUDGET]
 
     pump_events = _only(collected, DirectivePumpEvent)
     assert len(pump_events) == 1
-    assert pump_events[0].domains == ["coding"]
+    assert pump_events[0].domains == expected_domains
 
 
 def test_estimator_receives_session_history(

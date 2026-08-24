@@ -270,14 +270,21 @@ async def _grep(
 
 async def _edit_file(
     path: str,
-    old_str: str,
-    new_str: str,
+    old_str: str | None = None,
+    new_str: str | None = None,
+    edits: list[dict[str, str]] | None = None,
     *,
     working_dir: Path,
     allow_hidden: set[str] | None = None,
     grant_cb: HiddenGrantCallback | None = None,
     pending: set[str] | None = None,
 ) -> str:
+    if edits is not None:
+        if old_str is not None or new_str is not None:
+            return "error: pass either old_str/new_str or edits, not both"
+    elif old_str is None or new_str is None:
+        return "error: old_str/new_str required when edits is not given"
+
     result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
     if isinstance(result, str):
         return result
@@ -288,9 +295,25 @@ async def _edit_file(
         return f"error: file not found: {path}"
     except Exception as exc:
         return f"error: {exc or type(exc).__name__}"
-    if old_str not in text:
-        return f"error: old_str not found in {path}"
-    target.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
+
+    if edits is None:
+        assert old_str is not None and new_str is not None  # guaranteed by the guard above
+        if old_str not in text:
+            return f"error: old_str not found in {path}"
+        target.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
+        return "ok"
+
+    working_text = text
+    for i, hunk in enumerate(edits):
+        hunk_old = hunk.get("old_str")
+        hunk_new = hunk.get("new_str")
+        if hunk_old is None or hunk_new is None:
+            return f"error: edits[{i}] missing old_str/new_str"
+        if hunk_old not in working_text:
+            return f"error: edits[{i}].old_str not found in {path}"
+        working_text = working_text.replace(hunk_old, hunk_new, 1)
+
+    target.write_text(working_text, encoding="utf-8")
     return "ok"
 
 
@@ -542,17 +565,30 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         return await _symbols(path, working_dir=working_dir, kind=kind, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
 
     @tool(is_read_only=False, required_permission="write")
-    async def edit_file(path: str, old_str: str, new_str: str) -> str:
+    async def edit_file(
+        path: str,
+        old_str: str | None = None,
+        new_str: str | None = None,
+        edits: list[dict[str, str]] | None = None,
+    ) -> str:
         """Edit a file by replacing the first occurrence of old_str with new_str.
 
         old_str must match the file content exactly (including whitespace and indentation).
         Returns 'ok' on success or an error string on failure.
         To replace a larger block, include enough surrounding context to make old_str unique.
+
+        For several edits to the same file in one call, pass `edits` instead — a list of
+        {"old_str": ..., "new_str": ...} hunks applied in order, each checked against the
+        file text as already modified by the prior hunks in the same call. The write is
+        atomic: either every hunk applies and the file is written once, or none of them
+        are written. Use this to cut round trips when a file needs several edits at once;
+        do not pass old_str/new_str together with edits.
         """
         return await _edit_file(
             path,
             old_str=old_str,
             new_str=new_str,
+            edits=edits,
             working_dir=working_dir,
             allow_hidden=allow_hidden,
             grant_cb=grant_cb,

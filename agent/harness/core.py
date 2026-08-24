@@ -31,11 +31,11 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, ForeignFileDetectedEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, ForeignFileDetectedEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ReviewFindingsEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
-from ..tools.delegate import make_delegate_tool, run_subagent
+from ..tools.delegate import ERROR_PREFIX, make_delegate_tool, run_subagent
 from .tool_scope import scope as tool_scope
 
 if TYPE_CHECKING:
@@ -52,12 +52,12 @@ _ROOT_COLOR = "#4169E1"
 _RECENCY_N = 2
 
 
-def _pumped_system_base(system_base: str, prompt: str) -> tuple[str, list[str]]:
+def _pumped_system_base(system_base: str) -> tuple[str, list[str]]:
     """Dynamic-directive pump (plan 28 Phase 3, decision 12): appends the
-    escaping directives of this prompt's mechanically-detected domains, if
-    any. Never called for a subagent dispatch — pumping is root-only
+    escaping directives, unconditionally, for whichever call site invokes
+    this. Never called for a subagent dispatch — pumping is root-only
     (decision 13, the specialist already carries its own directives)."""
-    text, domains = pump_directives(prompt)
+    text, domains = pump_directives()
     if text:
         system_base = f"{system_base}\n<domain_directives>\n{text}"
     return system_base, domains
@@ -337,17 +337,88 @@ class Harness:
         yield EstimateEvent(decision=estimate_decision, specialists=[], duration_ms=estimate_duration_ms)
 
         if estimate_decision == "mutate":
+            files_touched: list[str] = []
+            final_answer = ""
+            budget_exhausted = False
             async for item in self._stream_graph(
                 session, user_input, permission_callback, hidden_grant_callback, bus,
             ):
+                if isinstance(item, DoneEvent):
+                    files_touched = item.files_touched
+                elif isinstance(item, BudgetExhaustedEvent):
+                    budget_exhausted = True
+                elif isinstance(item, str):
+                    final_answer = item
                 yield item
+            async for review_item in self._maybe_review(
+                session, user_input, permission_callback, hidden_grant_callback, bus,
+                files_touched, final_answer, budget_exhausted,
+            ):
+                yield review_item
             return
 
+        files_touched = []
+        final_answer = ""
+        budget_exhausted = False
         async for item in self._stream_solo(
             session, user_input, permission_callback, subagent, extra_params,
             hidden_grant_callback, bus, chat_rung=(estimate_decision == "chat"),
         ):
+            if isinstance(item, DoneEvent):
+                files_touched = item.files_touched
+            elif isinstance(item, BudgetExhaustedEvent):
+                budget_exhausted = True
+            elif isinstance(item, str):
+                final_answer = item
             yield item
+        async for review_item in self._maybe_review(
+            session, user_input, permission_callback, hidden_grant_callback, bus,
+            files_touched, final_answer, budget_exhausted,
+        ):
+            yield review_item
+
+    async def _maybe_review(
+        self,
+        session: Session,
+        user_input: str,
+        permission_callback: PermissionCallback | None,
+        hidden_grant_callback: HiddenGrantCallback | None,
+        bus: EventBus,
+        files_touched: list[str],
+        final_answer: str,
+        budget_exhausted: bool,
+    ) -> AsyncIterator[ReviewFindingsEvent]:
+        """Automatic fresh-eyes review, dispatched after every turn that
+        actually changed files: the read-only `change-reviewer` subagent
+        checks this turn's own diff for genuine defects, so the user sees a
+        warning instead of only finding out later. Skipped on a no-op turn
+        (nothing touched) or one that hit its tool-call budget (the work is
+        admittedly unfinished — reviewing an incomplete change is not
+        useful; a follow-up turn's own review covers the eventual finished
+        state). Fails open: a crashed dispatch (`ERROR_PREFIX`-prefixed) or a
+        malformed verdict (neither exactly `CLEAN` nor `FINDINGS`-prefixed)
+        never surfaces anything — the reviewer breaking must never block or
+        warn the user about a turn that may be perfectly fine."""
+        if not files_touched or budget_exhausted:
+            return
+        resolved = self._resolve(self._subagent_dispatch_policy.default, "subagent-dispatch")
+        task = (
+            f"review this turn's change.\n\nuser's request:\n{user_input}\n\n"
+            f"files changed: {', '.join(files_touched)}\n\n"
+            f"the agent's own report of what it did:\n{final_answer}"
+        )
+        review = await run_subagent(
+            "change-reviewer", task,
+            mission="review this turn's change",
+            model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
+            extra_params=resolved.extra_params, working_dir=session.working_dir,
+            permissions=session.permissions, permission_callback=permission_callback,
+            bus=bus, hidden_grant_callback=hidden_grant_callback,
+        )
+        if review.startswith("FINDINGS"):
+            yield ReviewFindingsEvent(report=review[len("FINDINGS"):].strip())
+        elif not review.startswith(ERROR_PREFIX) and not review.startswith("CLEAN"):
+            pass  # malformed reviewer output — fail open, never surface as a finding
 
     async def _stream_solo(
         self,
@@ -379,7 +450,9 @@ class Harness:
         """
         pumped_domains: list[str] = []
         if subagent is None:
-            system_base, pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
+            system_base = ROOT_SYSTEM_PROMPT
+            if not chat_rung:
+                system_base, pumped_domains = _pumped_system_base(system_base)
             system_base = _gekai_md_system_base(system_base, session)
         else:
             system_base = subagent.build_system_base()
@@ -693,7 +766,7 @@ class Harness:
         t0 = time.monotonic()
         try:
             resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
-            system_base, _pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT, user_input)
+            system_base, _pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT)
             system_base = _gekai_md_system_base(system_base, session)
             system_base = _enrich_system_base(system_base, session.working_dir)
             agent = _build_agent(
@@ -719,10 +792,15 @@ class Harness:
                     f"{files_touched_line}\n\n"
                     f"<step_outputs>\n{outputs_block}\n</step_outputs>\n\n"
                     f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
-                    "prior steps' work is kept; nothing was rolled back.\n\n"
+                    + (
+                        f"the halted step's own last output, before it was judged as not done, was:\n"
+                        f"{halted.last_output}\n\n"
+                        if halted.last_output else ""
+                    )
+                    + "prior steps' work is kept; nothing was rolled back.\n\n"
                     "write the reply the user will see: report what was completed and name the step "
-                    "that halted and why, using only the information above; be terse, no preamble, "
-                    "no markdown headers"
+                    "that halted and why (drawing on its own last output above, when present), using "
+                    "only the information above; be terse, no preamble, no markdown headers"
                 )
             prior = _recency_turns(session.messages, _RECENCY_N)
             prior.append(Message(role="user", content=synthesis_prompt))
@@ -785,9 +863,11 @@ def _recap(graph: TaskGraph, *, halted: TaskGraphHalted | None) -> str:
     rendered checkpoint artifact (decision 15)."""
     if halted is None:
         return graph.summary
+    last_output_line = f"its last output was:\n{halted.last_output}\n" if halted.last_output else ""
     return (
         f"{graph.summary}\n"
         f"step {halted.index + 1} ({halted.step.agent}) HALTED: {halted.reason}\n"
+        f"{last_output_line}"
         "prior steps' work is kept; nothing was rolled back."
     )
 

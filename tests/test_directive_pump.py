@@ -1,68 +1,60 @@
-"""Coverage for `agent/directive_pump.py` (plan 28 Phase 3): mechanical
-domain detection + the budgeted pump of shallow `namespace_directives` into
-main's system prompt. Deep, mission-presupposing `Subagent.directives`
-(e.g. code-refactorer's "changing a signature... is out of scope") must
-never appear here — only the two isolated test-double calls in
+"""Coverage for `agent/directive_pump.py` (plan 28 Phase 3): the budgeted,
+unconditional pump of shallow `namespace_directives` into main's system
+prompt. Deep, mission-presupposing `Subagent.directives` (e.g.
+code-refactorer's "changing a signature... is out of scope") must never
+appear here — only the two isolated test-double calls in
 test_harness_core.py/test_harness_stream_plan.py prove the harness wiring;
 this file proves the pump function itself.
 """
 
 from __future__ import annotations
 
-import pytest
-
-from agent.directive_pump import PUMP_BUDGET, detect_domains, pump
-from agent.subagents import NAMESPACE_DIRECTIVES
+import agent.directive_pump as directive_pump
+from agent.directive_pump import pump
 
 
-@pytest.mark.parametrize(
-    "text,expected",
-    [
-        ("update `src/app/foo.py` to fix the bug", {"coding"}),
-        ("update `tests/test_foo.py`", {"coding", "testing"}),
-        # No located files (bare prose ask) — keyword lexicon only.
-        ("write a pytest for the parser", {"testing"}),
-        ("what's the weather like today", set()),
-    ],
-)
-def test_detect_domains(text, expected) -> None:
-    assert detect_domains(text) == expected
-
-
-def test_pump_returns_empty_for_no_detected_domain() -> None:
-    text, domains = pump("what's the weather like today")
+def test_pump_returns_empty_when_no_namespaces_registered(monkeypatch) -> None:
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVES", {})
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVE_RANK", {})
+    text, domains = pump()
     assert text == ""
     assert domains == []
 
 
-def test_pump_python_turn_yields_coding_craft_only() -> None:
-    text, domains = pump("fix the bug in `src/app/foo.py`")
-    assert domains == ["coding"]
-    assert text == NAMESPACE_DIRECTIVES["coding"]
-    # a mission-deep directive (e.g. code-refactorer's) must never leak in
-    assert "changing a signature" not in text
+def test_pump_truncates_to_budget_by_rank(monkeypatch) -> None:
+    """More namespaces are registered than PUMP_BUDGET allows; only the
+    lowest-rank ones survive."""
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVES", {
+        "a": "A directive", "b": "B directive", "c": "C directive",
+    })
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVE_RANK", {"a": 1, "b": 2, "c": 3})
+    monkeypatch.setattr(directive_pump, "PUMP_BUDGET", 2)
+    text, domains = pump()
+    assert domains == ["a", "b"]
+    assert text == "A directive\nB directive"
 
 
-def test_pump_multi_domain_turn_respects_budget() -> None:
-    text, domains = pump("add `tests/test_foo.py` covering `src/app/foo.py`")
-    assert len(domains) <= PUMP_BUDGET
-    assert set(domains) <= {"coding", "testing"}
-    for domain in domains:
-        assert NAMESPACE_DIRECTIVES[domain] in text
+def test_pump_tie_breaks_equal_rank_by_name(monkeypatch) -> None:
+    """Namespaces with no explicit rank all default to the same rank
+    (100); the tie is then broken alphabetically by name."""
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVES", {
+        "zeta": "Z directive", "alpha": "A directive", "beta": "B directive",
+    })
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVE_RANK", {})
+    monkeypatch.setattr(directive_pump, "PUMP_BUDGET", 2)
+    text, domains = pump()
+    assert domains == ["alpha", "beta"]
+    assert text == "A directive\nB directive"
 
 
-def test_pump_budget_cutoff_keeps_lowest_rank_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """coding (rank 1) outranks testing (rank 2); budget=1 must drop testing."""
-    import agent.directive_pump as directive_pump
-
-    monkeypatch.setattr(directive_pump, "PUMP_BUDGET", 1)
-    text, domains = directive_pump.pump("add `tests/test_foo.py` covering `src/app/foo.py`")
-    assert domains == ["coding"]
-    assert text == NAMESPACE_DIRECTIVES["coding"]
-
-
-def test_pump_never_includes_subagent_specific_directives() -> None:
-    """namespace_directives (escaping) is craft-only; Subagent.directives
-    (confined, per-role) is a disjoint field the pump never reads."""
-    text, _ = pump("refactor `src/app/foo.py` and add `tests/test_foo.py`")
-    assert "out of scope" not in text
+def test_pump_explicit_rank_outranks_alphabetical_default(monkeypatch) -> None:
+    """An explicitly low-ranked namespace is chosen over ones sorting
+    earlier alphabetically but left at the default rank."""
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVES", {
+        "alpha": "A directive", "beta": "B directive", "zeta": "Z directive",
+    })
+    monkeypatch.setattr(directive_pump, "NAMESPACE_DIRECTIVE_RANK", {"zeta": 0})
+    monkeypatch.setattr(directive_pump, "PUMP_BUDGET", 2)
+    text, domains = pump()
+    assert domains == ["zeta", "alpha"]
+    assert text == "Z directive\nA directive"

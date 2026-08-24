@@ -340,3 +340,26 @@ def test_ws_explorer_registered_as_auto_assignable_discovery_stage():
 def test_only_ws_explorer_is_a_discovery_stage():
     discovery_agents = {s.name for s in subagents_module.SUBAGENTS if s.discovery_stage}
     assert discovery_agents == {"ws-explorer"}
+
+
+# ---------------------------------------------------------------------------
+# change-reviewer — read-only "fresh eyes" reviewer; auto_assignable stays
+# False so it is never assigned by phase-1 decomposition, which is what lets
+# it also be legally named in the task graph's post-planning-only `verify`
+# slot (see `agent/pipeline/plan.py`'s `_check_post_planning_field`)
+# ---------------------------------------------------------------------------
+
+def test_change_reviewer_registered_in_generic_namespace():
+    change_reviewer = next(p for p in subagents_module.SUBAGENTS if p.name == "change-reviewer")
+    assert change_reviewer.namespace == "generic"
+    assert change_reviewer.user_invocable is False
+    assert change_reviewer.auto_assignable is False
+    assert "run_command" in change_reviewer.tools
+    for tool in ("read_file", "list_files", "grep", "file_info", "symbols"):
+        assert tool in change_reviewer.tools
+
+
+def test_validate_registry_passes_with_change_reviewer_registered():
+    # change-reviewer is part of the real, discovered registry (not injected
+    # via monkeypatch) — this asserts the actual startup state is valid
+    validate_registry()

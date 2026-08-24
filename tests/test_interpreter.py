@@ -81,6 +81,28 @@ def test_step_failing_verify_twice_halts_and_later_steps_do_not_run() -> None:
         run(run_task_graph(graph, dispatch, verify_agent=always_fail))
     assert exc_info.value.index == 0
     assert ran == ["code-expert", "code-expert"]  # original attempt + one repair, no test-expert
+    assert exc_info.value.last_output == "code-expert output"  # the failed repair attempt's own output
+
+
+def test_repair_dispatch_receives_step_scope() -> None:
+    graph = TaskGraph(
+        summary="s",
+        steps=[
+            Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker", scope="edit"),
+        ],
+    )
+    scopes: list[str | None] = []
+
+    async def dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(), scope: str | None = None) -> str:
+        scopes.append(scope)
+        return f"{agent} output"
+
+    async def always_fail(step: Task, out: str) -> bool:
+        return False
+
+    with pytest.raises(TaskGraphHalted):
+        run(run_task_graph(graph, dispatch, verify_agent=always_fail))
+    assert scopes == ["edit", "edit"]  # initial dispatch and repair dispatch both carry the step's scope
 
 
 def test_empty_dispatch_output_halts() -> None:

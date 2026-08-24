@@ -28,6 +28,7 @@ from ..events import (
     LogEvent,
     MaxIterationsEvent,
     ResponderEvent,
+    ReviewFindingsEvent,
     ScaleEvent,
     TaskGraphStartedEvent,
     ToolScopeEvent,
@@ -54,6 +55,7 @@ class TurnResult:
     completion_tokens: int = 0
     thinking_chars: int = 0
     files_touched: list[str] = field(default_factory=list)
+    review_report: str | None = None
 
 
 async def run_step(
@@ -139,6 +141,11 @@ async def run_step(
             events.emit(
                 "directive_pump", session=session_id, turn=turn_id,
                 domains=item.domains,
+            )
+        elif isinstance(item, ReviewFindingsEvent):
+            result.review_report = item.report
+            events.emit(
+                "review", session=session_id, turn=turn_id, has_findings=True,
             )
         elif isinstance(item, ForeignFileDetectedEvent):
             # Not telemetry-only: this is the trigger itself (plan 35 Phase

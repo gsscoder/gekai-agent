@@ -7,5 +7,8 @@ namespace_directives = (
     "every test traces to evidence — spec, signature, comment, or observable behavior; "
     "never invent a requirement\n"
     "assertions are specific and falsifiable — assert exact values, not mere truthiness\n"
-    "never silently assume — document assumptions and flag gaps for the human"
+    "never silently assume — document assumptions and flag gaps for the human\n"
+    "when the repository already has a test runner set up, a logic change ships with a test that "
+    "would fail without the fix; never introduce a new test framework or runner where none exists — "
+    "report the gap instead"
 )

@@ -17,6 +17,7 @@ file, `_stream` itself is NOT stubbed, since it's the code under test here.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,7 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.harness import turn as harness_turn
 from agent.harness.turn import TurnResult
+from agent.persistence import session_file
 from agent.settings import Permissions
 from agent.tui.app import GekaiApp
 from agent.tui.widgets import MessageKind, MessageWidget
@@ -76,6 +78,12 @@ def _messages(conversation: ScrollableContainer) -> list[MessageWidget]:
 async def test_stream_mounts_warning_when_budget_exhausted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The fake unconditionally returns `budget_exhausted=True` with a
+    # non-empty answer, so the one-shot auto-continue (`_stream` in
+    # `agent/tui/app.py`) fires a second `_run_step` call and renders a
+    # second assistant+warning pair for it — see
+    # `test_stream_auto_continues_once_when_continuation_still_exhausted`
+    # below for the call-count cap itself.
     async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
         return TurnResult(outcome="ok", answer="salvaged partial answer", budget_exhausted=True)
 
@@ -92,12 +100,12 @@ async def test_stream_mounts_warning_when_budget_exhausted(
         messages = _messages(conversation)
 
         assistant_msgs = [w for w in messages if w.has_class("assistant")]
-        assert len(assistant_msgs) == 1
-        assert assistant_msgs[0].text == "salvaged partial answer"
+        assert len(assistant_msgs) == 2
+        assert all(w.text == "salvaged partial answer" for w in assistant_msgs)
 
         warning_msgs = [w for w in messages if w.has_class("warning")]
-        assert len(warning_msgs) == 1
-        assert "budget" in warning_msgs[0].text
+        assert len(warning_msgs) == 2
+        assert all("budget" in w.text for w in warning_msgs)
 
 
 async def test_stream_does_not_mount_warning_when_budget_not_exhausted(
@@ -105,6 +113,129 @@ async def test_stream_does_not_mount_warning_when_budget_not_exhausted(
 ) -> None:
     async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
         return TurnResult(outcome="ok", answer="a complete answer", budget_exhausted=False)
+
+    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
+
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._stream("do the thing")
+        await pilot.pause()
+
+        conversation = app.query_one("#conversation", ScrollableContainer)
+        messages = _messages(conversation)
+
+        warning_msgs = [w for w in messages if w.has_class("warning")]
+        assert warning_msgs == []
+
+
+async def test_stream_auto_continues_once_when_budget_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
+        calls.append(raw)
+        if len(calls) == 1:
+            return TurnResult(outcome="ok", answer="did X, remaining: Y", budget_exhausted=True)
+        return TurnResult(outcome="ok", answer="finished Y", budget_exhausted=False)
+
+    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
+
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._stream("do the thing")
+        await pilot.pause()
+
+        assert len(calls) == 2
+        assert "did X, remaining: Y" in calls[1]
+
+        conversation = app.query_one("#conversation", ScrollableContainer)
+        messages = _messages(conversation)
+
+        assistant_msgs = [w for w in messages if w.has_class("assistant")]
+        assert len(assistant_msgs) == 2
+        assert assistant_msgs[0].text == "did X, remaining: Y"
+        assert assistant_msgs[1].text == "finished Y"
+
+        warning_msgs = [w for w in messages if w.has_class("warning")]
+        assert len(warning_msgs) == 1
+
+
+async def test_stream_auto_continues_once_when_continuation_still_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
+        calls.append(raw)
+        return TurnResult(outcome="ok", answer="still going", budget_exhausted=True)
+
+    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
+
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._stream("do the thing")
+        await pilot.pause()
+
+        assert len(calls) == 2
+
+
+async def test_stream_mounts_warning_when_review_report_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
+        return TurnResult(outcome="ok", answer="a complete answer", review_report="off-by-one in x.py")
+
+    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
+
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._stream("do the thing")
+        await pilot.pause()
+
+        conversation = app.query_one("#conversation", ScrollableContainer)
+        messages = _messages(conversation)
+
+        warning_msgs = [w for w in messages if w.has_class("warning")]
+        assert len(warning_msgs) == 1
+        assert "review findings" in warning_msgs[0].text
+        assert "off-by-one in x.py" in warning_msgs[0].text
+
+
+async def test_stream_persists_review_findings_as_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
+        return TurnResult(outcome="ok", answer="a complete answer", review_report="some finding text")
+
+    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
+
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await app._stream("do the thing")
+        await pilot.pause()
+
+        entries = [json.loads(line) for line in session_file(app._session).read_text().splitlines()]
+        review_events = [e for e in entries if e.get("kind") == "event" and e.get("source") == "review"]
+        assert len(review_events) == 1
+        assert "some finding text" in review_events[0]["content"]
+
+
+async def test_stream_does_not_mount_warning_when_review_report_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
+        return TurnResult(outcome="ok", answer="a complete answer", review_report=None)
 
     monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
 
