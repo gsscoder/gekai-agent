@@ -46,11 +46,11 @@ from agent.directive_pump import PUMP_BUDGET
 from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, LogEvent, MaxIterationsEvent, ReviewFindingsEvent, TextChunkEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness, _MAX_ITERATIONS
-from agent.llm.events import AgentStopped, EventBus
+from agent.llm.events import AgentStopped, EventBus, ToolExecutionCompleted
 from agent.llm.resolve import ResolvedTier
 from agent.llm.tiers import TierName, TierPolicy
 from agent.llm.tools import Tool
-from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, TextDelta, ToolUseBlock
+from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, TextDelta, ToolResultBlock, ToolUseBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
@@ -373,6 +373,115 @@ def test_stream_yields_nothing_on_reviewer_dispatch_error(
     collected = run(_drain(harness, session, "write hello.py"))
 
     assert not _only(collected, ReviewFindingsEvent)
+
+
+def test_findings_verdict_dispatches_code_fixer_repair_with_the_finding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    calls: list[str] = []
+    tasks: list[str] = []
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        calls.append(agent)
+        tasks.append(task)
+        if agent == "change-reviewer":
+            return "FINDINGS\nhello.py: off-by-one in the loop bound"
+        return "fixed it"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    run(_drain(harness, session, "write hello.py"))
+
+    assert calls == ["change-reviewer", "code-fixer", "change-reviewer"]
+    assert "off-by-one in the loop bound" in tasks[1]
+
+
+def test_successful_repair_suppresses_the_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    calls: list[str] = []
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        calls.append(agent)
+        if agent == "code-fixer":
+            return "fixed it"
+        return "FINDINGS\nhello.py: off-by-one" if calls.count("change-reviewer") == 1 else "CLEAN"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    assert calls == ["change-reviewer", "code-fixer", "change-reviewer"]
+    assert not _only(collected, ReviewFindingsEvent)
+
+
+def test_failed_repair_surfaces_the_second_reviews_own_finding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    review_calls = 0
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        nonlocal review_calls
+        if agent == "code-fixer":
+            return "attempted a fix"
+        review_calls += 1
+        if review_calls == 1:
+            return "FINDINGS\nhello.py: off-by-one"
+        return "FINDINGS\nhello.py: still broken after the attempted fix"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    findings = _only(collected, ReviewFindingsEvent)
+    assert len(findings) == 1
+    assert findings[0].report == "hello.py: still broken after the attempted fix"
+
+
+def test_repair_dispatch_tool_activity_is_bridged_into_the_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _ScriptedAdapter.responses = _write_file_then_done_responses()
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    review_calls = 0
+
+    async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
+        nonlocal review_calls
+        if agent == "code-fixer":
+            kwargs["bus"].emit(ToolExecutionCompleted(
+                turn=1,
+                call=ToolUseBlock(id="fix-1", name="edit_file", input={"path": "repair.py", "old_str": "x", "new_str": "y"}),
+                result=ToolResultBlock(tool_use_id="fix-1", content="ok"),
+                duration_s=0.01,
+            ))
+            return "fixed it"
+        review_calls += 1
+        return "FINDINGS\nhello.py: bug" if review_calls == 1 else "CLEAN"
+
+    monkeypatch.setattr(harness_core, "run_subagent", fake_run_subagent)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "write hello.py"))
+
+    repair_diffs = [e for e in _only(collected, DiffEvent) if e.path == "repair.py"]
+    assert len(repair_diffs) == 1
 
 
 def test_no_graph_path_never_passes_tools_override(

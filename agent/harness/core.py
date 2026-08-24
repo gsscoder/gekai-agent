@@ -35,7 +35,7 @@ from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartE
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
-from ..tools.delegate import ERROR_PREFIX, make_delegate_tool, run_subagent
+from ..tools.delegate import make_delegate_tool, run_subagent
 from .tool_scope import scope as tool_scope
 
 if TYPE_CHECKING:
@@ -387,38 +387,84 @@ class Harness:
         files_touched: list[str],
         final_answer: str,
         budget_exhausted: bool,
-    ) -> AsyncIterator[ReviewFindingsEvent]:
+    ) -> AsyncIterator[AgentEvent]:
         """Automatic fresh-eyes review, dispatched after every turn that
         actually changed files: the read-only `change-reviewer` subagent
-        checks this turn's own diff for genuine defects, so the user sees a
-        warning instead of only finding out later. Skipped on a no-op turn
-        (nothing touched) or one that hit its tool-call budget (the work is
-        admittedly unfinished — reviewing an incomplete change is not
-        useful; a follow-up turn's own review covers the eventual finished
-        state). Fails open: a crashed dispatch (`ERROR_PREFIX`-prefixed) or a
+        checks this turn's own diff for genuine defects. A `FINDINGS`
+        verdict gets one bounded repair attempt — `code-fixer` receives the
+        finding and a chance to correct it — before anything reaches the
+        user, then the change is reviewed again; the user only sees a
+        warning if that second review still finds a problem (mirrors
+        `interpreter.py`'s own execute->verify->repair->re-verify shape, one
+        level up: whole-turn instead of single-step). Skipped on a no-op
+        turn (nothing touched) or one that hit its tool-call budget (the
+        work is admittedly unfinished — reviewing an incomplete change is
+        not useful; a follow-up turn's own review covers the eventual
+        finished state). Fails open throughout: a crashed dispatch or a
         malformed verdict (neither exactly `CLEAN` nor `FINDINGS`-prefixed)
-        never surfaces anything — the reviewer breaking must never block or
-        warn the user about a turn that may be perfectly fine."""
+        never surfaces anything and never blocks the repair/re-review from
+        proceeding."""
         if not files_touched or budget_exhausted:
             return
         resolved = self._resolve(self._subagent_dispatch_policy.default, "subagent-dispatch")
-        task = (
-            f"review this turn's change.\n\nuser's request:\n{user_input}\n\n"
-            f"files changed: {', '.join(files_touched)}\n\n"
-            f"the agent's own report of what it did:\n{final_answer}"
-        )
+
+        def _review_task(note: str = "") -> str:
+            return (
+                f"review this turn's change.\n\nuser's request:\n{user_input}\n\n"
+                f"files changed: {', '.join(files_touched)}\n\n"
+                f"the agent's own report of what it did:\n{final_answer}{note}"
+            )
+
         review = await run_subagent(
-            "change-reviewer", task,
+            "change-reviewer", _review_task(),
             mission="review this turn's change",
             model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
             extra_params=resolved.extra_params, working_dir=session.working_dir,
             permissions=session.permissions, permission_callback=permission_callback,
             bus=bus, hidden_grant_callback=hidden_grant_callback,
         )
-        if review.startswith("FINDINGS"):
-            yield ReviewFindingsEvent(report=review[len("FINDINGS"):].strip())
-        elif not review.startswith(ERROR_PREFIX) and not review.startswith("CLEAN"):
-            pass  # malformed reviewer output — fail open, never surface as a finding
+        if not review.startswith("FINDINGS"):
+            return  # CLEAN, a crashed dispatch, or a malformed verdict — fail open either way
+        findings = review[len("FINDINGS"):].strip()
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _on_event(event: LlmEvent) -> None:
+            _bridge_llm_event(event, queue, session, files_touched, self._debug, run_id=None)
+
+        unsubscribe = bus.subscribe(_on_event)
+        try:
+            await run_subagent(
+                "code-fixer",
+                f"a review of this turn's own change found a real defect — fix it.\n\n"
+                f"user's original request:\n{user_input}\n\n"
+                f"files changed this turn: {', '.join(files_touched)}\n\n"
+                f"review finding:\n{findings}",
+                mission="fix a defect a post-turn review found",
+                model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
+                extra_params=resolved.extra_params, working_dir=session.working_dir,
+                permissions=session.permissions, permission_callback=permission_callback,
+                bus=bus, hidden_grant_callback=hidden_grant_callback,
+            )
+        finally:
+            unsubscribe()
+        while not queue.empty():
+            yield queue.get_nowait()
+
+        re_review = await run_subagent(
+            "change-reviewer",
+            _review_task(
+                "\n\na fix was attempted for an earlier finding — check whether it actually "
+                "resolved it and whether it introduced anything new"
+            ),
+            mission="review this turn's change",
+            model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
+            extra_params=resolved.extra_params, working_dir=session.working_dir,
+            permissions=session.permissions, permission_callback=permission_callback,
+            bus=bus, hidden_grant_callback=hidden_grant_callback,
+        )
+        if re_review.startswith("FINDINGS"):
+            yield ReviewFindingsEvent(report=re_review[len("FINDINGS"):].strip())
 
     async def _stream_solo(
         self,

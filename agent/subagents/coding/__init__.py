@@ -13,5 +13,8 @@ namespace_directives = (
     "just from its surface format — a value can have the right shape and still be missing what a "
     "later step depends on\n"
     "when a change adds two or more pieces that call into each other, re-read them together once "
-    "written — the boundary between them is where a change most often breaks quietly"
+    "written — the boundary between them is where a change most often breaks quietly\n"
+    "before adding a check on a flag or config value other files already read, open those files "
+    "instead of trusting a one-line search match — match what their checks actually do, not just "
+    "the line that names the value"
 )
