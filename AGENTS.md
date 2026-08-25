@@ -35,9 +35,7 @@ Sessions live at `~/.gekai/workspaces/{normalized-repo-path}/{session-id}.jsonl`
 - Backward compatibility is not required when changing existing features
 
 ## Memory
-The development documents are organized in the `memory-bank` dir:
-- `detailed-spec`: primarily focuses on specific feature implementation details
-- `gen-directives`: language-specific code generation directives (see Operational Rules)
+The development documents are in the `memory-bank` dir — they primarily focus on specific feature implementation details
 
 ## Output
 - Code: match the architectural and stylistic conventions of the existing codebase
@@ -45,9 +43,16 @@ The development documents are organized in the `memory-bank` dir:
 - Quality: production-grade — every line will be reviewed
 - Markdown: compact, no linting compliance, formatting identical to this file
 
+### Python Code Standards
+- Generate code for Python 3.12+, using the newest 3.x syntax/features you have reliable knowledge of, favoring clarity and expressive constructs over legacy patterns
+- Prefer explicit named parameters; avoid `**kwargs` except for true pass-through scenarios (e.g., decorators/adapters). If used, document all consumed keys
+- Never use mutable defaults (`list`, `dict`, `set`); use `None` and initialize inside the function
+- Avoid mutating input arguments unless explicitly documented or clearly indicated by the function name; otherwise return a new object
+- Signal errors with specific exceptions; do not use sentinel return values (`None`, `False`, `-1`) unless explicitly required and properly typed
+- Require full type annotations on all functions; only use `Optional[T]` when `None` has explicit semantic meaning, not as a generic default
+
 ## Operational Rules:
-- MUST read the matching language-specific file in `gen-directives` before writing code, if one exists for that language
-- Read files in `detailed-spec` only when required by the current task; scan filenames first and read file contents only if they are relevant to the task
+- Read files in `memory-bank` only when required by the current task; scan filenames first and read file contents only if they are relevant to the task
 - Review/audit/report requests end at the report; fixing findings needs its own separate request — authorization never carries across turns
 - NEVER update `AGENTS.md` without an explicit request
 - NEVER modify `*.md` files in `memory-bank` (at any depth in the dir tree) without an explicit request
