@@ -32,7 +32,7 @@ from ..session import Session
 from ..settings import Permissions
 from ..text_format import clean_output
 from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, ForeignFileDetectedEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ReviewFindingsEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
+from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, ForeignFileDetectedEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
@@ -339,131 +339,17 @@ class Harness:
         yield EstimateEvent(decision=estimate_decision, specialists=[], duration_ms=estimate_duration_ms)
 
         if estimate_decision == "mutate":
-            files_touched: list[str] = []
-            final_answer = ""
-            budget_exhausted = False
             async for item in self._stream_graph(
                 session, user_input, permission_callback, hidden_grant_callback, bus,
             ):
-                if isinstance(item, DoneEvent):
-                    files_touched = item.files_touched
-                elif isinstance(item, BudgetExhaustedEvent):
-                    budget_exhausted = True
-                elif isinstance(item, str):
-                    final_answer = item
                 yield item
-            async for review_item in self._maybe_review(
-                session, user_input, permission_callback, hidden_grant_callback, bus,
-                files_touched, final_answer, budget_exhausted,
-            ):
-                yield review_item
             return
 
-        files_touched = []
-        final_answer = ""
-        budget_exhausted = False
         async for item in self._stream_solo(
             session, user_input, permission_callback, subagent, extra_params,
             hidden_grant_callback, bus, chat_rung=(estimate_decision == "chat"),
         ):
-            if isinstance(item, DoneEvent):
-                files_touched = item.files_touched
-            elif isinstance(item, BudgetExhaustedEvent):
-                budget_exhausted = True
-            elif isinstance(item, str):
-                final_answer = item
             yield item
-        async for review_item in self._maybe_review(
-            session, user_input, permission_callback, hidden_grant_callback, bus,
-            files_touched, final_answer, budget_exhausted,
-        ):
-            yield review_item
-
-    async def _maybe_review(
-        self,
-        session: Session,
-        user_input: str,
-        permission_callback: PermissionCallback | None,
-        hidden_grant_callback: HiddenGrantCallback | None,
-        bus: EventBus,
-        files_touched: list[str],
-        final_answer: str,
-        budget_exhausted: bool,
-    ) -> AsyncIterator[AgentEvent]:
-        """Automatic fresh-eyes review, dispatched after every turn that
-        actually changed files: the read-only `change-reviewer` subagent
-        checks this turn's own diff for genuine defects. A `FINDINGS`
-        verdict gets one bounded repair attempt — `code-fixer` receives the
-        finding and a chance to correct it — before anything reaches the
-        user, then the change is reviewed again; the user only sees a
-        warning if that second review still finds a problem (mirrors
-        `interpreter.py`'s own execute->verify->repair->re-verify shape, one
-        level up: whole-turn instead of single-step). Skipped on a no-op
-        turn (nothing touched) or one that hit its tool-call budget (the
-        work is admittedly unfinished — reviewing an incomplete change is
-        not useful; a follow-up turn's own review covers the eventual
-        finished state). Fails open throughout: a crashed dispatch or a
-        malformed verdict (neither exactly `CLEAN` nor `FINDINGS`-prefixed)
-        never surfaces anything and never blocks the repair/re-review from
-        proceeding."""
-        if not files_touched or budget_exhausted:
-            return
-        resolved = self._resolve(self._subagent_dispatch_policy.default, "subagent-dispatch")
-        ctx = DispatchContext(
-            model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
-            extra_params=resolved.extra_params, working_dir=session.working_dir,
-            permissions=session.permissions, permission_callback=permission_callback,
-            bus=bus, hidden_grant_callback=hidden_grant_callback,
-        )
-
-        def _review_task(note: str = "") -> str:
-            return (
-                f"review this turn's change.\n\nuser's request:\n{user_input}\n\n"
-                f"files changed: {', '.join(files_touched)}\n\n"
-                f"the agent's own report of what it did:\n{final_answer}{note}"
-            )
-
-        review = await run_subagent(
-            "change-reviewer", _review_task(),
-            mission="review this turn's change",
-            ctx=ctx,
-        )
-        if not review.startswith("FINDINGS"):
-            return  # CLEAN, a crashed dispatch, or a malformed verdict — fail open either way
-        findings = review[len("FINDINGS"):].strip()
-
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def _on_event(event: LlmEvent) -> None:
-            _bridge_llm_event(event, queue, session, files_touched, self._debug, run_id=None)
-
-        unsubscribe = bus.subscribe(_on_event)
-        try:
-            await run_subagent(
-                "code-fixer",
-                f"a review of this turn's own change found a real defect — fix it.\n\n"
-                f"user's original request:\n{user_input}\n\n"
-                f"files changed this turn: {', '.join(files_touched)}\n\n"
-                f"review finding:\n{findings}",
-                mission="fix a defect a post-turn review found",
-                ctx=ctx,
-            )
-        finally:
-            unsubscribe()
-        while not queue.empty():
-            yield queue.get_nowait()
-
-        re_review = await run_subagent(
-            "change-reviewer",
-            _review_task(
-                "\n\na fix was attempted for an earlier finding — check whether it actually "
-                "resolved it and whether it introduced anything new"
-            ),
-            mission="review this turn's change",
-            ctx=ctx,
-        )
-        if re_review.startswith("FINDINGS"):
-            yield ReviewFindingsEvent(report=re_review[len("FINDINGS"):].strip())
 
     async def _stream_solo(
         self,

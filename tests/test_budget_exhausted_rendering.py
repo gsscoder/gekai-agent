@@ -17,7 +17,6 @@ file, `_stream` itself is NOT stubbed, since it's the code under test here.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,7 +27,6 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.harness import turn as harness_turn
 from agent.harness.turn import TurnResult
-from agent.persistence import session_file
 from agent.settings import Permissions
 from agent.tui.app import GekaiApp
 from agent.tui.widgets import MessageKind, MessageWidget
@@ -184,70 +182,3 @@ async def test_stream_auto_continues_once_when_continuation_still_exhausted(
         await pilot.pause()
 
         assert len(calls) == 2
-
-
-async def test_stream_mounts_warning_when_review_report_present(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
-        return TurnResult(outcome="ok", answer="a complete answer", review_report="off-by-one in x.py")
-
-    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
-
-    app = _make_app(tmp_path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        await app._stream("do the thing")
-        await pilot.pause()
-
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        messages = _messages(conversation)
-
-        warning_msgs = [w for w in messages if w.has_class("warning")]
-        assert len(warning_msgs) == 1
-        assert "review findings" in warning_msgs[0].text
-        assert "off-by-one in x.py" in warning_msgs[0].text
-
-
-async def test_stream_persists_review_findings_as_event(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
-        return TurnResult(outcome="ok", answer="a complete answer", review_report="some finding text")
-
-    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
-
-    app = _make_app(tmp_path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        await app._stream("do the thing")
-        await pilot.pause()
-
-        entries = [json.loads(line) for line in session_file(app._session).read_text().splitlines()]
-        review_events = [e for e in entries if e.get("kind") == "event" and e.get("source") == "review"]
-        assert len(review_events) == 1
-        assert "some finding text" in review_events[0]["content"]
-
-
-async def test_stream_does_not_mount_warning_when_review_report_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_run_step(agent, session, raw, seed, *, on_event=None, **kwargs):
-        return TurnResult(outcome="ok", answer="a complete answer", review_report=None)
-
-    monkeypatch.setattr(harness_turn, "run_step", _fake_run_step)
-
-    app = _make_app(tmp_path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        await app._stream("do the thing")
-        await pilot.pause()
-
-        conversation = app.query_one("#conversation", ScrollableContainer)
-        messages = _messages(conversation)
-
-        warning_msgs = [w for w in messages if w.has_class("warning")]
-        assert warning_msgs == []

@@ -581,7 +581,6 @@ class _StepResult:
     answer: str = ""
     max_iter_hit: bool = False
     budget_exhausted: bool = False
-    review_report: str | None = None
     query_tool_count: int = 0
     ui_label: str = ""
     ws_renderer: SubAgentRenderer | None = None
@@ -1639,7 +1638,6 @@ class GekaiApp(App[None]):
             answer=turn_result.answer,
             max_iter_hit=turn_result.max_iter_hit,
             budget_exhausted=turn_result.budget_exhausted,
-            review_report=turn_result.review_report,
             query_tool_count=turn_result.query_tool_count,
             ws_renderer=ws_renderer,
         )
@@ -1690,11 +1688,6 @@ class GekaiApp(App[None]):
                     await conversation.mount(self._assistant_widget)
                 if result.budget_exhausted:
                     await conversation.mount(MessageWidget(MessageKind.WARNING, "response may be incomplete — the turn hit its tool-call budget before finishing"))
-                if result.review_report is not None:
-                    review_text = f"review findings:\n{result.review_report}"
-                    await conversation.mount(MessageWidget(MessageKind.WARNING, review_text))
-                    if self._session is not None:
-                        append_event(self._session, review_text, source="review")
                 elapsed = time.monotonic() - start
                 operation_text = f"* {verb[1]} for {_fmt_duration(elapsed)}" + (f" ({result.query_tool_count} {'tool' if result.query_tool_count == 1 else 'tools'})" if result.query_tool_count > 0 else "")
                 await conversation.mount(MessageWidget(MessageKind.OPERATION, operation_text, color=color))

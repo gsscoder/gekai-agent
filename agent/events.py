@@ -177,17 +177,6 @@ class ForeignFileDetectedEvent(AgentEvent):
 
 
 @dataclass
-class ReviewFindingsEvent(AgentEvent):
-    """Emitted when the automatic post-turn change-reviewer reports genuine
-    defects in the turn's own file changes. Never emitted on a CLEAN
-    verdict, and never emitted for a turn that touched no files or that
-    hit its tool-call budget (the work is admittedly unfinished there —
-    reviewing an incomplete change is not useful, and a follow-up turn's
-    own review will cover the eventual finished state)."""
-    report: str = ""
-
-
-@dataclass
 class ResponderEvent(AgentEvent):
     """Telemetry only: the responder synthesized (or failed to synthesize,
     falling back to the mechanical recap) the turn's final answer from the

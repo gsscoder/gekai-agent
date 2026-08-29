@@ -228,44 +228,18 @@ Root owns two things:
 is never dispatched cold inside a graph — it is the only unit ever facing a human, so "ask" is
 always answerable.
 
-## Post-Turn Review
-`Harness._maybe_review()` (`agent/harness/core.py`) runs after **both** branches of `Harness.stream()`
-— the no-graph path (`chat`/`solo`/`seed`, via `_stream_solo()`) and the graph path (`mutate`, via
-`_stream_graph()`) — uniformly, using the same `files_touched`/final-answer/`budget_exhausted`
-values either path collected. It is an automatic fresh-eyes review of the turn's own diff, gated
-before the answer reaches the user — mirrors `run_task_graph()`'s own `execute → verify → repair →
-re-verify` shape one level up (whole-turn instead of single-step), but with no halt: the worst
-outcome is a surfaced warning, never a blocked turn.
+## Post-Turn Review (removed)
+No automatic post-turn review exists. Both branches of `Harness.stream()` — the no-graph path
+(`chat`/`solo`/`seed`, via `_stream_solo()`) and the graph path (`mutate`, via `_stream_graph()`) —
+are plain passthrough loops: whatever `files_touched`/final-answer/`budget_exhausted` values either
+path collects go straight back to the caller, with no fresh-eyes pass over the turn's own diff.
 
-Skipped when `files_touched` is empty or `budget_exhausted` is true — reviewing admittedly
-unfinished work isn't useful; a follow-up turn's own review covers the eventual finished state.
-Otherwise dispatches the read-only `change-reviewer` subagent
-(`agent/subagents/generic/change_reviewer.py`, `user_invocable=False` — system-managed, never
-user-summonable) via `run_subagent` at the `subagent-dispatch` touchpoint (`self._resolve(...,
-"subagent-dispatch")` — no per-call `WorkSignal`/tier scaling here, unlike the graph path's
-`dispatch()`, always that touchpoint's plain resolved default), given the user's original request,
-`files_touched`, and the turn's own final answer text. Verdict contract: first line exactly `CLEAN`
-or `FINDINGS` followed by up to 5 findings, most-severe-first, each naming a concrete defect and a
-failing scenario. `review.startswith("FINDINGS")` is the only branch that continues; anything
-else — `CLEAN`, a crashed dispatch, a malformed/unexpected model output — is fail-open: treated as
-clean, never surfaced, never blocks.
-
-A `FINDINGS` verdict gets exactly **one** bounded repair: `code-fixer`
-(`agent/subagents/coding/code_fixer.py`) is dispatched (same tier) with the finding text, the
-original request, and `files_touched`; its own `run_subagent` call is bridged onto the turn's own
-`bus`/queue (`_bridge_llm_event`) so its tool calls and diffs render inline like any other step, not
-silently. `change-reviewer` is then dispatched a **second** time against the repaired diff, with an
-appended note to check whether the fix actually resolved the finding and introduced nothing new.
-
-Only that second review's verdict can ever reach the user: a `FINDINGS` there yields
-`ReviewFindingsEvent(report=...)` from `stream()`. `harness/turn.py::run_step` surfaces it as
-`TurnResult.review_report` and emits telemetry (`"review"`, `has_findings=True`); the TUI
-(`agent/tui/app.py`) mounts it as a `MessageKind.WARNING` widget (`"review findings:\n{report}"`)
-and persists it via `append_event(session, review_text, source="review")` (`agent/tui/app.py`) — a
-`source="review"` entry alongside the `command`/`error`/`interrupted`/`max_iterations` sources
-`## Session Persistence` below already documents. A first-round `CLEAN`, or a `FINDINGS` the repair
-attempt actually fixed (second review comes back `CLEAN`), is invisible to the user: no widget, no
-session entry — the whole cycle cost only latency, never attention.
+Formerly `Harness._maybe_review()` ran here, dispatching a read-only `change-reviewer` subagent,
+repairing any `FINDINGS` verdict via `code-fixer`, re-reviewing, and surfacing a
+`ReviewFindingsEvent`/`TurnResult.review_report` warning to the TUI on a still-broken second
+verdict. That subagent, dataclass, and all wiring through `harness/turn.py` and `agent/tui/app.py`
+are deleted; no `review`-sourced session entry can be written anymore (see `## Session Persistence`
+below).
 
 ## LLM Integration
 `openai` SDK (`AsyncOpenAI`) for chat and classification; `llmstitch` (`agent.llm.Agent`) for the tool-calling loop in `Harness`
@@ -356,7 +330,7 @@ Sessions stored as JSONL at `~/.gekai/workspaces/{normalized-repo-path}/{session
 ```
 {ts, kind:"turn",    role:"user|assistant|system", content}   ← LLM context; only these fed to model / /compact
 {ts, kind:"command", content:"/clear"}                        ← slash command typed by user
-{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: command, error, interrupted, max_iterations, review
+{ts, kind:"event",   source:"...", content:"..."}             ← system-side non-LLM: command, error, interrupted, max_iterations
 {ts, kind:"compact", content:"<summary>"}                     ← /compact boundary; supersedes every turn before it
 ```
 

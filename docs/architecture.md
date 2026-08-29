@@ -58,9 +58,7 @@ Estimator        [FAST-tier model, non-thinking] — one call per turn (subagent
     ▼
 root's session — every spawn and its outcome recorded; a halt reports which step failed and
 keeps completed work (no rollback); root then synthesizes the user-facing answer (`_respond`,
-a real LLM call, not a mechanical recap — see Sequencer + Interpreter below); after any turn
-that touched files, an automatic post-turn review runs before the answer reaches the user
-(see Post-Turn Review below)
+a real LLM call, not a mechanical recap — see Sequencer + Interpreter below)
 ```
 
 ---
@@ -443,39 +441,6 @@ normal completion behavior.
 
 ---
 
-## Post-Turn Review
-
-After **every** turn — any rung (`chat`/`solo`/`mutate`) or an explicit `/<alias>` seed — that
-actually touched files, `Harness._maybe_review()` (`agent/harness/core.py`) runs an automatic
-fresh-eyes review before the answer reaches the user. This mirrors the interpreter's own
-`execute → verify → repair → re-verify` shape one level up: whole-turn instead of single-step.
-
-- **Skipped** when no files were touched this turn, or when the turn hit its tool-call budget —
-  reviewing admittedly unfinished work isn't useful; a follow-up turn's own review covers the
-  eventual finished state.
-- **Review.** The read-only `change-reviewer` subagent (`agent/subagents/generic/change_reviewer.py`)
-  is dispatched via `run_subagent` at the `subagent-dispatch` touchpoint, given the user's request,
-  the list of files changed, and the agent's own report of what it did. It checks the turn's actual
-  diff (not just final file state) for genuine correctness defects and answers with a first line of
-  exactly `CLEAN` or `FINDINGS` followed by up to 5 concrete findings.
-- **Repair.** A `FINDINGS` verdict gets exactly one bounded repair attempt: the `code-fixer`
-  subagent (`agent/subagents/coding/code_fixer.py`) receives the finding text and fixes it, its
-  tool calls and diffs rendering on the turn's own event bus like any other step. `change-reviewer`
-  then re-reviews the repaired diff.
-- **Fails open throughout.** Anything that isn't literally `CLEAN` or a `FINDINGS`-prefixed string —
-  a crashed dispatch, a malformed verdict — is treated as clean and never blocks or surfaces
-  anything.
-- **Only the second verdict can reach the user.** A first-round `CLEAN`, or a `FINDINGS` that the
-  repair actually fixed, never surfaces. Only if the **re-review** still returns `FINDINGS` does the
-  harness yield a `ReviewFindingsEvent` — the TUI mounts it as a warning (`"review findings:\n
-  {report}"`) and persists it to session history under `event(source="review")`.
-
-Both branches of `Harness.stream()` — the no-graph path (`chat`/`solo`/seed) and the graph path
-(`mutate`) — call `_maybe_review()` identically after collecting `files_touched` and the turn's
-final answer text, so the review layer is uniform across every rung.
-
----
-
 ## Subagent Routing
 
 ### Subagent
@@ -512,12 +477,8 @@ into the agent's own context once spawned — "who you act as right now," distin
 `user_invocable`: `code-expert`/`test-expert` are both (sequencer may assign them, their own
 `/<alias>` seed can dispatch them directly, bypassing the sequencer); a verify/repair-only agent is
 `user_invocable=True, auto_assignable=False` (slash-summonable, but never assigned by phase-1
-decomposition). `change-reviewer` (see [Post-Turn Review](#post-turn-review)) is
-`user_invocable=False` — a system-managed worker, dispatched only by the harness itself, never
-directly by a user. `code-fixer`, also dispatched by [Post-Turn Review](#post-turn-review)'s repair
-step, is an ordinary `user_invocable=True, auto_assignable=True` specialist (alias `/fix`) the rest
-of the time — the harness reuses it, it isn't a separate system-only worker. See
-[System Prompt Assembly](#system-prompt-assembly)
+decomposition). `code-fixer` is an ordinary `user_invocable=True, auto_assignable=True` specialist
+(alias `/fix`). See [System Prompt Assembly](#system-prompt-assembly)
 for the full funnel and [Harness — Tool Loop](#harness--tool-loop) for how the allowlist and
 permissions jointly determine the *effective* tool set (and therefore the `<tools>` prompt content).
 
@@ -599,9 +560,6 @@ async def stream(
 - A genuine graph-spawned subagent step (`_stream_graph`'s own `dispatch`) never calls `stream()`
   again — it goes straight through `agent/tools/delegate.py::run_subagent`, cold (`prior=[]`).
 
-After either path finishes, `stream()` calls `Harness._maybe_review()` (see
-[Post-Turn Review](#post-turn-review)) whenever the turn touched files.
-
 `extra_params` overrides the effective `extra_params` computed for this call only — `None` (the
 default) means "use the rung's own default"; the `chat` rung's own default is root's model's
 explicit thinking-*disable* payload (not a bare `{}`, which some providers treat as "unspecified"
@@ -672,8 +630,7 @@ sequenceDiagram
     end
     llmstitch-->>Harness: final history
     Harness-->>TUI: DoneEvent
-    Harness->>Harness: _maybe_review() — if files touched, dispatch change-reviewer (+ code-fixer on FINDINGS)
-    Harness-->>TUI: final answer text (+ ReviewFindingsEvent warning, only on a second FINDINGS)
+    Harness-->>TUI: final answer text
 ```
 
 Events flow through `EventBus` → async queue → TUI stream. The final answer text is yielded
@@ -694,8 +651,7 @@ Every entry is timestamped JSON with a `kind` field:
 {ts, kind:"event",   source:"...", content:"..."}             ← system-side, non-LLM
 ```
 
-Event sources: `error` · `interrupted` · `max_iterations` · `command` (command result) ·
-`review` (a second-round `FINDINGS` from [Post-Turn Review](#post-turn-review)).
+Event sources: `error` · `interrupted` · `max_iterations` · `command` (command result).
 Entries without `kind` (legacy) default to `"turn"`.
 
 **Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, estimate decisions, per-turn debug context) — `--debug` only.
