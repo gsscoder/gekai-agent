@@ -1,0 +1,176 @@
+App {
+    background: ansi_default;
+    color: ansi_default;
+}
+
+Screen {
+    layers: base overlay;
+    align: center middle;
+    background: ansi_default;
+    color: ansi_default;
+}
+
+ScrollableContainer {
+    height: 1fr;
+    padding: 0 0 1 0;
+    background: ansi_default;
+    scrollbar-size: 0 0;
+    layer: base;
+}
+
+#footer {
+    dock: bottom;
+    height: auto;
+    padding-bottom: 1;
+    background: ansi_default;
+    layer: base;
+}
+
+#status-line {
+    height: 1;
+    background: ansi_default;
+    padding: 0;
+    display: none;
+}
+
+#status-spacer {
+    height: 1;
+    background: ansi_default;
+    display: none;
+}
+
+#hint-area {
+    height: 1;
+    background: ansi_default;
+    color: grey;
+    padding: 0 1 0 0;
+    text-align: right;
+    display: none;
+}
+
+#input-area {
+    height: auto;
+    layers: input marker;
+    border-top: solid #3a3a3a;
+    border-bottom: solid #3a3a3a;
+    border-title-align: right;
+    border-title-color: #000000;
+    border-title-background: ansi_default;
+    padding: 0;
+    background: ansi_default;
+}
+
+#param-hint {
+    height: 1;
+    background: ansi_default;
+    color: grey;
+    padding: 0 0 0 2;
+    display: none;
+}
+
+#prompt-marker {
+    layer: marker;
+    position: absolute;
+    offset: 0 0;
+    width: 1;
+    height: 1;
+    background: ansi_default;
+    color: grey;
+    padding: 0;
+    margin: 0;
+}
+
+#prompt {
+    layer: input;
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    max-height: 8;
+    padding: 0 0 0 2;
+    background: ansi_default;
+    background-tint: transparent;
+    color: ansi_default;
+}
+
+#prompt:focus {
+    background: ansi_default;
+    background-tint: transparent;
+}
+
+#prompt .text-area--cursor-line {
+    background: ansi_default;
+}
+
+#prompt .text-area--gutter {
+    background: ansi_default;
+}
+
+#prompt .text-area--cursor-gutter {
+    background: ansi_default;
+}
+
+.assistant-spacer {
+    height: 1;
+    background: ansi_default;
+}
+
+MessageWidget {
+    background: ansi_default;
+}
+
+.subagent-progress {
+    width: 40%;
+    height: 1;
+    background: ansi_default;
+    padding: 0;
+    layout: horizontal;
+}
+
+.subagent-progress Bar {
+    width: 1fr;
+}
+
+.subagent-progress PercentageStatus {
+    width: 5;
+    color: grey;
+}
+
+#copy-notice {
+    height: 1;
+    background: ansi_default;
+    color: grey;
+    padding: 0 2 0 0;
+    text-align: right;
+    display: none;
+}
+
+#directive-notice {
+    height: 1;
+    background: ansi_default;
+    color: grey;
+    padding: 0 2 0 0;
+    text-align: right;
+    display: none;
+}
+
+#context-bar {
+    height: 1;
+    background: ansi_default;
+    color: grey;
+}
+
+#scroll-hint-wrap {
+    height: 1;
+    align-horizontal: center;
+    background: ansi_default;
+    margin-bottom: 1;
+    display: none;
+}
+
+#scroll-hint {
+    height: 1;
+    background: #555555;
+    color: white;
+    width: auto;
+    padding: 0 1;
+}
