@@ -297,14 +297,13 @@ async def test_notice_widget_matches_copy_notice_css_shape(tmp_path: Path, _stub
     async with app.run_test() as pilot:
         await pilot.pause()
         notice = app.query_one("#directive-notice", Static)
+        copy_notice = app.query_one("#copy-notice", Static)
         assert notice.display is False  # hidden by default, like #copy-notice
+        assert copy_notice.display is False
 
-    css = GekaiApp.CSS
-    copy_block = css[css.index("#copy-notice {"):css.index("}", css.index("#copy-notice {"))]
-    directive_block = css[css.index("#directive-notice {"):css.index("}", css.index("#directive-notice {"))]
-    for prop in ("height: 1", "text-align: right", "display: none", "padding: 0 2 0 0"):
-        assert prop in copy_block
-        assert prop in directive_block
+        assert notice.styles.height == copy_notice.styles.height
+        assert notice.styles.text_align == copy_notice.styles.text_align
+        assert notice.styles.padding == copy_notice.styles.padding
 
 
 @pytest.mark.asyncio

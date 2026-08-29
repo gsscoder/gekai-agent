@@ -18,7 +18,7 @@ from tests.conftest import mock_llm_response, run
 
 
 def _make_estimator() -> Estimator:
-    with patch("agent.pipeline.estimate.AsyncOpenAI"):
+    with patch("agent.openai_client.AsyncOpenAI"):
         return Estimator(model="test-model", api_key="key", api_base="http://localhost")
 
 
@@ -104,7 +104,7 @@ def test_estimate_sends_extra_params() -> None:
     # plan 34 phase 1: the estimator must forward whatever extra_params its
     # resolved tier carries (e.g. the explicit thinking-disable payload) —
     # a `thinking: false` binding must not silently degrade to `{}`.
-    with patch("agent.pipeline.estimate.AsyncOpenAI"):
+    with patch("agent.openai_client.AsyncOpenAI"):
         e = Estimator(
             model="test-model",
             api_key="key",

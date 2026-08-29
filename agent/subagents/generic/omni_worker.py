@@ -1,5 +1,4 @@
-from .. import Subagent, ToolPolicy
-from ...tools.catalog import RUNGS
+from .. import Subagent
 
 subagent = Subagent(
     name="omni-worker",
@@ -27,7 +26,6 @@ subagent = Subagent(
         "to ws-explorer rather than burning your own context on raw search output; you still own the "
         "step end to end otherwise, and nothing runs after you — finish it or report the blocker"
     ),
-    tool_policy=ToolPolicy(ceiling=len(RUNGS) - 1),
     auto_assignable=True,
     delegates_to=("ws-explorer",),
     user_invocable=False,

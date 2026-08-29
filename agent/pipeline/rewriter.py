@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import re
 
-import httpx
-from openai import AsyncOpenAI
-
+from ..openai_client import build_openai_client
 from ._directives import PIPELINE_DIRECTIVES
 
 _SYSTEM_TEMPLATE = (
@@ -63,11 +61,7 @@ class PromptRewriter:
         api_base: str | None = None,
     ) -> None:
         self._model = model
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=api_base,
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
-        )
+        self._client = build_openai_client(api_key, api_base)
 
     async def rewrite(
         self,

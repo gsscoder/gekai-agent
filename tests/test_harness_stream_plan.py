@@ -739,8 +739,8 @@ def _make_file_writing_run_subagent(path: str = "src/thing.py", text: str = "don
     `_bridge_llm_event` records the path into `files_touched` exactly like a
     real tool-calling run would."""
 
-    async def _run_subagent(agent, task, *, bus, **kwargs):
-        bus.emit(ToolExecutionCompleted(
+    async def _run_subagent(agent, task, *, ctx, **kwargs):
+        ctx.bus.emit(ToolExecutionCompleted(
             turn=0,
             call=ToolUseBlock(id="1", name="write_file", input={"path": path, "content": "x"}),
             result=ToolResultBlock(tool_use_id="1", content="ok"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +22,29 @@ from ..subagents import SUBAGENTS
 ERROR_PREFIX = "[error] "
 
 
+@dataclass(slots=True)
+class DispatchContext:
+    """The model/credential/session-plumbing bundle every dispatch into a
+    nested agent needs — repeats verbatim across `run_subagent`,
+    `make_delegate_tool`, and its `delegate` closure; carried as one unit
+    instead of 9 loose parameters."""
+    model: str
+    api_key: str | None
+    api_base: str | None
+    extra_params: dict[str, Any]
+    working_dir: Path
+    permissions: Permissions
+    permission_callback: PermissionCallback | None
+    bus: EventBus | None
+    hidden_grant_callback: Any | None
+
+
 async def run_subagent(
     agent: str,
     task: str,
     *,
     mission: str = "",
-    model: str,
-    api_key: str | None,
-    api_base: str | None,
-    extra_params: dict[str, Any],
-    working_dir: Path,
-    permissions: Permissions,
-    permission_callback: PermissionCallback | None,
-    bus: EventBus | None,
-    hidden_grant_callback: Any | None,
+    ctx: DispatchContext,
     tools_override: frozenset[str] | None = None,
     parent_tools: frozenset[str] | None = None,
     can_delegate: bool = False,
@@ -43,8 +53,8 @@ async def run_subagent(
     as a cold, fire-and-forget nested run — the interpreter's `dispatch` for a
     subagent step (plan 27 improvement 2), and the `delegate` tool's own
     primitive (plan-delegate-reintroduction Phase 2). The nested run's
-    start/outcome are traced on `bus` (root's own session), the run itself is
-    isolated.
+    start/outcome are traced on `ctx.bus` (root's own session), the run
+    itself is isolated.
 
     `parent_tools` (tighten-only capability intersection): when set, the
     caller's own effective tool-name set — intersected into `tools_override`
@@ -70,26 +80,30 @@ async def run_subagent(
 
     # Deferred to avoid circular import (tools -> harness -> tools)
     from ..harness.core import _build_agent, _enrich_system_base
+    from ..llm.resolve import ResolvedTier
 
-    system_base = _enrich_system_base(resolved.build_system_base(), working_dir)
+    system_base = _enrich_system_base(resolved.build_system_base(), ctx.working_dir)
+    resolved_tier = ResolvedTier(
+        model=ctx.model, api_key=ctx.api_key, api_base=ctx.api_base, extra_params=ctx.extra_params,
+    )
     nested = _build_agent(
-        model, api_key, api_base, extra_params, working_dir,
-        permissions, permission_callback, system_base, bus,
+        resolved_tier, ctx.working_dir,
+        ctx.permissions, ctx.permission_callback, system_base, ctx.bus,
         subagent=resolved,
-        hidden_grant_callback=hidden_grant_callback,
+        hidden_grant_callback=ctx.hidden_grant_callback,
         tools_override=effective_override,
         can_delegate=can_delegate,
     )
     nested_run_id = uuid.uuid4().hex
-    if bus is not None:
-        bus.emit(DelegationStarted(agent=agent, task=task, mission=mission, run_id=nested_run_id))
+    if ctx.bus is not None:
+        ctx.bus.emit(DelegationStarted(agent=agent, task=task, mission=mission, run_id=nested_run_id))
     try:
         history = await nested.run(task, run_id=nested_run_id)
     except Exception as exc:
         return f"{ERROR_PREFIX}{agent} failed: {exc}"
     finally:
-        if bus is not None:
-            bus.emit(DelegationCompleted(agent=agent, run_id=nested_run_id))
+        if ctx.bus is not None:
+            ctx.bus.emit(DelegationCompleted(agent=agent, run_id=nested_run_id))
 
     for msg in reversed(history):
         if msg.role == "assistant":
@@ -104,15 +118,7 @@ async def run_subagent(
 
 def make_delegate_tool(
     targets: tuple[str, ...],
-    model: str,
-    api_key: str | None,
-    api_base: str | None,
-    extra_params: dict[str, Any],
-    working_dir: Path,
-    permissions: Permissions,
-    permission_callback: PermissionCallback | None,
-    bus: EventBus | None,
-    hidden_grant_callback: Any | None,
+    ctx: DispatchContext,
     parent_tools: frozenset[str] | None,
 ) -> Tool:
     """Thin wrapper over `run_subagent` — a subagent's bounded, declared
@@ -131,23 +137,12 @@ def make_delegate_tool(
         agent: str,
         task: str,
         *,
-        model: str,
-        api_key: str | None,
-        api_base: str | None,
-        extra_params: dict[str, Any],
-        working_dir: Path,
-        permissions: Permissions,
-        permission_callback: PermissionCallback | None,
-        bus: EventBus | None,
-        hidden_grant_callback: Any | None,
+        ctx: DispatchContext,
         parent_tools: frozenset[str] | None,
     ) -> str:
         return await run_subagent(
             agent, task,
-            model=model, api_key=api_key, api_base=api_base,
-            extra_params=extra_params, working_dir=working_dir,
-            permissions=permissions, permission_callback=permission_callback,
-            bus=bus, hidden_grant_callback=hidden_grant_callback,
+            ctx=ctx,
             parent_tools=parent_tools,
         )
 
@@ -163,20 +158,12 @@ def make_delegate_tool(
         ),
         required_permission="none",
         is_concurrency_safe=False,
-        hidden_params={
-            "model", "api_key", "api_base", "extra_params", "working_dir",
-            "permissions", "permission_callback", "bus", "hidden_grant_callback",
-            "parent_tools",
-        },
+        hidden_params={"ctx", "parent_tools"},
     )
-    t = t.with_bound(
-        model=model, api_key=api_key, api_base=api_base, extra_params=extra_params,
-        working_dir=working_dir, permissions=permissions, permission_callback=permission_callback,
-        bus=bus, hidden_grant_callback=hidden_grant_callback, parent_tools=parent_tools,
-    )
+    t = t.with_bound(ctx=ctx, parent_tools=parent_tools)
     schema = copy.deepcopy(t.input_schema)
     schema["properties"]["agent"]["enum"] = sorted(targets)
     return dataclasses.replace(t, input_schema=schema)
 
 
-__all__ = ["ERROR_PREFIX", "run_subagent", "make_delegate_tool"]
+__all__ = ["DispatchContext", "ERROR_PREFIX", "run_subagent", "make_delegate_tool"]

@@ -37,7 +37,7 @@ def _make_session(tmp_path: Path) -> Session:
 
 def _stub_agent(chunks: list[str]) -> GekaiAgent:
     stub = object.__new__(GekaiAgent)
-    stub._main = cast(Harness, _FakeMain(chunks))
+    stub._root = cast(Harness, _FakeMain(chunks))
     stub._tier_error = None
     return stub
 
@@ -136,5 +136,5 @@ def test_process_stream_passes_no_extra_params_override(tmp_path: Path) -> None:
     agent = _stub_agent(["reply"])
     run(_drain(agent.process_stream(session, "hi")))
 
-    main = cast(_FakeMain, agent._main)
+    main = cast(_FakeMain, agent._root)
     assert main.last_extra_params is None

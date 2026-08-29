@@ -48,7 +48,7 @@ class GekaiAgent:
         # (`_maybe_warn_tiers_unconfigured`) covers the "haven't configured
         # yet" case before the user even tries to chat.
         self._tier_error: str | None = None
-        self._main: Harness | None = None
+        self._root: Harness | None = None
         self.model: str = "unconfigured"
         self.effort: str | None = None
         self._api_key: str | None = None
@@ -77,7 +77,7 @@ class GekaiAgent:
 
     def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None]:
         """(Re)resolve every touchpoint against the *current* on-disk tier
-        catalog+bindings, updating `self._main`/`self.model`/
+        catalog+bindings, updating `self._root`/`self.model`/
         `self._api_key`/`self._api_base` in place. A single resolve-once-at-
         construction attempt isn't enough: `/models`/`/tier` run inside the same
         already-constructed `GekaiAgent` and only touches disk, so without a
@@ -126,7 +126,7 @@ class GekaiAgent:
         def _resolve(tier: TierName, touchpoint_name: str) -> ResolvedTier:
             return resolve_tier(tier, catalog, bindings, touchpoint_name)
 
-        self._main = Harness(
+        self._root = Harness(
             resolve=_resolve,
             sequencer_policy=touchpoint("sequencer").policy,
             root_dispatch_policy=touchpoint("root-dispatch").policy,
@@ -145,7 +145,7 @@ class GekaiAgent:
         """Force an immediate re-resolve of every touchpoint against the
         current on-disk tier catalog+bindings. `process_stream()`
         only retries `_configure_touchpoints()` lazily while resolution is
-        still *failing* (`self._main` is `None`) — a `/tier`
+        still *failing* (`self._root` is `None`) — a `/tier`
         commit that changes an already-working tier's model/effort/thinking
         would otherwise sit stale (including `self.model`/`self.effort`,
         which the TUI status bar reads directly) until the next process
@@ -304,9 +304,9 @@ class GekaiAgent:
         append_user: bool = True,
         seed: str | None = None,
     ) -> AsyncIterator[str | AgentEvent]:
-        if self._main is None:
+        if self._root is None:
             self._configure_touchpoints()
-        if self._main is None:
+        if self._root is None:
             raise RuntimeError(self._tier_error or "tiers are not configured — run /models, then /tier")
         if append_user:
             session.messages.append({"role": "user", "content": user_input})
@@ -315,7 +315,7 @@ class GekaiAgent:
         all_chunks: list[str] = []
         max_iter_hit = False
         completed = False
-        stream_iter = self._main.stream(
+        stream_iter = self._root.stream(
             session, user_input,
             permission_callback=permission_callback,
             hidden_grant_callback=hidden_grant_callback,

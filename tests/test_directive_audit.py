@@ -18,7 +18,7 @@ from tests.conftest import mock_llm_response, run
 
 
 def _make_auditor() -> Auditor:
-    with patch("agent.directive_audit.AsyncOpenAI"):
+    with patch("agent.openai_client.AsyncOpenAI"):
         return Auditor(model="test-model", api_key="key", api_base="http://localhost")
 
 

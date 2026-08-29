@@ -464,7 +464,7 @@ def test_repair_dispatch_tool_activity_is_bridged_into_the_stream(
     async def fake_run_subagent(agent: str, task: str, **kwargs: Any) -> str:
         nonlocal review_calls
         if agent == "code-fixer":
-            kwargs["bus"].emit(ToolExecutionCompleted(
+            kwargs["ctx"].bus.emit(ToolExecutionCompleted(
                 turn=1,
                 call=ToolUseBlock(id="fix-1", name="edit_file", input={"path": "repair.py", "old_str": "x", "new_str": "y"}),
                 result=ToolResultBlock(tool_use_id="fix-1", content="ok"),

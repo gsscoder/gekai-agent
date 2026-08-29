@@ -9,8 +9,8 @@ more tools than its ceiling declares, regardless of what a step requests.
 `scope()` is the pure decision function; a later phase wires the result
 into dispatch.
 
-Inert: not consulted by any dispatch path yet — this module defines the
-shape only.
+Consulted at two live dispatch sites in `agent/harness/core.py`: root's
+seed-dispatch tool ceiling and graph-step dispatch.
 """
 
 from __future__ import annotations

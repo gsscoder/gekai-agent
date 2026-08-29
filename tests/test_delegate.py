@@ -13,11 +13,22 @@ import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from agent.llm.resolve import ResolvedTier
 from agent.settings import Permissions
-from agent.tools.delegate import make_delegate_tool, run_subagent
+from agent.tools.delegate import DispatchContext, make_delegate_tool, run_subagent
 
 _PERMISSIONS = Permissions(read=True, write=True, exec=True)
 _WORKING_DIR = Path(".")
+_RESOLVED = ResolvedTier(model="m", api_key="k", api_base=None, extra_params={})
+_CTX = DispatchContext(
+    model="test-model", api_key="key", api_base="http://localhost",
+    extra_params={}, working_dir=_WORKING_DIR, permissions=_PERMISSIONS,
+    permission_callback=None, bus=None, hidden_grant_callback=None,
+)
+_CTX_FIELDS = frozenset(
+    {"model", "api_key", "api_base", "extra_params", "working_dir",
+     "permissions", "permission_callback", "bus", "hidden_grant_callback"}
+)
 
 
 def run(coro):
@@ -34,13 +45,11 @@ def _patched_build_agent(mock_agent):
 
 
 def _call_run_subagent(agent: str, task: str = "do it", **kwargs):
-    defaults = dict(
-        model="test-model", api_key="key", api_base="http://localhost",
-        extra_params={}, working_dir=_WORKING_DIR, permissions=_PERMISSIONS,
-        permission_callback=None, bus=None, hidden_grant_callback=None,
-    )
-    defaults.update(kwargs)
-    return run_subagent(agent, task, **defaults)
+    import dataclasses
+
+    ctx_overrides = {k: kwargs.pop(k) for k in list(kwargs) if k in _CTX_FIELDS}
+    ctx = dataclasses.replace(_CTX, **ctx_overrides) if ctx_overrides else _CTX
+    return run_subagent(agent, task, ctx=ctx, **kwargs)
 
 
 def test_unknown_agent_returns_error() -> None:
@@ -118,10 +127,10 @@ def test_no_delegate_tool_registered_for_main_or_subagent() -> None:
         patch("agent.harness.core.make_tools", return_value=[]),
     ):
         main_agent = _build_agent(
-            "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None, "sys", None,
+            _RESOLVED, _WORKING_DIR, _PERMISSIONS, None, "sys", None,
         )
         sub_agent = _build_agent(
-            "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
+            _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
             code_expert_no_delegate.build_system_base(), None,
             subagent=code_expert_no_delegate,
         )
@@ -137,8 +146,7 @@ def test_no_delegate_tool_registered_for_main_or_subagent() -> None:
 def _make_tool(targets: tuple[str, ...] = ("code-expert", "test-expert")):
     return make_delegate_tool(
         targets,
-        "test-model", "key", "http://localhost", {}, _WORKING_DIR,
-        _PERMISSIONS, None, None, None,
+        _CTX,
         frozenset({"read_file", "edit_file"}),
     )
 
@@ -225,7 +233,7 @@ def _build_real_agent(subagent=None, tools_override=None, can_delegate=True):
         resolved_subagent = dataclasses.replace(code_expert, delegates_to=("test-expert",))
 
     return _build_agent(
-        "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
+        _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         resolved_subagent.build_system_base() if resolved_subagent else "sys",
         None,
         subagent=resolved_subagent,
@@ -315,7 +323,7 @@ def test_read_scoped_parent_produces_child_with_no_edit_or_fs_tools() -> None:
     code_expert = next(s for s in SUBAGENTS if s.name == "code-expert")
     read_only_parent = dataclasses.replace(code_expert, delegates_to=("test-expert",))
     parent_agent = _build_agent(
-        "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
+        _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         read_only_parent.build_system_base(), None,
         subagent=read_only_parent,
         tools_override=frozenset(RUNGS[0]),  # read rung: no edit/fs tools
@@ -324,7 +332,7 @@ def test_read_scoped_parent_produces_child_with_no_edit_or_fs_tools() -> None:
     parent_tools = frozenset(d.name for d in parent_agent.tools.definitions() if d.name != "delegate")
 
     child = _build_agent(
-        "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
+        _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         "sys", None,
         subagent=next(s for s in SUBAGENTS if s.name == "test-expert"),  # no tools ceiling of its own
         tools_override=parent_tools,
@@ -368,7 +376,7 @@ def _build_complexity_remover_agent(can_delegate=True):
 
     complexity_remover = next(s for s in SUBAGENTS if s.name == "complexity-remover")
     return _build_agent(
-        "m", "k", None, {}, _WORKING_DIR, _PERMISSIONS, None,
+        _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         complexity_remover.build_system_base(), None,
         subagent=complexity_remover,
         can_delegate=can_delegate,

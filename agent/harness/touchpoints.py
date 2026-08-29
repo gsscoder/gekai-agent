@@ -6,9 +6,11 @@ per-turn machinery; root is one configuration of the LLM loop the harness
 deploys, not the harness itself. Adding a model interaction means adding an
 entry here, not scattering a new client call into a module.
 
-Inert: not yet consulted by any dispatch path. Phase 1 wires each entry's
-tier binding to the global tier config; Phase 2 lets the harness move a
-touchpoint's operating point within its declared space at assignment time.
+Consulted at every touchpoint-resolution call site (estimator, sequencer,
+root-dispatch, subagent-dispatch, micro, directive-audit): `agent/harness/
+core.py` resolves an entry's tier binding through `agent/llm/resolve.py`
+before dispatching. Phase 2 lets the harness move a touchpoint's operating
+point within its declared space at assignment time.
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ class Touchpoint:
 
 
 TOUCHPOINTS: tuple[Touchpoint, ...] = (
-    Touchpoint("estimator", "trivial vs mutate", TierName.FAST),
+    Touchpoint("estimator", "chat/solo/mutate scope", TierName.FAST),
     Touchpoint(
         "sequencer",
         "build the task graph (formerly 'planner')",

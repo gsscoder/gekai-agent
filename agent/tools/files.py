@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.llm import tool
@@ -15,6 +16,18 @@ HiddenGrantCallback = Callable[[str, str], Awaitable[bool]]
 
 _MAX_RESULTS = 200
 _MAX_GREP_FILES = 5000
+
+
+@dataclass(slots=True)
+class FileToolContext:
+    """The workspace-root/hidden-grant plumbing every file-tool helper needs —
+    repeats verbatim across `_authorize` and every helper that calls it, and
+    again from each helper's matching tool closure in `make_file_tools`;
+    carried as one unit instead of 4 loose parameters."""
+    working_dir: Path
+    allow_hidden: set[str] | None = None
+    grant_cb: HiddenGrantCallback | None = None
+    pending: set[str] | None = None
 
 
 def _resolve_in_ws(path: str, working_dir: Path) -> Path | None:
@@ -31,10 +44,7 @@ def _resolve_in_ws(path: str, working_dir: Path) -> Path | None:
 
 async def _authorize(
     path: str,
-    working_dir: Path,
-    allow_hidden: set[str] | None,
-    grant_cb: HiddenGrantCallback | None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
     *,
     mode: str,
 ) -> Path | str:
@@ -44,48 +54,45 @@ async def _authorize(
     failure. Forbidden (.aiignore) paths fail via _resolve_in_ws before any
     grant logic runs - the red zone is never prompted.
 
-    `pending` tracks hidden paths with an in-flight grant request. If a
+    `ctx.pending` tracks hidden paths with an in-flight grant request. If a
     concurrent same-batch call targets the same path while a grant is
     already pending, it is denied immediately rather than double-prompting
     (mirrors PermissionGate._pending).
     """
-    target = _resolve_in_ws(path, working_dir)
+    target = _resolve_in_ws(path, ctx.working_dir)
     if target is None:
         return "error: path outside working directory"
 
-    rel = str(target.relative_to(working_dir.resolve())).replace("\\", "/")
-    rules = _load_ignore_rules(working_dir)
+    rel = str(target.relative_to(ctx.working_dir.resolve())).replace("\\", "/")
+    rules = _load_ignore_rules(ctx.working_dir)
     if rules.is_hidden(rel) or rules.is_hidden(rel + "/"):
-        granted = allow_hidden if allow_hidden is not None else set()
+        granted = ctx.allow_hidden if ctx.allow_hidden is not None else set()
         if rel not in granted:
-            in_flight = pending if pending is not None else set()
+            in_flight = ctx.pending if ctx.pending is not None else set()
             if rel in in_flight:
                 return f"error: access to hidden path denied: {rel}"
-            if grant_cb is None:
+            if ctx.grant_cb is None:
                 return f"error: access to hidden path denied: {rel}"
             in_flight.add(rel)
             try:
-                if not await grant_cb(rel, mode):
+                if not await ctx.grant_cb(rel, mode):
                     return f"error: access to hidden path denied: {rel}"
             finally:
                 in_flight.discard(rel)
             granted.add(rel)
-            save_allow_hidden(working_dir, rel)
+            save_allow_hidden(ctx.working_dir, rel)
 
     return target
 
 
 async def _authorize_file(
     path: str,
-    working_dir: Path,
-    allow_hidden: set[str] | None,
-    grant_cb: HiddenGrantCallback | None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
     *,
     mode: str,
 ) -> Path | str:
     """Like `_authorize`, but also rejects paths that resolve to a directory."""
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode=mode)
+    result = await _authorize(path, ctx, mode=mode)
     if isinstance(result, str):
         return result
     if result.is_dir():
@@ -112,14 +119,11 @@ def _walk_files(base: Path, root: Path) -> list[Path]:
 async def _read_file(
     path: str,
     *,
-    working_dir: Path,
+    ctx: FileToolContext,
     start_line: int | None = None,
     end_line: int | None = None,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
 ) -> str:
-    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    result = await _authorize_file(path, ctx, mode="read")
     if isinstance(result, str):
         return result
     target = result
@@ -206,12 +210,9 @@ def _no_match_hint(pattern: str, *, working_dir: Path, rules: IgnoreRules) -> st
 async def _file_info(
     path: str,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
-    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    result = await _authorize_file(path, ctx, mode="read")
     if isinstance(result, str):
         return result
     target = result
@@ -230,19 +231,16 @@ async def _grep(
     pattern: str,
     path: str | None = None,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
     try:
         regex = re.compile(pattern)
     except re.error as exc:
         return f"error: invalid pattern: {exc}"
 
-    root = working_dir.resolve()
+    root = ctx.working_dir.resolve()
     if path:
-        result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+        result = await _authorize(path, ctx, mode="read")
         if isinstance(result, str):
             return result
         target = result
@@ -262,7 +260,7 @@ async def _grep(
                     results.append(f"{file.relative_to(root)}:{i}: {line}")
                     if len(results) >= _MAX_RESULTS:
                         break
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             continue
 
     return "\n".join(results) if results else "(no matches)"
@@ -274,10 +272,7 @@ async def _edit_file(
     new_str: str | None = None,
     edits: list[dict[str, str]] | None = None,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
     if edits is not None:
         if old_str is not None or new_str is not None:
@@ -285,7 +280,7 @@ async def _edit_file(
     elif old_str is None or new_str is None:
         return "error: old_str/new_str required when edits is not given"
 
-    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    result = await _authorize_file(path, ctx, mode="write")
     if isinstance(result, str):
         return result
     target = result
@@ -321,12 +316,9 @@ async def _write_file(
     path: str,
     content: str,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
-    result = await _authorize_file(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    result = await _authorize_file(path, ctx, mode="write")
     if isinstance(result, str):
         return result
     target = result
@@ -341,19 +333,16 @@ async def _write_file(
 async def _symbols(
     path: str,
     *,
-    working_dir: Path,
+    ctx: FileToolContext,
     kind: str | None = None,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
 ) -> str:
     try:
         import importlib
-        from tree_sitter import Language, Parser, Query, QueryCursor
+        from tree_sitter import Language, Parser, Query, QueryCursor, QueryError
     except ImportError:
         return "error: tree-sitter not installed (pip install tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript tree-sitter-go)"
 
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="read")
+    result = await _authorize(path, ctx, mode="read")
     if isinstance(result, str):
         return result
     target = result
@@ -393,7 +382,9 @@ async def _symbols(
                 name = node.text.decode("utf-8", errors="replace")
                 line = node.start_point[0] + 1
                 results.append((line, name, symbol_kind))
-        except Exception:
+        except QueryError:
+            # QueryError (tree_sitter): a hand-authored query in _LANG_QUERIES is
+            # malformed for this grammar version - skip that symbol kind, keep the rest.
             continue
 
     if not results:
@@ -406,16 +397,13 @@ async def _move_file(
     src: str,
     dst: str,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
-    src_result = await _authorize_file(src, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    src_result = await _authorize_file(src, ctx, mode="write")
     if isinstance(src_result, str):
         return src_result
     src_path = src_result
-    dst_result = await _authorize(dst, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    dst_result = await _authorize(dst, ctx, mode="write")
     if isinstance(dst_result, str):
         return dst_result
     dst_path = dst_result
@@ -435,16 +423,13 @@ async def _copy_file(
     src: str,
     dst: str,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
-    src_result = await _authorize(src, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    src_result = await _authorize(src, ctx, mode="write")
     if isinstance(src_result, str):
         return src_result
     src_path = src_result
-    dst_result = await _authorize(dst, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    dst_result = await _authorize(dst, ctx, mode="write")
     if isinstance(dst_result, str):
         return dst_result
     dst_path = dst_result
@@ -463,12 +448,9 @@ async def _copy_file(
 async def _delete_file(
     path: str,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    result = await _authorize(path, ctx, mode="write")
     if isinstance(result, str):
         return result
     target = result
@@ -486,12 +468,9 @@ async def _delete_file(
 async def _make_dir(
     path: str,
     *,
-    working_dir: Path,
-    allow_hidden: set[str] | None = None,
-    grant_cb: HiddenGrantCallback | None = None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,
 ) -> str:
-    result = await _authorize(path, working_dir, allow_hidden, grant_cb, pending, mode="write")
+    result = await _authorize(path, ctx, mode="write")
     if isinstance(result, str):
         return result
     target = result
@@ -503,8 +482,12 @@ async def _make_dir(
 
 
 def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = None) -> list:
-    allow_hidden: set[str] = load_allow_hidden(working_dir)
-    pending: set[str] = set()
+    ctx = FileToolContext(
+        working_dir=working_dir,
+        allow_hidden=load_allow_hidden(working_dir),
+        grant_cb=grant_cb,
+        pending=set(),
+    )
 
     @tool(is_read_only=True, required_permission="read")
     async def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
@@ -519,15 +502,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         from the lowest to the highest line (add ~5 line buffer) — never one
         call per symbol.
         """
-        return await _read_file(
-            path,
-            working_dir=working_dir,
-            start_line=start_line,
-            end_line=end_line,
-            allow_hidden=allow_hidden,
-            grant_cb=grant_cb,
-            pending=pending,
-        )
+        return await _read_file(path, ctx=ctx, start_line=start_line, end_line=end_line)
 
     @tool(is_read_only=True, required_permission="read")
     async def list_files(pattern: str) -> str:
@@ -542,14 +517,14 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
     @tool(is_read_only=True, required_permission="read")
     async def grep(pattern: str, path: str | None = None) -> str:
         """Search file contents for a regex pattern. Returns matching lines as file:line: content."""
-        return await _grep(pattern, path=path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _grep(pattern, path=path, ctx=ctx)
 
     @tool(is_read_only=True, required_permission="read")
     async def file_info(path: str) -> str:
         """Return line count and byte size for a file. Use before read_file to decide
         whether to read the full file or a targeted range — files over ~300 lines
         or ~15KB are candidates for a targeted range instead of a full read."""
-        return await _file_info(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _file_info(path, ctx=ctx)
 
     @tool(is_read_only=True, required_permission="read")
     async def symbols(path: str, kind: str | None = None) -> str:
@@ -562,7 +537,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         For simple functions the name:line output is often sufficient to answer
         signature questions — only read_file if the full signature is required.
         """
-        return await _symbols(path, working_dir=working_dir, kind=kind, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _symbols(path, ctx=ctx, kind=kind)
 
     @tool(is_read_only=False, required_permission="write")
     async def edit_file(
@@ -584,16 +559,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         are written. Use this to cut round trips when a file needs several edits at once;
         do not pass old_str/new_str together with edits.
         """
-        return await _edit_file(
-            path,
-            old_str=old_str,
-            new_str=new_str,
-            edits=edits,
-            working_dir=working_dir,
-            allow_hidden=allow_hidden,
-            grant_cb=grant_cb,
-            pending=pending,
-        )
+        return await _edit_file(path, old_str=old_str, new_str=new_str, edits=edits, ctx=ctx)
 
     @tool(is_read_only=False, required_permission="write")
     async def write_file(path: str, content: str) -> str:
@@ -602,7 +568,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         Use for new files or complete rewrites. Prefer edit_file for targeted changes.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _write_file(path, content=content, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _write_file(path, content=content, ctx=ctx)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def move_file(src: str, dst: str) -> str:
@@ -612,7 +578,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         Refuses if dst already exists — no silent overwrite.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _move_file(src, dst, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _move_file(src, dst, ctx=ctx)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def copy_file(src: str, dst: str) -> str:
@@ -622,7 +588,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         Refuses if dst already exists — no silent overwrite.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _copy_file(src, dst, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _copy_file(src, dst, ctx=ctx)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def delete_file(path: str) -> str:
@@ -631,7 +597,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         Refuses directories — use this only for files.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _delete_file(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _delete_file(path, ctx=ctx)
 
     @tool(is_read_only=False, required_permission="write", is_concurrency_safe=False)
     async def make_dir(path: str) -> str:
@@ -640,7 +606,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
         Safe to call when the directory already exists.
         Returns 'ok' on success or an error string on failure.
         """
-        return await _make_dir(path, working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+        return await _make_dir(path, ctx=ctx)
 
     return [read_file, list_files, grep, file_info, symbols, edit_file, write_file,
             move_file, copy_file, delete_file, make_dir]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import time
@@ -35,7 +36,7 @@ from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartE
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tools import HiddenGrantCallback, make_tools
-from ..tools.delegate import make_delegate_tool, run_subagent
+from ..tools.delegate import DispatchContext, make_delegate_tool, run_subagent
 from .tool_scope import scope as tool_scope
 
 if TYPE_CHECKING:
@@ -167,10 +168,7 @@ _MAX_ITERATIONS = 25
 
 
 def _build_agent(
-    model: str,
-    api_key: str | None,
-    api_base: str | None,
-    extra_params: dict,
+    resolved: ResolvedTier,
     working_dir: Path,
     permissions: Permissions,
     permission_callback: PermissionCallback | None,
@@ -217,8 +215,12 @@ def _build_agent(
     if subagent is not None and subagent.delegates_to and can_delegate:
         selected = selected + [make_delegate_tool(
             subagent.delegates_to,
-            model, api_key, api_base, extra_params, working_dir,
-            permissions, permission_callback, bus, hidden_grant_callback,
+            DispatchContext(
+                model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
+                extra_params=resolved.extra_params, working_dir=working_dir,
+                permissions=permissions, permission_callback=permission_callback,
+                bus=bus, hidden_grant_callback=hidden_grant_callback,
+            ),
             frozenset(t.name for t in selected),
         )]
 
@@ -229,13 +231,13 @@ def _build_agent(
         if subagent is not None and subagent.max_iterations is not None
         else _MAX_ITERATIONS
     )
-    adapter = OpenAIAdapter(api_key=api_key, base_url=api_base)
+    adapter = OpenAIAdapter(api_key=resolved.api_key, base_url=resolved.api_base)
     agent = Agent(
         provider=adapter,
-        model=model,
+        model=resolved.model,
         system=system,
         event_bus=bus,
-        extra_params=extra_params,
+        extra_params=resolved.extra_params,
         max_iterations=max_iterations,
     )
     for t in selected:
@@ -407,6 +409,12 @@ class Harness:
         if not files_touched or budget_exhausted:
             return
         resolved = self._resolve(self._subagent_dispatch_policy.default, "subagent-dispatch")
+        ctx = DispatchContext(
+            model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
+            extra_params=resolved.extra_params, working_dir=session.working_dir,
+            permissions=session.permissions, permission_callback=permission_callback,
+            bus=bus, hidden_grant_callback=hidden_grant_callback,
+        )
 
         def _review_task(note: str = "") -> str:
             return (
@@ -418,10 +426,7 @@ class Harness:
         review = await run_subagent(
             "change-reviewer", _review_task(),
             mission="review this turn's change",
-            model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
-            extra_params=resolved.extra_params, working_dir=session.working_dir,
-            permissions=session.permissions, permission_callback=permission_callback,
-            bus=bus, hidden_grant_callback=hidden_grant_callback,
+            ctx=ctx,
         )
         if not review.startswith("FINDINGS"):
             return  # CLEAN, a crashed dispatch, or a malformed verdict — fail open either way
@@ -441,10 +446,7 @@ class Harness:
                 f"files changed this turn: {', '.join(files_touched)}\n\n"
                 f"review finding:\n{findings}",
                 mission="fix a defect a post-turn review found",
-                model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
-                extra_params=resolved.extra_params, working_dir=session.working_dir,
-                permissions=session.permissions, permission_callback=permission_callback,
-                bus=bus, hidden_grant_callback=hidden_grant_callback,
+                ctx=ctx,
             )
         finally:
             unsubscribe()
@@ -458,10 +460,7 @@ class Harness:
                 "resolved it and whether it introduced anything new"
             ),
             mission="review this turn's change",
-            model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
-            extra_params=resolved.extra_params, working_dir=session.working_dir,
-            permissions=session.permissions, permission_callback=permission_callback,
-            bus=bus, hidden_grant_callback=hidden_grant_callback,
+            ctx=ctx,
         )
         if re_review.startswith("FINDINGS"):
             yield ReviewFindingsEvent(report=re_review[len("FINDINGS"):].strip())
@@ -539,8 +538,7 @@ class Harness:
         else:
             tools_override = None
         agent = _build_agent(
-            root_dispatch_resolved.model, root_dispatch_resolved.api_key, root_dispatch_resolved.api_base,
-            effective_extra_params,
+            dataclasses.replace(root_dispatch_resolved, extra_params=effective_extra_params),
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
@@ -717,11 +715,12 @@ class Harness:
             result = await run_subagent(
                 agent_name, instruction,
                 mission=mission,
-                model=resolved.model, api_key=resolved.api_key,
-                api_base=resolved.api_base,
-                extra_params=resolved.extra_params, working_dir=working_dir,
-                permissions=permissions, permission_callback=permission_callback,
-                bus=bus, hidden_grant_callback=hidden_grant_callback,
+                ctx=DispatchContext(
+                    model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
+                    extra_params=resolved.extra_params, working_dir=working_dir,
+                    permissions=permissions, permission_callback=permission_callback,
+                    bus=bus, hidden_grant_callback=hidden_grant_callback,
+                ),
                 tools_override=tools_override,
                 can_delegate=True,
             )
@@ -816,7 +815,7 @@ class Harness:
             system_base = _gekai_md_system_base(system_base, session)
             system_base = _enrich_system_base(system_base, session.working_dir)
             agent = _build_agent(
-                resolved.model, resolved.api_key, resolved.api_base, resolved.extra_params,
+                resolved,
                 session.working_dir, session.permissions, permission_callback, system_base,
                 hidden_grant_callback=hidden_grant_callback,
             )
@@ -857,7 +856,8 @@ class Harness:
             if not files_touched:
                 answer = f"{answer}\n\nno files were modified this turn"
             return answer, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=False)
-        except Exception:
+        except Exception as exc:
+            _log.warning("root synthesis failed; falling back to mechanical recap: %s", exc)
             recap = _recap(graph, halted=halted)
             if not files_touched:
                 recap = f"{recap}\n\nno files were modified this turn"

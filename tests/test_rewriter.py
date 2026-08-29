@@ -10,7 +10,7 @@ from tests.conftest import mock_llm_response, run
 
 
 def _make_rewriter() -> PromptRewriter:
-    with patch("agent.pipeline.rewriter.AsyncOpenAI"):
+    with patch("agent.openai_client.AsyncOpenAI"):
         return PromptRewriter(model="core-model", api_key="key", api_base="http://localhost")
 
 

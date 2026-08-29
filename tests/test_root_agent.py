@@ -113,10 +113,13 @@ def test_spawn_mode_is_cold():
 _FULL_PERMS = Permissions(read=True, write=True, exec=True)
 
 
+_DUMMY_RESOLVED = ResolvedTier(model="dummy-model", api_key="dummy-key", api_base=None, extra_params={})
+
+
 def _build(tmp_path: Path, subagent: Subagent | None, permissions: Permissions = _FULL_PERMS) -> tuple:
     base = subagent.build_system_base() if subagent else "base prompt"
     agent = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, permissions, None, base, None,
         subagent=subagent,
     )
@@ -153,7 +156,7 @@ def test_tools_block_narrows_with_permissions(tmp_path: Path):
 
 def test_build_agent_tools_override_narrows_selected(tmp_path: Path):
     agent = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, "base prompt", None,
         tools_override=frozenset(READ_TOOLS),
     )
@@ -163,11 +166,11 @@ def test_build_agent_tools_override_narrows_selected(tmp_path: Path):
 
 def test_build_agent_tools_override_none_leaves_selected_unchanged(tmp_path: Path):
     agent_default = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, "base prompt", None,
     )
     agent_explicit_none = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, "base prompt", None,
         tools_override=None,
     )
@@ -181,7 +184,7 @@ def test_build_agent_tools_override_still_respects_subagent_allowlist(tmp_path: 
     # it must not widen the grant back past the subagent's own allowlist.
     sub = Subagent(name="t", namespace="coding", description="d", tools=list(READ_TOOLS))
     agent = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
         subagent=sub,
         tools_override=frozenset(ALL_TOOLS),  # wider than the subagent's own allowlist
@@ -207,7 +210,7 @@ def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
 def test_build_agent_uses_subagent_max_iterations_override(tmp_path: Path):
     sub = Subagent(name="t", namespace="coding", description="d", max_iterations=8)
     agent = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
         subagent=sub,
     )
@@ -217,7 +220,7 @@ def test_build_agent_uses_subagent_max_iterations_override(tmp_path: Path):
 def test_build_agent_falls_back_to_global_default_max_iterations(tmp_path: Path):
     sub = Subagent(name="t", namespace="coding", description="d")  # max_iterations=None -> inherit
     agent = _build_agent(
-        "dummy-model", "dummy-key", None, {},
+        _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
         subagent=sub,
     )

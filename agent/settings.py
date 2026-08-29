@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .atomic_io import atomic_write, lock_for
 from .llm.tiers import DEFAULT_MODEL_CATALOG, ModelCatalogEntry, TierBinding, TierName
 
 
@@ -28,37 +27,6 @@ def _settings_path(working_dir: Path) -> Path:
     return working_dir / ".gekai" / "settings.local.json"
 
 
-# Per-path locks (plus a guard lock protecting the dict itself) serialize the
-# read-modify-write critical section in each save_* below against concurrent
-# callers (e.g. overlapping permission-grant callbacks) racing to update the
-# same settings file.
-_locks: dict[Path, threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _lock_for(path: Path) -> threading.Lock:
-    with _locks_guard:
-        lock = _locks.get(path)
-        if lock is None:
-            lock = threading.Lock()
-            _locks[path] = lock
-        return lock
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.remove(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
 def load_permissions(working_dir: Path) -> Permissions | None:
     path = _settings_path(working_dir)
     if not path.exists():
@@ -75,7 +43,7 @@ def load_permissions(working_dir: Path) -> Permissions | None:
 def save_permissions(working_dir: Path, permissions: Permissions) -> None:
     path = _settings_path(working_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _lock_for(path):
+    with lock_for(path):
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -87,7 +55,7 @@ def save_permissions(working_dir: Path, permissions: Permissions) -> None:
             "exec": "allow" if permissions.exec else "deny",
         }
         perms.setdefault("external", [])
-        _atomic_write(path, json.dumps(data, indent=2) + "\n")
+        atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
 def load_allow_hidden(working_dir: Path) -> set[str]:
@@ -104,7 +72,7 @@ def load_allow_hidden(working_dir: Path) -> set[str]:
 def save_allow_hidden(working_dir: Path, rel: str) -> None:
     path = _settings_path(working_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _lock_for(path):
+    with lock_for(path):
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -113,7 +81,7 @@ def save_allow_hidden(working_dir: Path, rel: str) -> None:
         allow_hidden = perms.setdefault("allow_hidden", [])
         if rel not in allow_hidden:
             allow_hidden.append(rel)
-        _atomic_write(path, json.dumps(data, indent=2) + "\n")
+        atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
 def load_directive_audit_enabled(working_dir: Path) -> bool:
@@ -136,13 +104,13 @@ def load_directive_audit_enabled(working_dir: Path) -> bool:
 def save_directive_audit_enabled(working_dir: Path, enabled: bool) -> None:
     path = _settings_path(working_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _lock_for(path):
+    with lock_for(path):
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
             data = {}
         data.setdefault("directive_audit", {})["enabled"] = enabled
-        _atomic_write(path, json.dumps(data, indent=2) + "\n")
+        atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
 def bootstrap_global_settings() -> None:
@@ -201,7 +169,7 @@ def _load_global_data(path: Path) -> dict:
 
 def _save_global_data(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps(data, indent=2) + "\n")
+    atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
 def _binding_to_dict(binding: TierBinding) -> dict:
@@ -234,7 +202,7 @@ def load_tier_bindings() -> dict[TierName, TierBinding]:
 
 def save_tier_binding(tier: TierName, binding: TierBinding) -> None:
     path = _global_settings_path()
-    with _lock_for(path):
+    with lock_for(path):
         data = _load_global_data(path)
         tiers = data.setdefault("tiers", {})
         tiers[tier.value] = _binding_to_dict(binding)

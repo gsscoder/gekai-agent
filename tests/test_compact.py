@@ -58,7 +58,7 @@ def test_apply_summary_replaces_messages_with_two_entries() -> None:
 def test_summarize_sends_instructions_when_given() -> None:
     tier = _make_tier()
     mock_create = AsyncMock(return_value=mock_llm_response("summary output"))
-    with patch("agent.compact.AsyncOpenAI") as mock_cls:
+    with patch("agent.openai_client.AsyncOpenAI") as mock_cls:
         mock_cls.return_value.chat.completions.create = mock_create
         result = run(summarize(
             [{"role": "system", "content": ROOT_SYSTEM_PROMPT}, {"role": "user", "content": "hi"}],
@@ -74,7 +74,7 @@ def test_summarize_sends_instructions_when_given() -> None:
 def test_summarize_omits_instructions_when_not_given() -> None:
     tier = _make_tier()
     mock_create = AsyncMock(return_value=mock_llm_response("summary output"))
-    with patch("agent.compact.AsyncOpenAI") as mock_cls:
+    with patch("agent.openai_client.AsyncOpenAI") as mock_cls:
         mock_cls.return_value.chat.completions.create = mock_create
         run(summarize(
             [{"role": "system", "content": ROOT_SYSTEM_PROMPT}, {"role": "user", "content": "hi"}],
@@ -88,7 +88,7 @@ def test_summarize_omits_instructions_when_not_given() -> None:
 def test_summarize_drops_original_leading_system_message() -> None:
     tier = _make_tier()
     mock_create = AsyncMock(return_value=mock_llm_response("summary output"))
-    with patch("agent.compact.AsyncOpenAI") as mock_cls:
+    with patch("agent.openai_client.AsyncOpenAI") as mock_cls:
         mock_cls.return_value.chat.completions.create = mock_create
         run(summarize(
             [{"role": "system", "content": ROOT_SYSTEM_PROMPT}, {"role": "user", "content": "hi"}],

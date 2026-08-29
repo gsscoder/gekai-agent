@@ -14,9 +14,7 @@ from __future__ import annotations
 import json
 import re
 
-import httpx
-from openai import AsyncOpenAI
-
+from ..openai_client import build_openai_client
 from ..subagents import SUBAGENTS, Subagent
 from .plan import TaskGraph, parse_task_graph
 
@@ -87,11 +85,7 @@ class Sequencer:
     ) -> None:
         self._model = model
         self._extra_params = extra_params or {}
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=api_base,
-            timeout=httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=30.0),
-        )
+        self._client = build_openai_client(api_key, api_base, read_timeout=120.0)
         roster = [s for s in SUBAGENTS if s.auto_assignable]
         self._full_roster = list(SUBAGENTS)
         self._prompt = _build_prompt(roster)

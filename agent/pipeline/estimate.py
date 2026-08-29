@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
-import httpx
-from openai import AsyncOpenAI
+from ..openai_client import build_openai_client
 
 _log = logging.getLogger(__name__)
 
 
 @dataclass
 class ScopeEstimate:
-    scope: str = "solo"  # "chat" (root solo, no codebase access) | "solo" (root solo, codebase available) | "mutate" (sequencer + interpreter)
+    scope: Literal["chat", "solo", "mutate"] = "solo"  # "chat" (root solo, no codebase access) | "solo" (root solo, codebase available) | "mutate" (sequencer + interpreter)
 
 
 _ESTIMATE_PROMPT = (
@@ -48,11 +48,7 @@ class Estimator:
     ) -> None:
         self._model = model
         self._extra_params = extra_params or {}
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=api_base,
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
-        )
+        self._client = build_openai_client(api_key, api_base)
 
     async def estimate(self, user_input: str, history: list[dict] | None = None) -> ScopeEstimate:
         context_msgs: list[dict] = []

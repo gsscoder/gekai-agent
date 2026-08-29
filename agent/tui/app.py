@@ -2300,8 +2300,4 @@ class GekaiApp(App[None]):
     def _scroll_hint_clicked(self, event: events.Click) -> None:
         event.stop()
         self.action_scroll_to_end()
-
-        self._toggle_esc_pending_clear()
-
-        self._clear_status()
         self._focus_prompt()

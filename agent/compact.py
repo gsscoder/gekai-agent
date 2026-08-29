@@ -8,10 +8,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-import httpx
-from openai import AsyncOpenAI
-
 from .llm.resolve import ResolvedTier
+from .openai_client import build_openai_client
 from .persona import ROOT_SYSTEM_PROMPT
 from .session import Session
 
@@ -62,11 +60,7 @@ async def summarize(messages: list[dict], tier: ResolvedTier, instructions: str 
     The original leading system message, if any, is dropped and replaced by
     the summarization prompt — the model summarizes the transcript, it does
     not continue it. Exceptions propagate; callers handle failure."""
-    client = AsyncOpenAI(
-        api_key=tier.api_key,
-        base_url=tier.api_base,
-        timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
-    )
+    client = build_openai_client(tier.api_key, tier.api_base)
 
     prompt = _SUMMARIZE_PROMPT
     if instructions:
