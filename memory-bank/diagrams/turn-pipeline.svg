@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1180" viewBox="0 0 1400 1180" font-family="ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace">
+  <style>
+    .box  { fill:#1c2029; stroke:#333a46; stroke-width:1 }
+    .h    { fill:#e6e8ee; font-size:14px; font-weight:600 }
+    .t    { fill:#d7dae3; font-size:12.5px }
+    .s    { fill:#848d9d; font-size:11px }
+    .lbl  { fill:#98a1b2; font-size:11px }
+    .cy   { fill:#4ec9d9 }
+    .am   { fill:#e0a458 }
+    .vi   { fill:#a78bfa }
+    .pk   { fill:#e879a6 }
+    .rd   { fill:#f0777f }
+    .ln   { stroke:#4b525f; stroke-width:1.4; fill:none }
+  </style>
+
+  <defs>
+    <marker id="an" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4b525f"/></marker>
+    <marker id="acy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4ec9d9"/></marker>
+    <marker id="aam" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e0a458"/></marker>
+    <marker id="avi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+    <marker id="apk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e879a6"/></marker>
+    <marker id="ard" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f0777f"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="1180" fill="#12141a"/>
+
+  <!-- header -->
+  <text x="40" y="50" class="h" font-size="21">prompt &#8594; answer</text>
+  <text x="40" y="72" class="s">agent/harness/core.py &#183; Harness.stream() &#8212; three rungs, one slash bypass, one shared post-turn review</text>
+
+  <!-- 1. user input -->
+  <rect class="box" x="520" y="108" width="200" height="42" rx="6"/>
+  <text x="620" y="134" class="h" text-anchor="middle">user input</text>
+  <path class="ln" d="M620,150 L620,170" marker-end="url(#an)"/>
+
+  <!-- 2. seed check -->
+  <rect class="box" x="470" y="172" width="300" height="52" rx="6" stroke="#e879a6" stroke-dasharray="4 3"/>
+  <text x="620" y="193" class="t" text-anchor="middle">explicit <tspan class="pk">/agent</tspan> seed given?</text>
+  <text x="620" y="211" class="s" text-anchor="middle">a slash alias skips the Estimator entirely</text>
+  <path class="ln" d="M620,224 L620,248" marker-end="url(#an)"/>
+
+  <!-- seed bypass rail -->
+  <path class="ln" stroke="#e879a6" d="M770,198 L1225,198 L1225,390" marker-end="url(#apk)"/>
+  <text x="784" y="191" class="s" fill="#e879a6">yes &#8212; no Estimator call, no task graph</text>
+
+  <!-- 3. estimator -->
+  <rect class="box" x="430" y="250" width="380" height="76" rx="6"/>
+  <text x="620" y="273" class="h" text-anchor="middle">Estimator</text>
+  <text x="620" y="292" class="s" text-anchor="middle">one FAST-tier call &#183; temperature 0 &#183; last 6 user/assistant turns</text>
+  <text x="620" y="310" class="s" text-anchor="middle">ordinal scale CHAT &#8834; SOLO &#8834; MUTATE &#183; unparseable &#8594; solo</text>
+
+  <!-- fan -->
+  <path class="ln" d="M620,326 L620,352"/>
+  <path class="ln" d="M170,352 L870,352"/>
+  <path class="ln" stroke="#4ec9d9" d="M170,352 L170,390" marker-end="url(#acy)"/>
+  <path class="ln" stroke="#e0a458" d="M480,352 L480,390" marker-end="url(#aam)"/>
+  <path class="ln" stroke="#a78bfa" d="M870,352 L870,390" marker-end="url(#avi)"/>
+  <text x="180" y="378" class="s" fill="#4ec9d9">chat</text>
+  <text x="490" y="378" class="s" fill="#e0a458">solo</text>
+  <text x="880" y="378" class="s" fill="#a78bfa">mutate</text>
+
+  <!-- lane: chat -->
+  <rect class="box" x="60" y="396" width="220" height="132" rx="6" stroke="#4ec9d9"/>
+  <text x="170" y="420" class="h" text-anchor="middle" fill="#4ec9d9">root &#183; no graph</text>
+  <text x="76" y="444" class="t">tools_override = &#8709;</text>
+  <text x="76" y="463" class="s">no tool schemas at all</text>
+  <text x="76" y="484" class="t">thinking explicitly off</text>
+  <text x="76" y="503" class="s">provider disable payload,</text>
+  <text x="76" y="519" class="s">not a bare {}</text>
+
+  <!-- lane: solo -->
+  <rect class="box" x="330" y="396" width="300" height="132" rx="6" stroke="#e0a458"/>
+  <text x="480" y="420" class="h" text-anchor="middle" fill="#e0a458">root &#183; no graph</text>
+  <text x="346" y="444" class="t">full tool set (permission-filtered)</text>
+  <text x="346" y="464" class="t">directive pump + GEKAI.md injected</text>
+  <text x="346" y="484" class="t">warm ctx: last 2 turn pairs</text>
+  <text x="346" y="504" class="t">answer text streams live</text>
+  <text x="346" y="521" class="s">root-dispatch tier, never modulated</text>
+
+  <!-- lane: mutate -->
+  <rect class="box" x="700" y="396" width="340" height="86" rx="6" stroke="#a78bfa"/>
+  <text x="870" y="420" class="h" text-anchor="middle" fill="#a78bfa">Sequencer</text>
+  <text x="716" y="443" class="t">one CORE call &#183; effort high &#183; thinking off</text>
+  <text x="716" y="463" class="s">emits a validated TaskGraph; every step agent must</text>
+  <text x="716" y="477" class="s">be an auto-assignable roster name &#8212; "root" is rejected</text>
+
+  <path class="ln" stroke="#e0a458" stroke-dasharray="5 4" d="M700,452 L638,452" marker-end="url(#aam)"/>
+  <text x="646" y="444" class="s" fill="#e0a458" text-anchor="end">invalid graph</text>
+  <text x="646" y="428" class="s" fill="#e0a458" text-anchor="end">&#8594; fall back to solo</text>
+
+  <path class="ln" stroke="#a78bfa" d="M870,482 L870,508" marker-end="url(#avi)"/>
+
+  <rect class="box" x="700" y="512" width="340" height="120" rx="6" stroke="#a78bfa"/>
+  <text x="870" y="536" class="h" text-anchor="middle" fill="#a78bfa">interpreter &#183; run_task_graph()</text>
+  <text x="716" y="559" class="t">execute &#8594; verify &#8594; repair &#8594; re-verify &#8594; halt</text>
+  <text x="716" y="580" class="s">fixed walker &#8212; knows no agent by name or role</text>
+  <text x="716" y="597" class="s">each step is a cold subagent run (prior = [])</text>
+  <text x="716" y="614" class="s">tools narrowed per step scope, tier scaled per node</text>
+
+  <path class="ln" stroke="#a78bfa" d="M870,632 L870,658" marker-end="url(#avi)"/>
+
+  <rect class="box" x="700" y="662" width="340" height="86" rx="6" stroke="#a78bfa"/>
+  <text x="870" y="686" class="h" text-anchor="middle" fill="#a78bfa">root &#183; _respond()</text>
+  <text x="716" y="709" class="t">synthesizes the reply the user sees</text>
+  <text x="716" y="728" class="s">recency + graph.summary + every StepResult.output</text>
+  <text x="716" y="743" class="s">halt &#8594; root narrates it &#183; crash &#8594; mechanical _recap()</text>
+
+  <!-- lane: seed -->
+  <rect class="box" x="1090" y="396" width="270" height="132" rx="6" stroke="#e879a6"/>
+  <text x="1225" y="420" class="h" text-anchor="middle" fill="#e879a6">named subagent</text>
+  <text x="1106" y="444" class="t">bound to this session</text>
+  <text x="1106" y="464" class="t">warm ctx, not a cold spawn</text>
+  <text x="1106" y="484" class="t">tool ceiling clamped</text>
+  <text x="1106" y="504" class="s">no directive pump, no GEKAI.md</text>
+  <text x="1106" y="520" class="s">skips _respond(); yields own text</text>
+
+  <!-- merge -->
+  <path class="ln" stroke="#4ec9d9" d="M170,528 L170,790"/>
+  <path class="ln" stroke="#e0a458" d="M480,528 L480,790"/>
+  <path class="ln" stroke="#a78bfa" d="M870,748 L870,790"/>
+  <path class="ln" stroke="#e879a6" d="M1225,528 L1225,790"/>
+  <path class="ln" d="M170,790 L1225,790"/>
+  <path class="ln" d="M620,790 L620,816" marker-end="url(#an)"/>
+
+  <!-- 4. review gate -->
+  <rect class="box" x="455" y="820" width="330" height="52" rx="6"/>
+  <text x="620" y="841" class="t" text-anchor="middle">did this turn actually change files?</text>
+  <text x="620" y="859" class="s" text-anchor="middle">same gate for every path above</text>
+
+  <path class="ln" stroke="#f0777f" d="M620,872 L620,890 L310,890 L310,906" marker-end="url(#ard)"/>
+  <text x="330" y="904" class="s" fill="#f0777f">yes</text>
+
+  <path class="ln" d="M785,846 L1150,846 L1150,1084 L724,1084" marker-end="url(#an)"/>
+  <text x="796" y="838" class="s">no change, or tool-call budget exhausted</text>
+
+  <!-- review chain -->
+  <rect class="box" x="180" y="910" width="260" height="72" rx="6" stroke="#f0777f"/>
+  <text x="310" y="933" class="h" text-anchor="middle" fill="#f0777f">change-reviewer</text>
+  <text x="196" y="954" class="t">read-only, this turn's own diff</text>
+  <text x="196" y="971" class="s">verdict: CLEAN | FINDINGS (fails open)</text>
+
+  <path class="ln" stroke="#f0777f" d="M440,946 L496,946" marker-end="url(#ard)"/>
+  <text x="468" y="938" class="s" fill="#f0777f" text-anchor="middle">FINDINGS</text>
+
+  <rect class="box" x="500" y="910" width="240" height="72" rx="6" stroke="#f0777f"/>
+  <text x="620" y="933" class="h" text-anchor="middle" fill="#f0777f">code-fixer</text>
+  <text x="516" y="954" class="t">one bounded repair attempt</text>
+  <text x="516" y="971" class="s">gets the finding, corrects it</text>
+
+  <path class="ln" stroke="#f0777f" d="M740,946 L796,946" marker-end="url(#ard)"/>
+
+  <rect class="box" x="800" y="910" width="260" height="72" rx="6" stroke="#f0777f"/>
+  <text x="930" y="933" class="h" text-anchor="middle" fill="#f0777f">change-reviewer (again)</text>
+  <text x="816" y="954" class="t">re-checks the repaired diff</text>
+  <text x="816" y="971" class="s">user is warned only if still FINDINGS</text>
+
+  <path class="ln" d="M310,982 L310,1084 L516,1084" marker-end="url(#an)"/>
+  <text x="322" y="1006" class="s">CLEAN</text>
+  <path class="ln" d="M930,982 L930,1030 L620,1030 L620,1056" marker-end="url(#an)"/>
+
+  <!-- final -->
+  <rect class="box" x="520" y="1060" width="200" height="48" rx="6" stroke="#5a6373"/>
+  <text x="620" y="1090" class="h" text-anchor="middle">answer to user</text>
+
+  <!-- footnotes -->
+  <text x="40" y="1148" class="s">chat and solo are the same single root run &#8212; they differ only in tool schemas and reasoning params; only mutate builds a task graph.</text>
+  <text x="40" y="1165" class="s">Root never appears as a step inside the graph: it owns the turn around the graph's execution, not a place in it.</text>
+</svg>

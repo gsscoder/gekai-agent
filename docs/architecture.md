@@ -2,66 +2,65 @@
 
 ## Overview
 
-**Plan 27 supersedes plans 25/26.** `delegate`-in-main (a tool main could elect to call) and NL
-agent-quoting ("use code-expert to…") are retired outright — no hybrid, no flag gate. Control
-flow for any workspace mutation now lives in engineered harness code, not in the core model's
-turn-by-turn judgement: **Gate (guard) → Estimator (guard) → Sequencer (CORE thinking, mutation
-path only) → fixed interpreter**. The only explicit way to summon a specific agent is `/agent-x`,
-which dispatches the whole turn directly to that agent — bypassing the Estimator, the Sequencer,
-and the task graph entirely, not "seeding" the sequencer's decomposition.
+**Plan 27 supersedes plans 25/26; plan 33 folds the old two-guard `Gate → Estimator` design into
+one.** `delegate`-in-root (a tool root could elect to call) and NL agent-quoting ("use code-expert
+to…") are retired outright — no hybrid, no flag gate. Control flow for any workspace mutation lives
+in engineered harness code, not in the core model's turn-by-turn judgement: a single **Estimator**
+call (FAST-tier model, non-thinking) classifies every turn onto an ordinal 3-rung scale, `CHAT ⊂ SOLO
+⊂ MUTATE`, and only `MUTATE` reaches the **Sequencer** (CORE tier, thinking explicitly off) and the fixed interpreter.
+`Gate`/`Route` no longer exist anywhere in the codebase — plan 33 merged the old chit-chat/act axis
+into the Estimator's own `CHAT` rung (an unrecognized token falls to `SOLO`, never silent — the same
+"never fail to silence" property `Gate`'s old ACT-fallback had, just at the new safe-middle rung).
+The only explicit way to summon a specific agent is an invocable subagent's own slash alias (e.g.
+`/refactor`, `/fix`, `/build`) — this `seed` dispatches the whole turn directly to that agent,
+bypassing the Estimator, the Sequencer, and the task graph entirely, not "seeding" the sequencer's
+decomposition.
 
 ```
 user input
     │
-    ▼
-Gate                   [supp model, non-thinking] — one call per turn; chit-chat/act guard only
-    │                  TRIVIAL | ACT   (REJECTED <name> retired — rejection is now
-    │                                   capability-based, at the /agent-x command layer)
-    │
-    ├── TRIVIAL ─────────────────────────────────────────────────────────────────┐
-    │   greeting / identity / general knowledge — answerable with no codebase    │
-    │   access                                                                   │
-    │                                                                            │
-    └── ACT (unknown token also falls to ACT — never silent)                    │
-        any request that requires codebase access or workspace action            │
-                                                                                 │
-    ┌────────────────────────────────────────────────────────────────────────────┘
-    │
-    ▼
-Estimator               [supp model, non-thinking] — trivial-vs-mutate guard (subagent=None only)
-    │                    TRIVIAL | MUTATE
-    │
-    ├── TRIVIAL ──────────────────────────────────────────┐  no ceremony — main solo,
-    │   a single small file, a few edits, a read/query     │  no sequencer, deliberately loose
-    │                                                       │
-    └── MUTATE ─────────────┐                              │
-        or an explicit      │                              │
-        /agent-x seed       │                              │
-                             ▼                              │
-                        Sequencer          [core model, CORE thinking — one call]
-                        decomposition (main/auto-assignable steps, dependency order)
-                        + measurement (preventive verify/repair placement by complexity)
-                             │
-                             ▼                              │
-                        Plan               data — flat list of {agent, task, verify, repair}
-                             │                              │
-                             ▼                              │
-                        Interpreter         fixed, engineered, knows no agent by name
-                        execute → verify → repair → re-verify → halt, per step;
-                        empty dispatch output is always a failure
-                             │                              │
-              ┌──────────────┴──────────────┐               │
-              │                              │               │
-        step.agent == "main"          step.agent == <subagent>
-        direct instruction,           run_subagent(...) — cold, fire-and-forget,
-        no spawn                      traced on main's session bus
-                                                                                 │
-    ┌────────────────────────────────────────────────────────────────────────────┘
+    ├── explicit /<alias> seed (e.g. /refactor, /fix, /build) — bypasses the Estimator ────┐
+    │                                                                                        │
+    ▼                                                                                        │
+Estimator        [FAST-tier model, non-thinking] — one call per turn (subagent=None only)    │
+    │             CHAT | SOLO | MUTATE — unparseable output, or a call failure, falls to      │
+    │             SOLO, never silent: over-estimating from CHAT just keeps the codebase       │
+    │             available (harmless); under-estimating from MUTATE just skips planning      │
+    │             (still solo-capable)                                                        │
+    │                                                                                          │
+    ├── CHAT ── tools_override=frozenset() (no tool schemas), thinking off ──────┐            │
+    │   greeting / identity / general knowledge — no codebase access needed      │            │
+    │                                                                             │            │
+    ├── SOLO ── full tool set, normal effort/thinking ───────────────────────────┤            │
+    │   a single small file, a few small edits, or a read/query                  │            │
+    │                                                                             │            │
+    └── MUTATE ──────────────┐                                                   │            │
+        multi-file/module,   │                                                   │            │
+        or a distinct unit   ▼                                                   │            │
+        of work         Sequencer   [CORE-tier model, thinking off — one call]   │            │
+                         decomposition (auto-assignable steps only, dependency    │            │
+                         order) + measurement (preventive verify/repair          │            │
+                         placement by complexity)                                │            │
+                              │                                                  │            │
+                              ▼                                                  │            │
+                         TaskGraph   data — summary + flat list of               │            │
+                                     {agent, instruction, verify, repair, scope} │            │
+                              │                                                  │            │
+                              ▼                                                  │            │
+                         interpreter   fixed, engineered, knows no agent by      │            │
+                         name; root is never a step agent. execute → verify →   │            │
+                         repair → re-verify → halt, per step; empty dispatch    │            │
+                         output is always a failure. an invalid graph           │            │
+                         (ValueError) falls back to the SOLO path below         │            │
+                              │                                                  │            │
+    ┌─────────────────────────┴──────────────────────────────────────────────────┴────────────┘
     │
     ▼
-main's session — every spawn and its outcome recorded; a halt reports which step
-failed and keeps completed work (no rollback); a mechanical recap is appended to
-session history so the next turn is not answered blind
+root's session — every spawn and its outcome recorded; a halt reports which step failed and
+keeps completed work (no rollback); root then synthesizes the user-facing answer (`_respond`,
+a real LLM call, not a mechanical recap — see Sequencer + Interpreter below); after any turn
+that touched files, an automatic post-turn review runs before the answer reaches the user
+(see Post-Turn Review below)
 ```
 
 ---
@@ -73,7 +72,7 @@ session history so the next turn is not answered blind
 ```
 index  role      content
 ─────────────────────────────────────────────────────────
-  0    system    SYSTEM_PROMPT
+  0    system    ROOT_SYSTEM_PROMPT
   1    system    <workspace> block  (TOON-encoded, injected fresh on startup)
   …    user      prior turns
   …    assistant prior turns
@@ -104,12 +103,12 @@ needs `Subagent`, which lives in `subagents`).
 It splits identity from body so a subagent never stacks two competing "you are" assertions:
 
 ```
-_IDENTITY_MAIN   "you are Gekai, a coding agent…" + capability statement   — main agent only
+_IDENTITY_ROOT   "you are Gekai, a coding agent…" + capability statement   — root only
 _IDENTITY_SUB    "you are part of Gekai…"          + tool-neutral capability — subagent only
 _SHARED_BODY     meta-rule + <behavior> + <file_handling> + <response_style> + <output_format>
                  — specialization-independent, reused verbatim by both
 
-SYSTEM_PROMPT = _IDENTITY_MAIN + _SHARED_BODY    ← byte-identical to the pre-split constant
+ROOT_SYSTEM_PROMPT = _IDENTITY_ROOT + _SHARED_BODY + "\n<directives>\n" + _ROOT_DIRECTIVES
 ```
 
 A subagent is a scoped role *played within* Gekai, not Gekai itself — `_IDENTITY_SUB` keeps
@@ -125,7 +124,7 @@ assigned set intersects ("any") or fully contains ("all") its trigger group — 
 never references a tool the agent doesn't actually have. `render_tool_instruction(ALL_TOOLS)`
 reproduces the original static instruction string verbatim.
 
-In **direct mode** the `Harness` composes: `SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(<full registered set>)`.
+In **direct mode** the `Harness` composes: `ROOT_SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(<full registered set>)`.
 
 In **spawn mode** the selected `Subagent` builds its own *base* via `build_system_base()`:
 
@@ -151,7 +150,7 @@ mission-free craft-text block, e.g. `coding/__init__.py`, `testing/__init__.py`)
 `namespace_directive_rank` int (lower = higher priority). `agent/subagents/__init__.py._discover()`
 collects these into two module-level exports, `NAMESPACE_DIRECTIVES` and
 `NAMESPACE_DIRECTIVE_RANK`, disjoint from `Subagent.directives` (the deep, mission-presupposing
-per-role text a specialist gets from `build_system_base()` — this never escapes to main).
+per-role text a specialist gets from `build_system_base()` — this never escapes to root).
 
 `detect_domains(prompt)` reads backtick-quoted file-path extensions and a small keyword lexicon
 out of the raw prompt (no filesystem access, no located-files list — nothing upstream of the
@@ -362,105 +361,118 @@ The TUI implementation pauses the status timer, asks `"Grant {mode} access to hi
 
 ---
 
-## Gate
-
-`Gate` is a **pure chit-chat/act guard** — plan 27 improvement 4 dropped the `REJECTED <name>`
-branch entirely. `Gate.gate(user_input, history=None)` makes **one LLM call** on the **support
-model (non-thinking)**, temperature 0, and returns a single `Route`.
-
-```python
-@dataclass
-class Route:
-    trivial: bool = False
-```
-
-An unrecognized token falls to `Route()` (ACT) rather than silently downgrading — the gate never
-suppresses action.
-
-**History context:** last 6 user/assistant turns prepended before the user message.
-
-The gate prompt produces exactly one of two tokens:
-
-```
-GATE_PROMPT
-├── TRIVIAL          answerable with no codebase access — greetings, identity/capability
-│                    questions, acknowledgments, general knowledge unrelated to this
-│                    workspace; when unsure, NOT this
-└── ACT              any request requiring codebase access or workspace action;
-                     unknown/malformed token also falls here — fail to action, not silence
-```
-
-`TRIVIAL` is deliberately conservative — a false `ACT` costs only the main agent's time, while a
-false `TRIVIAL` would deny a real codebase question any tool access.
-
-**No agent-quoting in prose.** "use code-expert to do X" is not a routing directive — the model
-reads it for intent (`do X`) and routes normally; the "use code-expert" mention is ignored, never
-name-checked. `detect_subagent_mentions` and the `<subagents_request>` injection (plan 26) are
-deleted outright. The only explicit way to summon a specific agent is `/agent-x` (a TUI command,
-not a Gate output) — an unknown `/agent-x` is rejected at the command layer, never by the model
-naming an agent that doesn't exist.
-
-### Gate table
-
-| Output token         | Route                | Notes                                          |
-|-----------------------|----------------------|------------------------------------------------|
-| `TRIVIAL`             | `Route(trivial=True)`| Harness non-thinking (`extra_params={}`), no Estimator/Sequencer |
-| `ACT`                 | `Route()`             | falls through to the Estimator guard            |
-| unexpected/malformed  | `Route()`             | warning logged; falls to ACT                    |
-
----
-
 ## Estimator
 
-`Estimator` is the second guard — a **trivial-vs-mutate binary**, run only when `Gate` returned
-`ACT` and the turn is not itself a subagent's own nested run. One LLM call, support model,
-non-thinking, temperature 0.
+`Estimator` (`agent/pipeline/estimate.py`) replaces the old two-guard `Gate → Estimator` design
+(plan 33) with a single guard: one LLM call, FAST-tier model, non-thinking, temperature 0, run only
+when `subagent is None` and no explicit `seed` was given. It classifies the turn onto an ordinal
+3-rung scope, not a binary — `CHAT ⊂ SOLO ⊂ MUTATE` — replacing both the old `Gate`'s
+chit-chat/act split and the old `Estimator`'s trivial/mutate split with one call and one scale.
 
 ```python
 @dataclass
 class ScopeEstimate:
-    mutate: bool = False
+    scope: str = "solo"  # "chat" | "solo" | "mutate"
 ```
 
-| Output   | Meaning                                                        | Next stage         |
-|----------|-----------------------------------------------------------------|---------------------|
-| `TRIVIAL`| a single small file, a few small edits, or a read/query          | main solo, no sequencer (case 2 — deliberately loose) |
-| `MUTATE` | implementation-sized: multiple files/modules, a distinct unit    | Sequencer + interpreter (case 4) |
+| Output   | Meaning                                                              | Next stage |
+|----------|-----------------------------------------------------------------------|------------|
+| `CHAT`   | answerable with no codebase access: greetings, identity/capability questions, acknowledgments, general knowledge unrelated to this workspace | root solo, no tool schemas (`tools_override=frozenset()`), thinking explicitly disabled |
+| `SOLO`   | a single small file, a few small edits, or a read/query; no specialist unit of work is implied | root solo, full tool set, normal effort/thinking — deliberately loose, no sequencer |
+| `MUTATE` | implementation-sized: multiple files/modules, or a distinct unit of work such as a full module or test suite | Sequencer + interpreter (`_stream_graph`) |
 
-An explicit `/agent-x` seed **bypasses the Estimator, the Sequencer, and the task graph entirely**
-— `Harness.stream()` resolves it directly against the subagent roster and dispatches that agent on
-the same no-graph path root normally runs (warm session context, no verify/repair/halt walk, since
-there is no task graph to walk).
+Any unparseable model output, or a call failure, logs a warning and falls back to `SOLO` — never
+silent, and never the two extremes: `CHAT` would wrongly deny codebase access, `MUTATE` would spend
+a planning call the request never asked for. This mirrors the old `Gate`'s "unknown token falls to
+ACT, never silence" guarantee, just landing on the new middle rung instead of a separate guard
+stage.
+
+**History context:** last 6 user/assistant turns prepended before the user message — this is why a
+follow-up like `"yes"` / `"do it"` classifies correctly using prior turns instead of reading as a
+context-free `CHAT`.
+
+An explicit `/<alias>` seed (an invocable subagent's own slash command, e.g. `/refactor`, `/fix`,
+`/build` — see [Subagent Routing](#subagent-routing)) **bypasses the Estimator entirely**
+(`estimate_decision = "dispatch"`) — `Harness.stream()` resolves it directly against the subagent
+roster and dispatches that agent on the same no-graph path `SOLO`/`CHAT` use, with warm session
+context (not the cold `prior=[]` a graph-spawned subagent step gets).
 
 ---
 
 ## Sequencer + Interpreter
 
-Plan 27 replaces `delegate`-in-main with two engineered pieces:
+Plan 27 replaces `delegate`-in-root with two engineered pieces:
 
-- **Sequencer** (`agent/pipeline/sequencer.py`) — CORE thinking, one call per mutation turn.
-  `Sequencer.sequence(user_input)` takes no seed (an explicit `/agent-x` seed never reaches the
-  sequencer at all — it bypasses this stage entirely). Given the request, returns a raw plan text the model itself decomposes
-  into ordered steps assigned to `main` or an **auto-assignable** subagent (`code-expert`,
-  `test-expert`), each carrying `verify`/`repair` when the model judges the step's complexity
-  warrants a preventive check (the complexity *metric* itself remains an open design point — see
-  `_agentfiles/27_plan_gate_and_data_plan.md`; today the model's own in-prompt judgment is the
-  mechanical placeholder). The raw output is parsed and validated by `agent/pipeline/plan.py`'s
-  `parse_plan` — schema, roster, and phase-eligibility checked, fail loud on any violation.
-- **Interpreter** (`agent/harness/interpreter.py`) — a **fixed**, engineered step-runner. Walks the
-  validated `Plan` with `execute → verify → repair → re-verify → halt`. It knows no agent by name
-  or role; `dispatch(agent, task)` is the only seam, supplied by the caller. An empty dispatch
-  output is always treated as a failure. A step failing verify once is repaired (the named
-  `repair` agent, or a re-dispatch of `step.agent` if none is named) and re-verified; a second
-  failure halts the whole plan in place — completed steps' work is kept, nothing rolls back.
+- **Sequencer** (`agent/pipeline/sequencer.py`) — CORE tier, one call per `MUTATE` turn, thinking
+  explicitly off (a live probe measured ~90s median with CORE's own thinking-on default against
+  ~13s with it off, at equal-or-better plan quality — see [LLM Integration](#llm-integration)).
+  `Sequencer.sequence(user_input)` takes no seed (an explicit `/<alias>` seed never reaches the
+  sequencer at all — it bypasses this stage entirely). Given the request, the model decomposes it
+  into ordered steps assigned to an **auto-assignable** subagent (`code-expert`, `test-expert`,
+  …) — never to root; each step carries `verify`/`repair` when the model judges the step's
+  complexity warrants a preventive check (the complexity *metric* itself remains an open design
+  point — today the model's own in-prompt judgment is the mechanical placeholder). The raw output
+  is parsed and validated by `agent/pipeline/plan.py`'s `parse_task_graph` — schema, roster, and
+  phase-eligibility checked, fail loud (`ValueError`) on any violation.
+- **Interpreter** (`agent/harness/interpreter.py`, `run_task_graph`) — a **fixed**, engineered
+  step-runner. Walks the validated `TaskGraph` with `execute → verify → repair → re-verify → halt`.
+  It knows no agent by name or role; `dispatch(agent, instruction, mission, signal, step_scope)` is
+  the only seam, supplied by the caller. An empty dispatch output, or one that starts with
+  `run_subagent`'s `ERROR_PREFIX` (a crashed nested run), is always treated as a failure. A step
+  failing verify once is repaired (the named `repair` agent, or a re-dispatch of `step.agent` if
+  none is named) and re-verified; a second failure raises `TaskGraphHalted` — completed steps' work
+  is kept, nothing rolls back, and the exception carries every `StepResult` so far.
 
-`agent/harness/core.py`'s `Harness._stream_plan` wires the two together for production: `dispatch`
-runs `main` steps as a direct instruction (no spawn) via the same `_build_agent` used elsewhere,
-and subagent steps via `run_subagent` (`agent/tools/delegate.py`) — a cold, fire-and-forget nested
-run whose start/outcome are traced on the same `EventBus` the single-agent path uses, so
-diff/log/delegation rendering is shared, not reimplemented. A plan run ends with a **mechanical**
-(no narrator LLM call) recap of every step's outcome, yielded as the turn's assistant text so it
-persists into session history for the next turn's continuity.
+`agent/harness/core.py`'s `Harness._stream_graph` wires the two together for production: the
+`dispatch` closure runs every step — root is never a step agent, `ROOT_AGENT` fails
+`parse_task_graph`'s roster check by construction — via `run_subagent`
+(`agent/tools/delegate.py`), a cold, fire-and-forget nested run whose start/outcome are traced on
+the same `EventBus` the no-graph path uses, so diff/log/delegation rendering is shared, not
+reimplemented. If `Sequencer.sequence()` raises `ValueError` (an invalid graph), `_stream_graph`
+falls back to the same no-graph solo path `SOLO` takes (`_stream_solo`, `emit_start_event=False`)
+instead of failing the turn.
+
+Once the graph finishes — or halts — **root synthesizes the turn's user-facing answer itself**, in
+`Harness._respond()`: a real root LLM call (session recency + the graph's own `summary` + every
+`StepResult.output`), run at the `root-dispatch` touchpoint like any other root call. This is not a
+mechanical recap — root writes the actual reply the user reads, and on a halt it also narrates what
+happened and why. Only if `_respond()` itself raises (empty synthesis, a model/network error) does
+the harness fall back to `_recap()`, a mechanical, no-LLM summary built from `graph.summary` plus
+halt info — this fail-soft path exists so a turn is never lost to its own wrap-up, but it is not the
+normal completion behavior.
+
+---
+
+## Post-Turn Review
+
+After **every** turn — any rung (`chat`/`solo`/`mutate`) or an explicit `/<alias>` seed — that
+actually touched files, `Harness._maybe_review()` (`agent/harness/core.py`) runs an automatic
+fresh-eyes review before the answer reaches the user. This mirrors the interpreter's own
+`execute → verify → repair → re-verify` shape one level up: whole-turn instead of single-step.
+
+- **Skipped** when no files were touched this turn, or when the turn hit its tool-call budget —
+  reviewing admittedly unfinished work isn't useful; a follow-up turn's own review covers the
+  eventual finished state.
+- **Review.** The read-only `change-reviewer` subagent (`agent/subagents/generic/change_reviewer.py`)
+  is dispatched via `run_subagent` at the `subagent-dispatch` touchpoint, given the user's request,
+  the list of files changed, and the agent's own report of what it did. It checks the turn's actual
+  diff (not just final file state) for genuine correctness defects and answers with a first line of
+  exactly `CLEAN` or `FINDINGS` followed by up to 5 concrete findings.
+- **Repair.** A `FINDINGS` verdict gets exactly one bounded repair attempt: the `code-fixer`
+  subagent (`agent/subagents/coding/code_fixer.py`) receives the finding text and fixes it, its
+  tool calls and diffs rendering on the turn's own event bus like any other step. `change-reviewer`
+  then re-reviews the repaired diff.
+- **Fails open throughout.** Anything that isn't literally `CLEAN` or a `FINDINGS`-prefixed string —
+  a crashed dispatch, a malformed verdict — is treated as clean and never blocks or surfaces
+  anything.
+- **Only the second verdict can reach the user.** A first-round `CLEAN`, or a `FINDINGS` that the
+  repair actually fixed, never surfaces. Only if the **re-review** still returns `FINDINGS` does the
+  harness yield a `ReviewFindingsEvent` — the TUI mounts it as a warning (`"review findings:\n
+  {report}"`) and persists it to session history under `event(source="review")`.
+
+Both branches of `Harness.stream()` — the no-graph path (`chat`/`solo`/seed) and the graph path
+(`mutate`) — call `_maybe_review()` identically after collecting `files_touched` and the turn's
+final answer text, so the review layer is uniform across every rung.
 
 ---
 
@@ -481,10 +493,11 @@ class Subagent:
     directives: str = ""   # the *how* — operational specifics
     tools: list[str] | None = None        # allowlist; None = all tools
     permissions: Permissions | None = None # overlay, ANDed with session permissions
-    user_invocable: bool = True    # router menu + /agent-x eligibility; False = system-managed worker
+    user_invocable: bool = True    # router menu + slash-alias eligibility; False = system-managed worker
+    alias: str = ""                # if set and user_invocable, the slash command typed instead of `name`
     auto_assignable: bool = False  # plan 27: phase-1 decomposition may assign it;
-                                    # False = post-planning-only (verify/repair agents, e.g. the
-                                    # coming fact-checker) — never assigned by prompt decomposition
+                                    # False = post-planning-only (verify/repair agents) — never
+                                    # assigned by prompt decomposition
 
     def build_system_base(self) -> str: ...  # _IDENTITY_SUB + mandate + _SHARED_BODY + <directives>
                                               # <tools> appended later by the Harness
@@ -496,37 +509,42 @@ into the agent's own context once spawned — "who you act as right now," distin
 `directives` ("how to do it"). `tools` is a name allowlist (mirrored against
 `agent/tools/catalog.py` to guard against drift); `permissions` lets a subagent further
 *restrict* — never escalate beyond — the session's grant. `auto_assignable` is orthogonal to
-`user_invocable`: `code-expert`/`test-expert` are both (sequencer may assign them, `/agent-x` can
-dispatch them directly, bypassing the sequencer); a verify/repair agent is `user_invocable=True, auto_assignable=False` (slash-summonable,
-but never assigned by phase-1 decomposition). See [System Prompt Assembly](#system-prompt-assembly)
+`user_invocable`: `code-expert`/`test-expert` are both (sequencer may assign them, their own
+`/<alias>` seed can dispatch them directly, bypassing the sequencer); a verify/repair-only agent is
+`user_invocable=True, auto_assignable=False` (slash-summonable, but never assigned by phase-1
+decomposition). `change-reviewer` (see [Post-Turn Review](#post-turn-review)) is
+`user_invocable=False` — a system-managed worker, dispatched only by the harness itself, never
+directly by a user. `code-fixer`, also dispatched by [Post-Turn Review](#post-turn-review)'s repair
+step, is an ordinary `user_invocable=True, auto_assignable=True` specialist (alias `/fix`) the rest
+of the time — the harness reuses it, it isn't a separate system-only worker. See
+[System Prompt Assembly](#system-prompt-assembly)
 for the full funnel and [Harness — Tool Loop](#harness--tool-loop) for how the allowlist and
 permissions jointly determine the *effective* tool set (and therefore the `<tools>` prompt content).
 
 Package layout: `__init__.py` exports `Subagent`, `SUBAGENTS`, `NAMESPACES`, `validate_registry`,
 and `_discover()` auto-discovery.
-One file per subagent — currently just `code_expert.py`.
-Namespace-level shared directives live in `_coding.py` (namespace = `"coding"`) — composed into
-`subagent.directives` at import time via `dataclasses.replace`.
+One file per subagent.
+Namespace-level shared directives live alongside each namespace's `__init__.py` (namespace =
+`"coding"`, `"testing"`, `"generic"`) — composed into `subagent.directives` at import time.
 Adding a subagent = drop one file; zero other changes required.
 
-`NAMESPACES` includes `"coding"`, `"testing"`, and `"generic"` (innate — no subagents; selector
-skipped). There is no fallback subagent: each subagent stands on its own `description`. `main` is the
-**generalist default** — general or simple requests, reading/explaining/running code, and
-and all general/glue/scaffolding work in a plan; pick a subagent only when
-the request clearly fits its specialty. `code-expert` handles **decided behavior work** —
-features and behavior-changing rewrites where the approach is already decided; it owns its assigned
-step's implementation in full; its `description` excludes general/scaffolding/glue work (that's
-`main`), all bug fixing regardless of how obvious the fix (that's `code-fixer`'s domain — trace
-root cause first, then apply the minimal correction), and pure refactors / complexity-reduction
-passes with no behavior change (those go to `code-refactorer`).
+`NAMESPACES` includes `"coding"`, `"testing"`, and `"generic"`. There is no fallback subagent to
+route an unmatched request to — root itself is that fallback: general or simple requests, and
+anything the sequencer decomposes into scaffolding/glue work, land on whichever auto-assignable
+subagent the sequencer picks, since root is never a step agent. `code-expert` handles **decided
+behavior work** — features and behavior-changing rewrites where the approach is already decided; it
+owns its assigned step's implementation in full; its `description` excludes all bug fixing
+regardless of how obvious the fix (that's `code-fixer`'s domain — trace root cause first, then
+apply the minimal correction), and pure refactors / complexity-reduction passes with no behavior
+change (those go to `code-refactorer`).
 
 `validate_registry()` runs at startup — raises if any namespace in `NAMESPACES` has no badge
-color, a subagent has an unknown namespace, or names collide.
+color, a subagent has an unknown namespace, or names/aliases collide.
 
 Subagent selection is performed by the Sequencer (phase-1 decomposition, auto-assignable roster
-only) — see [Sequencer + Interpreter](#sequencer--interpreter) above — or explicitly via `/agent-x`
-(dispatches that agent directly, bypassing the sequencer/task graph entirely; unknown `/agent-x`
-rejected at the command layer).
+only) — see [Sequencer + Interpreter](#sequencer--interpreter) above — or explicitly via a
+subagent's own `/<alias>` seed (dispatches that agent directly, bypassing the sequencer/task graph
+entirely; unknown seeds are rejected at the command layer).
 
 > **Subagent vs harness-worker:** `Subagent` serves a *user-turn* — it is spawned from user
 > intent via routing. A separate, still-unbuilt `harness-worker` category would instead serve
@@ -548,71 +566,78 @@ effective = Permissions(
 ### TUI status indicator
 
 `#input-area` container `border_title` shows the current pipeline stage as it advances
-(`route` → `main`/sequencer-badge names as `SubAgentStartEvent`/`DelegationStartEvent` arrive), not
-a single per-turn label keyed on `route.subagent` (that field is gone — plan 27 improvement 4).
-An `/agent-x` seed now once again means "the whole turn runs as that subagent's identity" — it
-dispatches directly to that agent, bypassing the sequencer, so a seeded turn renders one
-`SubAgentStartEvent` badge for the named subagent itself, never the `DelegationStartEvent` badges
-an interpreter step walk would produce.
+(`estimate` → `root`/sequencer-badge names as `SubAgentStartEvent`/`DelegationStartEvent` arrive),
+not a single per-turn label. An explicit `/<alias>` seed means "the whole turn runs as that
+subagent's identity" — it dispatches directly to that agent, bypassing the sequencer, so a seeded
+turn renders one `SubAgentStartEvent` badge for the named subagent itself, never the
+`DelegationStartEvent` badges an interpreter step walk would produce.
 
 ---
 
 ## Harness — Tool Loop
 
 `Harness` (`agent/harness/core.py`) is the single, always-on session holder users always talk to.
-`Harness.stream(...)` is the entry point for every turn; its shape now branches on the
-guard/estimate/seed outcome (see [Overview](#overview)) rather than on a bare `subagent` toggle:
+`Harness.stream(...)` is the entry point for every turn; its shape branches on the estimate/seed
+outcome (see [Overview](#overview)):
 
 ```python
 async def stream(
     self, session, user_input, permission_callback=None,
     subagent: Subagent | None = None, extra_params: dict | None = None,
     hidden_grant_callback=None, seed: str | None = None,
-)
+) -> AsyncIterator[AgentEvent | str]
 ```
 
-- `subagent=None, seed=None`, trivial estimate (or no estimator wired) → single-agent path (below).
-- `subagent=None`, mutate estimate → `_stream_graph`: Sequencer + interpreter
-  (see [Sequencer + Interpreter](#sequencer--interpreter)). An explicit `seed` no longer routes
-  here — it resolves straight to a bound `subagent` and takes the single-agent path below instead,
-  skipping the Estimator entirely.
-- `subagent=<Subagent>` → single-agent path built *as* that subagent — used internally by
-  `run_subagent` for a nested dispatch, not a production top-level entry point any more (that role
-  moved to `seed`).
+- `seed=None`, `chat`/`solo` estimate (or no estimator wired) → no-graph single-agent path
+  (`_stream_solo`, below), run as root.
+- `seed=None`, `mutate` estimate → `_stream_graph`: Sequencer + interpreter
+  (see [Sequencer + Interpreter](#sequencer--interpreter)); on an invalid graph, falls back to
+  `_stream_solo`.
+- `seed=<alias>` → the Estimator is skipped entirely; `stream()` resolves `seed` against
+  `SUBAGENTS` and calls `_stream_solo` with that subagent bound in place of root — same no-graph
+  path, warm session context, one `SubAgentStartEvent` for the named subagent.
+- A genuine graph-spawned subagent step (`_stream_graph`'s own `dispatch`) never calls `stream()`
+  again — it goes straight through `agent/tools/delegate.py::run_subagent`, cold (`prior=[]`).
 
-`extra_params` overrides the Harness's own `self._extra_params` (set at construction from
-`resolve_thinking_params`) for this call only — `None` (the default) means "use the instance
-default"; an explicit `{}` means "no thinking params for this turn" (the `TRIVIAL`-route case —
-see [Gate](#gate)).
+After either path finishes, `stream()` calls `Harness._maybe_review()` (see
+[Post-Turn Review](#post-turn-review)) whenever the turn touched files.
 
-No `delegate` tool is ever registered (plan 27 decision 11 — removed from main outright, no
-hybrid); the harness (sequencer + interpreter) owns all cross-agent control flow instead.
+`extra_params` overrides the effective `extra_params` computed for this call only — `None` (the
+default) means "use the rung's own default"; the `chat` rung's own default is root's model's
+explicit thinking-*disable* payload (not a bare `{}`, which some providers treat as "unspecified"
+and default to reasoning on).
+
+No `delegate` tool is ever registered for root (plan 27 decision 11 — removed outright, no
+hybrid); the harness (sequencer + interpreter) owns all cross-agent control flow instead. A
+subagent may register `delegate` for itself when it declares `delegates_to`, bounded to depth 1.
 
 `stream()` delegates prompt assembly to the module-level `_build_agent(...)`, which is the
 **single point** where the effective tool set — and therefore the final `<tools>` block — is
-computed, for both modes:
+computed, for both root and subagent runs:
 
 ```
 1. compute `effective` permissions = session.permissions ANDed field-wise with subagent.permissions (spawn mode only)
 2. build `selected`: walk make_tools(working_dir), drop any tool not in subagent.tools (when an allowlist is set),
-   then drop any tool whose required_permission isn't granted by `effective` (when there's no permission_callback to escalate)
+   then drop any tool whose required_permission isn't granted by `effective` (when there's no permission_callback to escalate),
+   then apply `tools_override` (chat's frozenset(), or a step's scope-derived ceiling) when set
 3. system = system_base + "\n<tools>\n" + render_tool_instruction([t.name for t in selected])
 4. construct Agent(system=system, extra_params=effective_extra_params, …), register exactly the
    `selected` tools, attach the PermissionGate
 ```
 
-| Mode                       | Trigger              | `system_base`                  | Prior context                                  |
-|----------------------------|----------------------|--------------------------------|------------------------------------------------|
-| **direct**                 | `subagent=None`      | `SYSTEM_PROMPT`                | `_recency_turns(session.messages, _RECENCY_N=2)` — last 2 user/assistant pairs + current input |
-| **spawn**                  | `subagent=<Subagent>`| `subagent.build_system_base()` | cold — `prior = []` + current input only; no context inheritance, no async/resume (fire-and-forget by design, for now) |
+| Mode                       | Trigger                                    | `system_base`                  | Prior context                                  |
+|-----------------------------|--------------------------------------------|---------------------------------|------------------------------------------------|
+| **root, no graph**          | `chat`/`solo` estimate, no seed             | `ROOT_SYSTEM_PROMPT` (+ directive pump + GEKAI.md) | `_recency_turns(session.messages, _RECENCY_N=2)` — last 2 user/assistant pairs + current input |
+| **seed dispatch**           | explicit `/<alias>`                         | `subagent.build_system_base()` | same warm recency as root, not cold             |
+| **graph-spawned step**      | `mutate` estimate, one `TaskGraph` step     | `subagent.build_system_base()` | cold — `prior = []` + current input only        |
 
 The `<tools>` block therefore always reflects the *effective, post-filtering* tool set — never
 the subagent's bare declared allowlist — so the activation prompt never references a tool the
 agent can't actually call (e.g. a read-only subagent's prompt omits all shell/edit guidance).
 
-`SubAgentStartEvent` carries `name="main"` / `description="thinking"` in direct mode, or
-`subagent.name` / `subagent.description` in spawn mode — both paths emit it; both stream through
-the same unified event flow.
+`SubAgentStartEvent` carries `name="root"` / `description="thinking"` for a root run, or
+`subagent.name` / `subagent.description` for a seed dispatch or graph-spawned step — every path
+emits it; all three stream through the same unified event flow.
 
 `_recency_turns(session.messages, _RECENCY_N)` extracts the last `_RECENCY_N=2` user/assistant
 pairs (skipping system messages, excluding the current trailing user input); the current user
@@ -623,7 +648,7 @@ When `--debug` is active, `stream()` calls
 **after** `_build_agent` returns — `agent.system` is the true, fully-assembled prompt string
 (mutable field on `llmstitch.Agent`), and lands in `.debug.jsonl` alongside the workspace
 context block. `extra_params` here is the *effective* value actually passed to the model for
-this turn (`{}` for `TRIVIAL` routes), not the Harness's instance default.
+this turn (the `chat` rung's explicit thinking-disable payload, not the Harness's instance default).
 
 ```mermaid
 sequenceDiagram
@@ -632,8 +657,8 @@ sequenceDiagram
     participant llmstitch
     participant CoreModel
 
-    TUI->>Harness: stream(session, user_input, extra_params={} if route.trivial else None, seed=forced_seed)
-    Note over Harness: single-agent path (trivial estimate, or an explicit seed) — only a<br/>mutate estimate runs Sequencer + interpreter (_stream_graph); a seed never does
+    TUI->>Harness: stream(session, user_input, seed=forced_seed)
+    Note over Harness: Estimator picks chat/solo/mutate (skipped entirely when seed is set) —<br/>only mutate runs Sequencer + interpreter (_stream_graph); chat/solo/seed take the no-graph path
     Harness->>Harness: _build_agent(...) — filter tools, render <tools>, construct Agent
     Harness->>llmstitch: agent.run(prior_messages)
     loop tool-calling
@@ -646,12 +671,15 @@ sequenceDiagram
         Harness-->>TUI: DiffEvent (edit_file only; old_str vs new_str)
     end
     llmstitch-->>Harness: final history
-    Harness-->>TUI: DoneEvent → text response
+    Harness-->>TUI: DoneEvent
+    Harness->>Harness: _maybe_review() — if files touched, dispatch change-reviewer (+ code-fixer on FINDINGS)
+    Harness-->>TUI: final answer text (+ ReviewFindingsEvent warning, only on a second FINDINGS)
 ```
 
 Events flow through `EventBus` → async queue → TUI stream. The final answer text is yielded
-once, after `DoneEvent` — there is no live token-by-token streaming to the user (the `Agent`
-loop's internal streaming is only used to simplify token accounting via `InferEndEvent`).
+once, after `DoneEvent` — there is no live token-by-token streaming to the user for the graph path
+(the `chat`/`solo`/seed no-graph path does stream text chunks live; the graph path's answer only
+ever appears as the one final assembled string from `_respond`).
 
 ---
 
@@ -666,10 +694,11 @@ Every entry is timestamped JSON with a `kind` field:
 {ts, kind:"event",   source:"...", content:"..."}             ← system-side, non-LLM
 ```
 
-Event sources: `gate` · `error` · `interrupted` · `farewell` · `max_iterations` · `command` (command result).
+Event sources: `error` · `interrupted` · `max_iterations` · `command` (command result) ·
+`review` (a second-round `FINDINGS` from [Post-Turn Review](#post-turn-review)).
 Entries without `kind` (legacy) default to `"turn"`.
 
-**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, route tokens, per-turn debug context) — `--debug` only.
+**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, estimate decisions, per-turn debug context) — `--debug` only.
 Litmus: *did the user see it on screen?* → session; *did only the developer need it?* → debug.
 
 **Two readers:**

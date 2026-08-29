@@ -17,7 +17,6 @@ dist/
 
 # AI
 .claude/
-.claude/agents/
 .gekai/
 mcps/
 _agentfiles/
