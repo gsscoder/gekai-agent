@@ -129,7 +129,7 @@ def test_touchpoint_without_an_override_resolves_identically_to_its_bare_tier(mo
         TierName.CORE: TierBinding(model="pro", default_effort="high", thinking=True),
     }
     plain = [t for t in TOUCHPOINTS if t.effort is None and t.thinking is None]
-    assert {t.name for t in plain} == {"estimator", "root-dispatch", "subagent-dispatch", "micro", "directive-audit"}
+    assert {t.name for t in plain} == {"estimator", "root-dispatch", "subagent-dispatch", "verifier", "micro", "directive-audit"}
     for tp in plain:
         assert resolve_touchpoint(tp.name, CATALOG, bindings) == resolve_tier(tp.nominal_tier, CATALOG, bindings), tp.name
 

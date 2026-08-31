@@ -66,6 +66,7 @@ def _make_harness() -> Harness:
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
     )
 
 

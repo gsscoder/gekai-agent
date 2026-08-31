@@ -31,10 +31,10 @@ DirectiveVerdictCallback = Callable[[str, "AuditVerdict | None"], None]
 
 
 class GekaiAgent:
-    def __init__(self, *, working_dir: Path, permissions: Permissions, debug: bool = False) -> None:
+    def __init__(self, *, working_dir: Path, permissions: Permissions, verbose_telemetry: bool = True) -> None:
         self.working_dir = working_dir
         self.permissions = permissions
-        self.debug = debug
+        self.verbose_telemetry = verbose_telemetry
 
         # Resolution must NOT raise here: this constructor runs in
         # agent/main.py before the TUI (and so before `/models`/`/tier`) exists —
@@ -58,7 +58,7 @@ class GekaiAgent:
         # a task alive via a live reference elsewhere; without this set a
         # task can be garbage-collected mid-flight and silently vanish.
         self._background_tasks: set[asyncio.Task] = set()
-        estimator_model, sequencer_model, root_dispatch_model, subagent_dispatch_model = (
+        estimator_model, sequencer_model, root_dispatch_model, subagent_dispatch_model, verifier_model = (
             self._configure_touchpoints()
         )
         self.events = EventLogger()
@@ -70,12 +70,13 @@ class GekaiAgent:
             sequencer_model=sequencer_model,
             root_dispatch_model=root_dispatch_model,
             subagent_dispatch_model=subagent_dispatch_model,
+            verifier_model=verifier_model,
             tiers_configured=self._tier_error is None,
             permissions={"read": permissions.read, "write": permissions.write, "exec": permissions.exec},
-            debug=self.debug,
+            verbose_telemetry=self.verbose_telemetry,
         )
 
-    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None]:
+    def _configure_touchpoints(self) -> tuple[str | None, str | None, str | None, str | None, str | None]:
         """(Re)resolve every touchpoint against the *current* on-disk tier
         catalog+bindings, updating `self._root`/`self.model`/
         `self._api_key`/`self._api_base` in place. A single resolve-once-at-
@@ -86,14 +87,14 @@ class GekaiAgent:
         mid-session, next prompt still reports the pre-command error).
         Called once at construction and again lazily from
         `process_stream()` on every call while `self._tier_error` is set.
-        Returns the four touchpoints' resolved model names (or all-`None` on
+        Returns the five touchpoints' resolved model names (or all-`None` on
         failure) purely for the `run.start` telemetry emit.
         """
         catalog = load_model_catalog()
         bindings = load_tier_bindings()
         resolved: dict[str, ResolvedTier] = {}
         try:
-            for name in ("estimator", "sequencer", "root-dispatch", "subagent-dispatch"):
+            for name in ("estimator", "sequencer", "root-dispatch", "subagent-dispatch", "verifier"):
                 resolved[name] = resolve_touchpoint(name, catalog, bindings)
         except TierResolutionError:
             # The specific failure (which tier, why) is deliberately not
@@ -104,7 +105,7 @@ class GekaiAgent:
             # missing a stored credential). `/tier` with no args shows per-tier
             # detail in its own status column instead.
             self._tier_error = "tier configuration is incomplete — run /models, then /tier"
-            return (None, None, None, None)
+            return (None, None, None, None, None)
 
         self._tier_error = None
         sequencer_cfg = resolved["sequencer"]
@@ -131,14 +132,16 @@ class GekaiAgent:
             sequencer_policy=touchpoint("sequencer").policy,
             root_dispatch_policy=touchpoint("root-dispatch").policy,
             subagent_dispatch_policy=touchpoint("subagent-dispatch").policy,
+            verifier_policy=touchpoint("verifier").policy,
             estimator=resolved["estimator"],
-            debug=self.debug,
+            verbose_telemetry=self.verbose_telemetry,
         )
         return (
             resolved["estimator"].model,
             sequencer_cfg.model,
             resolved["root-dispatch"].model,
             resolved["subagent-dispatch"].model,
+            resolved["verifier"].model,
         )
 
     def reconfigure_touchpoints(self) -> None:
@@ -161,7 +164,7 @@ class GekaiAgent:
         if session_id:
             session.id = session_id
         session.gekai_md = self._read_gekai_md()
-        if self.debug:
+        if self.verbose_telemetry:
             append_debug(session, session.messages[0])
         if restored_messages:
             session.messages.extend(restored_messages)

@@ -58,7 +58,10 @@ def main() -> None:
         metavar="DIR",
         help="working directory (default: current directory)",
     )
-    parser.add_argument("--debug", action="store_true", help="show intent classification")
+    parser.add_argument(
+        "--lean-telemetry", action="store_true",
+        help="suppress the internal debug.jsonl telemetry log (written by default)",
+    )
     parser.add_argument(
         "-r", "--resume",
         metavar="SESSION_ID",
@@ -74,7 +77,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "dump":
-        if args.resume or args.working_dir is not None or args.debug:
+        if args.resume or args.working_dir is not None or args.lean_telemetry:
             print("error: dump cannot be combined with other flags")
             raise SystemExit(1)
         if args.scope is None:
@@ -109,7 +112,7 @@ def main() -> None:
     if needs_permissions:
         permissions = Permissions(read=False, write=False, exec=False)
 
-    agent = GekaiAgent(working_dir=working_dir, permissions=permissions, debug=args.debug)
+    agent = GekaiAgent(working_dir=working_dir, permissions=permissions, verbose_telemetry=not args.lean_telemetry)
 
     registry = CommandRegistry()
     registry.register(ClearCommand())

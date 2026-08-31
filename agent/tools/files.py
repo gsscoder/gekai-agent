@@ -323,9 +323,16 @@ async def _write_file(
         return result
     target = result
     try:
+        # ponytail: exists()-then-write is a TOCTOU gap if two write_file
+        # calls race on the same new path in one turn (edit_file/write_file
+        # are concurrency-safe by default) — both would see existed=False and
+        # tag "ok" instead of the second being "ok: overwritten". Narrow:
+        # misclassifies the verifier gate's via, doesn't corrupt file
+        # content. Upgrade path if it matters: is_concurrency_safe=False.
+        existed = target.exists()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return "ok"
+        return "ok: overwritten" if existed else "ok"
     except Exception as exc:
         return f"error: {exc or type(exc).__name__}"
 

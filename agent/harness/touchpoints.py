@@ -72,6 +72,14 @@ TOUCHPOINTS: tuple[Touchpoint, ...] = (
         TierName.SUPP,
         policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
     ),
+    Touchpoint(
+        "verifier",
+        "check one coding step's diff against its instruction",
+        TierName.SUPP,
+        # FAST is intentionally excluded from `allowed`: never FAST, default
+        # SUPP, scale to CORE only by harness decision.
+        policy=TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE)),
+    ),
     Touchpoint("micro", "one-shot summaries / labels / fs-support", TierName.FAST),
     Touchpoint(
         "directive-audit",

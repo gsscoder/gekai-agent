@@ -601,7 +601,7 @@ emits it; all three stream through the same unified event flow.
 pairs (skipping system messages, excluding the current trailing user input); the current user
 input is then appended explicitly.
 
-When `--debug` is active, `stream()` calls
+Unless `--lean-telemetry` suppresses it (the debug/plumbing log is written by default), `stream()` calls
 `append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})`
 **after** `_build_agent` returns — `agent.system` is the true, fully-assembled prompt string
 (mutable field on `llmstitch.Agent`), and lands in `.debug.jsonl` alongside the workspace
@@ -654,7 +654,7 @@ Every entry is timestamped JSON with a `kind` field:
 Event sources: `error` · `interrupted` · `max_iterations` · `command` (command result).
 Entries without `kind` (legacy) default to `"turn"`.
 
-**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, estimate decisions, per-turn debug context) — `--debug` only.
+**Boundary:** `session.jsonl` = everything the user saw on screen. `{session-id}.debug.jsonl` = internal plumbing (system prompts, estimate decisions, per-turn debug context) — written by default, suppressed by `--lean-telemetry`.
 Litmus: *did the user see it on screen?* → session; *did only the developer need it?* → debug.
 
 **Two readers:**

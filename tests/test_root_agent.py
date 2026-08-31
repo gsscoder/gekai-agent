@@ -253,6 +253,7 @@ def _make_respond_harness() -> Harness:
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
     )
 
 
@@ -285,7 +286,7 @@ def test_respond_success_path_carries_session_recency(monkeypatch: pytest.Monkey
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
         halted=None, permission_callback=None, hidden_grant_callback=None,
-        files_touched=["some/file.py"],
+        files_touched=["some/file.py"], diff_summaries=[],
     ))
 
     assert answer == "synthesized answer"
@@ -315,7 +316,7 @@ def test_respond_falls_back_to_recap_on_synthesis_error(monkeypatch: pytest.Monk
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
         halted=None, permission_callback=None, hidden_grant_callback=None,
-        files_touched=[],
+        files_touched=[], diff_summaries=[],
     ))
 
     assert answer == "did the thing\n\nno files were modified this turn"  # mechanical `_recap` fallback (graph.summary)
@@ -337,7 +338,7 @@ def test_respond_halted_path_falls_back_to_recap_on_synthesis_error(monkeypatch:
     answer, event = _run(harness._respond(
         "current request", session, graph, [],
         halted=halted, permission_callback=None, hidden_grant_callback=None,
-        files_touched=[],
+        files_touched=[], diff_summaries=[],
     ))
 
     assert "HALTED" in answer
@@ -368,7 +369,7 @@ def test_respond_halted_path_carries_completed_step_outputs(
     answer, event = _run(harness._respond(
         "current request", session, graph, halted.results,
         halted=halted, permission_callback=None, hidden_grant_callback=None,
-        files_touched=["some/file.py"],
+        files_touched=["some/file.py"], diff_summaries=[],
     ))
 
     assert answer == "synthesized answer"
@@ -397,13 +398,40 @@ def test_respond_halted_path_carries_failed_step_own_last_output(
     answer, event = _run(harness._respond(
         "current request", session, graph, halted.results,
         halted=halted, permission_callback=None, hidden_grant_callback=None,
-        files_touched=[],
+        files_touched=[], diff_summaries=[],
     ))
 
     assert answer.startswith("synthesized answer")
     prior_messages = fake_agent.run.await_args.args[0]
     contents = [m.content for m in prior_messages]
     assert any("i could not find the target file to edit" in c for c in contents)
+
+
+def test_respond_carries_diff_summaries_into_synthesis_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: root's synthesis must see the actual diff content, not just each
+    # step's self-reported text output — otherwise a step can falsely claim
+    # success and root has no way to catch it.
+    harness = _make_respond_harness()
+    fake_agent = _spy_build_agent_capturing_run(monkeypatch)
+
+    session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
+    graph = TaskGraph(summary="did the thing", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])
+    results = [StepResult(step=graph[0], output="code-expert's step output")]
+
+    answer, event = _run(harness._respond(
+        "current request", session, graph, results,
+        halted=None, permission_callback=None, hidden_grant_callback=None,
+        files_touched=["some/file.py"], diff_summaries=["--- some/file.py ---\n+added line"],
+    ))
+
+    assert answer == "synthesized answer"
+    assert event is not None and event.fell_back is False
+
+    prior_messages = fake_agent.run.await_args.args[0]
+    contents = [m.content for m in prior_messages]
+    assert any("<diffs>" in c and "+added line" in c for c in contents)
 
 
 def test_recap_halted_path_includes_failed_step_own_last_output() -> None:

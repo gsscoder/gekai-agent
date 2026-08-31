@@ -11,6 +11,7 @@ from ..llm.events import DelegationCompleted, DelegationStarted, EventBus
 from ..llm.tools import Tool, tool
 from ..llm.types import TextBlock
 from ..permissions import PermissionCallback
+from ..session import Session
 from ..settings import Permissions
 from ..subagents import SUBAGENTS
 
@@ -37,6 +38,8 @@ class DispatchContext:
     permission_callback: PermissionCallback | None
     bus: EventBus | None
     hidden_grant_callback: Any | None
+    session: Session | None = None
+    verbose_telemetry: bool = True
 
 
 async def run_subagent(
@@ -94,6 +97,9 @@ async def run_subagent(
         tools_override=effective_override,
         can_delegate=can_delegate,
     )
+    if ctx.verbose_telemetry and ctx.session is not None:
+        from ..persistence import append_debug
+        append_debug(ctx.session, {"content": {"system": nested.system, "agent": agent}})
     nested_run_id = uuid.uuid4().hex
     if ctx.bus is not None:
         ctx.bus.emit(DelegationStarted(agent=agent, task=task, mission=mission, run_id=nested_run_id))

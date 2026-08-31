@@ -12,6 +12,12 @@ from agent.workspace.ignore import IgnoreRules, load as _load_ignore_rules
 _MAX_OUTPUT_CHARS = 20_000
 
 
+class ShellCommandError(Exception):
+    """Raised when a shell command exits nonzero, so the tool-execution
+    wrapper marks the result is_error=True instead of the failure reading
+    as ordinary text."""
+
+
 def _forbidden_token(command: str, working_dir: Path, rules: IgnoreRules) -> str | None:
     """Best-effort scan: does any bare-path-looking token in `command` resolve
     to a .aiignore-forbidden path under working_dir?
@@ -133,6 +139,9 @@ async def _run_command(
     combined = "\n".join(parts)
     if proc.returncode != 0:
         combined = (combined + f"\nexit: {proc.returncode}").strip()
+        if len(combined) > _MAX_OUTPUT_CHARS:
+            combined = combined[:_MAX_OUTPUT_CHARS] + f"\n... (truncated at {_MAX_OUTPUT_CHARS} chars)"
+        raise ShellCommandError(combined if combined else "(no output)")
     if len(combined) > _MAX_OUTPUT_CHARS:
         combined = combined[:_MAX_OUTPUT_CHARS] + f"\n... (truncated at {_MAX_OUTPUT_CHARS} chars)"
     return combined if combined else "(no output)"

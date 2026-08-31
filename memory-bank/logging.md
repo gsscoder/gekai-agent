@@ -1,5 +1,5 @@
 # Event Logging
-Always-on JSONL telemetry log, independent from `--debug`
+Always-on JSONL telemetry log, independent from `--lean-telemetry`
 
 ## EventLogger (`agent/logging.py`)
 Instantiated once per process as `agent.events` (attr on `GekaiAgent`). `run_id` = 8-hex uuid; logger name `gekai.events.{run_id}`.
@@ -29,7 +29,7 @@ run happens as `delegate` tool calls inside its own `harness` event, not as sepa
 Process-level (once per run):
 | Event | Where | Fields |
 |---|---|---|
-| `run.start` | `GekaiAgent.__init__` | `version`, `platform`, `core_model`, `supp_model`, `permissions={read,write,exec}`, `debug` |
+| `run.start` | `GekaiAgent.__init__` | `version`, `platform`, `core_model`, `supp_model`, `permissions={read,write,exec}`, `verbose_telemetry` |
 | `run.exit` | `main.py`, after `app.run()` | `duration_s` (`runtime_s()`), `turn_count`, `reason` (`app.exit_reason`) |
 
 Session-level — `session.start` (emitted on initial mount and on `/clear`, `tui/app.py`): `session` (session id), `resumed` (bool — `False` on `/clear` and on fresh mount, `True` on resume)
@@ -58,10 +58,10 @@ Starts `"ok"`, last write wins, evaluated in `finally`:
 - `"max_iterations"` — harness hit iteration cap with no answer chunks
 - `"interrupted"` — user cancelled the worker
 
-## Relationship to Session Persistence / `--debug`
-This log is always-on, regardless of `--debug`. Three distinct streams:
+## Relationship to Session Persistence / `--lean-telemetry`
+This log is always-on, regardless of `--lean-telemetry`. Three distinct streams:
 - `events-*.jsonl` (this doc) — per-run telemetry, `~/.gekai/logs/`
 - `session.jsonl` — visible chat history (`turn`/`command`/`event` entries), see `architecture.md → Session Persistence`
-- `debug.jsonl` — internal plumbing (system prompts, `extra_params`, tool calls/results), `--debug` only
+- `debug.jsonl` — internal plumbing (system prompts, `extra_params`, tool calls/results), written by default, suppressed by `--lean-telemetry`
 
 Shared `turn_id` links a `session.jsonl` turn entry (`turn=` field via `append_message`) to its corresponding events in `events-*.jsonl`.

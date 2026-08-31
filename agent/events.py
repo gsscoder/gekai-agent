@@ -28,6 +28,7 @@ class DiffEvent(AgentEvent):
     """Diff of an edit_file mutation; emitted after ToolExecutionCompleted."""
     path: str = ""
     diff_lines: list = field(default_factory=list)  # list[DiffLine]
+    via: str = ""  # "edit_file" | "write_file" | "overwrite" — lets the verifier's gate tell an edit to existing code (or an overwrite via write_file) from a brand-new file write
 
 
 @dataclass
@@ -109,6 +110,8 @@ class TaskGraphStartedEvent(AgentEvent):
     step_count: int = 0
     agents: list[str] = field(default_factory=list)
     verify_placements: int = 0
+    summary: str = ""
+    steps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -174,6 +177,21 @@ class ForeignFileDetectedEvent(AgentEvent):
     (concept 5)."""
     rel_path: str = ""
     text: str = ""
+
+
+@dataclass
+class VerifyEvent(AgentEvent):
+    """Telemetry only: emitted when the coding-step verifier actually ran
+    (gate-skipped steps — e.g. pure filesystem scaffolding — emit nothing,
+    same never-emitted-on-no-op convention as ScaleEvent/ToolScopeEvent)."""
+    step_index: int = 0
+    agent: str = ""
+    ok: bool = True
+    violation_count: int = 0
+    violations: list[str] = field(default_factory=list)
+    chosen_tier: str = ""
+    duration_ms: int = 0
+    gate: str = "ran"  # "ran" | "skipped_with_mutations" | "repair_no_op" — "skipped_with_mutations" flags a step that mutated files but the coding-diff gate skipped anyway; "repair_no_op" flags a repair dispatch (attempt>=1) that produced no coding diff at all
 
 
 @dataclass

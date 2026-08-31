@@ -1,13 +1,14 @@
 # Locator Cache — v1 Plan
 
-Status: **implemented, then orphaned**. This document is the original build spec for v1; the plan
-below (steps 1–6, the write/read/keyword-miner helpers) landed as described. Step 7's wiring —
-`FileLocator.locate(..., hint_paths=)` and `GekaiAgent.locate`'s pre-step — was removed by the
-dissolve-planner refactor that deleted `FileLocator` entirely (see `docs/architecture.md`,
-`caching.md`). The read side (`find_candidates`, `find_hybrid`, `mine_keywords`) is now dead code;
-the write side (`save_findings`) survives, repointed at `ws_manager`'s onboarding walk instead of a
-per-turn locate step. Kept here as the historical design record — see `caching.md → Locator cache
-(workspace.db)` for current wiring reality.
+Status: **implemented, then removed entirely**. This document is the original build spec for v1;
+the plan below (steps 1–6, the write/read/keyword-miner helpers) landed as described, and step 7's
+wiring (`FileLocator.locate(..., hint_paths=)`, `GekaiAgent.locate`'s pre-step) landed too, but was
+later removed by the dissolve-planner refactor that deleted `FileLocator` entirely (see
+`docs/architecture.md`). The module itself (`agent/workspace/db.py`, `agent/workspace/indexer.py`)
+has since been deleted along with it — there is no `SCHEMA_VERSION` constant, no `sqlite3` usage,
+and no `save_findings`/`find_candidates`/`mine_keywords` anywhere in `agent/` today. Kept here
+purely as the historical design record — see `caching.md → Locator cache (workspace.db)` for
+current (non-)wiring reality.
 
 ## Goal
 

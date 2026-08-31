@@ -310,7 +310,7 @@ params). Direct mode passes
 `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs, system messages
 skipped, trailing user input excluded) + current input; spawn mode runs cold — `prior = []` +
 current input only, no recency context, no async/resume.
-`--debug` active: `stream()` calls
+Written by default (`--lean-telemetry` suppresses it): `stream()` calls
 `append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})`
 **after** `_build_agent` returns (`agent.system` is the true assembled prompt, a mutable field on
 `llmstitch.Agent`; `effective_extra_params` is the value actually used this turn) — written to `.debug.jsonl`.
@@ -338,7 +338,7 @@ Entries without `kind` (legacy files) default to `"turn"`.
 
 **Boundary — session vs debug:**
 `session.jsonl` = everything the user saw on screen (turns + commands + events). Litmus: *did the user see it?*
-`debug.jsonl` = internal plumbing (system prompts, `extra_params`, tool calls/results) — written only with `--debug`, never for visual rebuild.
+`debug.jsonl` = internal plumbing (system prompts, `extra_params`, tool calls/results) — written by default, suppressed by `--lean-telemetry`, never for visual rebuild.
 
 **Writers:** `append_message(session, msg)` → `kind:"turn"`; `append_command(session, text)`; `append_event(session, content, source)`; `append_compact(session, summary)` → `kind:"compact"`.
 
@@ -365,9 +365,10 @@ Slash-prefixed input intercepted by `CommandPalette` then dispatched via `Comman
 - `/compact [instructions]` — summarizes the transcript through the `"micro"` touchpoint and replaces `session.messages` with `[system, synthetic-user-summary]`; optional free-text instructions steer what the summary focuses on. Blocked while a turn is streaming. Auto-triggers with no instructions and no opt-out once transcript size (chars/4, `agent/tui/app.py::_estimate_session_tokens`) crosses 80% of `_context_limit`; a sticky status-bar hint warns at 75%. See `agent/compact.py` (`context_state`/`summarize`/`apply_summary`) and `## Session Persistence` for the `kind:"compact"` boundary.
 
 ## CLI Flags
-- `--debug` — writes the assembled system prompt, `extra_params`, and every tool call/result to
-  `.debug.jsonl` (`append_debug`, see `## Session Persistence`); the Estimator's `chat`/`solo`/`mutate`
-  decision is separately emitted as an `"estimate"` telemetry event (`agent/harness/turn.py::run_step`),
-  not rendered in the TUI
+- `--lean-telemetry` — suppresses the `.debug.jsonl` log (assembled system prompt, `extra_params`,
+  every tool call/result via `append_debug`, see `## Session Persistence`); written by default when
+  the flag is absent (`verbose_telemetry=True` threaded through `GekaiAgent`/`Harness`/
+  `DispatchContext`). The Estimator's `chat`/`solo`/`mutate` decision is separately emitted as an
+  `"estimate"` telemetry event (`agent/harness/turn.py::run_step`), not rendered in the TUI
 - `--resume` / `-r` — resume a previous session by ID
 - `--working-dir` / `-d` — override working directory (default: cwd)

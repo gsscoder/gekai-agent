@@ -43,7 +43,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.directive_pump import PUMP_BUDGET
-from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, LogEvent, MaxIterationsEvent, TextChunkEvent
+from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, DoneEvent, LogEvent, MaxIterationsEvent, TextChunkEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness, _MAX_ITERATIONS
 from agent.llm.events import AgentStopped, EventBus
@@ -155,6 +155,7 @@ def _make_harness(estimator: ResolvedTier | None = None) -> Harness:
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=estimator,
     )
 
@@ -228,6 +229,125 @@ def test_write_file_emits_diff_event(
     diff_events = _only(collected, DiffEvent)
     assert len(diff_events) == 1
     assert diff_events[0].path == "hello.py"
+
+
+def test_write_file_overwrite_emits_diff_event_with_overwrite_via(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    (tmp_path / "hello.py").write_text("old\n")
+    responses = [
+        CompletionResponse(
+            content=[ToolUseBlock(id="wf-1", name="write_file", input={"path": "hello.py", "content": "new\n"})],
+            stop_reason="tool_use",
+        ),
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "overwrite hello.py"))
+
+    diff_events = _only(collected, DiffEvent)
+    assert len(diff_events) == 1
+    assert diff_events[0].via == "overwrite"
+
+
+def test_edit_file_single_form_emits_one_diff_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    (tmp_path / "x.py").write_text("old text\n")
+    responses = [
+        CompletionResponse(
+            content=[ToolUseBlock(
+                id="ef-1", name="edit_file",
+                input={"path": "x.py", "old_str": "old text", "new_str": "new text"},
+            )],
+            stop_reason="tool_use",
+        ),
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "edit x.py"))
+
+    diff_events = _only(collected, DiffEvent)
+    assert len(diff_events) == 1
+    assert diff_events[0].via == "edit_file"
+
+
+def test_edit_file_batched_edits_emit_one_diff_event_per_hunk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ (production-observed bug): the batched `edits=[...]` form leaves
+    # top-level old_str/new_str absent — the bridge must read each hunk
+    # inside `edits` instead of the (empty) top-level fields.
+    (tmp_path / "x.py").write_text("a\nc\n")
+    responses = [
+        CompletionResponse(
+            content=[ToolUseBlock(
+                id="ef-1", name="edit_file",
+                input={"path": "x.py", "edits": [
+                    {"old_str": "a", "new_str": "b"},
+                    {"old_str": "c", "new_str": "d"},
+                ]},
+            )],
+            stop_reason="tool_use",
+        ),
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "edit x.py"))
+
+    diff_events = _only(collected, DiffEvent)
+    assert len(diff_events) == 2
+    assert all(e.via == "edit_file" for e in diff_events)
+    assert (tmp_path / "x.py").read_text() == "b\nd\n"
+
+
+def test_edit_file_batched_edits_partial_failure_emits_no_phantom_diff(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ (bug-hunter finding, confirmed): `_edit_file`'s `edits` batch is
+    # atomic — one hunk's old_str missing means NOTHING is written, but the
+    # tool returns a plain "error: ..." string rather than raising, so
+    # `ToolResultBlock.is_error` stays False. The bridge must not emit a
+    # DiffEvent (or record a files_touched entry) for a hunk from a call
+    # whose write never actually landed.
+    (tmp_path / "x.py").write_text("a\n")
+    responses = [
+        CompletionResponse(
+            content=[ToolUseBlock(
+                id="ef-1", name="edit_file",
+                input={"path": "x.py", "edits": [
+                    {"old_str": "a", "new_str": "b"},
+                    {"old_str": "NONEXISTENT", "new_str": "z"},
+                ]},
+            )],
+            stop_reason="tool_use",
+        ),
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    _ScriptedAdapter.responses = responses
+    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    harness = _make_harness()
+    collected = run(_drain(harness, session, "edit x.py"))
+
+    assert _only(collected, DiffEvent) == []
+    assert (tmp_path / "x.py").read_text() == "a\n"  # untouched — the atomic write never happened
+    done_events = _only(collected, DoneEvent)
+    assert len(done_events) == 1
+    assert "x.py" not in done_events[0].files_touched
 
 
 def test_no_graph_path_never_passes_tools_override(
@@ -332,6 +452,7 @@ def test_chat_scope_strips_extra_params(
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
     )
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
@@ -362,6 +483,7 @@ def test_solo_scope_keeps_tier_extra_params(
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
     )
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
@@ -392,6 +514,7 @@ def test_explicit_extra_params_override_wins_over_chat_scope(
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
     )
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
@@ -433,6 +556,7 @@ def test_chat_scope_uses_explicit_disable_payload_not_bare_dict(
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
     )
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
@@ -472,6 +596,7 @@ def test_chat_rung_registers_zero_tools(
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
     )
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
@@ -509,6 +634,7 @@ def test_solo_rung_still_registers_normal_tool_set(
         sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
         root_dispatch_policy=policy,
         subagent_dispatch_policy=policy,
+        verifier_policy=policy,
         estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
     )
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))

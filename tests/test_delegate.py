@@ -27,7 +27,8 @@ _CTX = DispatchContext(
 )
 _CTX_FIELDS = frozenset(
     {"model", "api_key", "api_base", "extra_params", "working_dir",
-     "permissions", "permission_callback", "bus", "hidden_grant_callback"}
+     "permissions", "permission_callback", "bus", "hidden_grant_callback",
+     "session", "verbose_telemetry"}
 )
 
 
@@ -109,6 +110,51 @@ def test_emits_delegation_completed_when_nested_run_raises() -> None:
         "DelegationStarted",
         "DelegationCompleted",
     ]
+
+
+def test_verbose_telemetry_true_with_session_appends_subagent_system_prompt() -> None:
+    """A genuine graph-spawned subagent step must log its own system prompt
+    to debug.jsonl (currently only root's is ever logged) — the default,
+    opt-out behavior via `ctx.verbose_telemetry`/`ctx.session`. Omits the
+    kwarg entirely to exercise `DispatchContext.verbose_telemetry`'s own
+    `True` default, not just an explicit `True` passed by the caller."""
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+    mock_agent = MagicMock()
+    mock_agent.system = "the nested subagent's system prompt"
+    mock_agent.run = AsyncMock(return_value=fake_history)
+    mock_session = MagicMock()
+
+    with (
+        _patched_build_agent(mock_agent),
+        patch("agent.persistence.append_debug") as mock_append_debug,
+    ):
+        result = run(_call_run_subagent("code-expert", session=mock_session))
+
+    assert result == "done"
+    mock_append_debug.assert_called_once()
+    call_session, call_message = mock_append_debug.call_args.args
+    assert call_session is mock_session
+    assert call_message["content"]["system"] == "the nested subagent's system prompt"
+    assert call_message["content"]["agent"] == "code-expert"
+
+
+def test_verbose_telemetry_false_or_no_session_does_not_append_debug() -> None:
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=fake_history)
+
+    with (
+        _patched_build_agent(mock_agent),
+        patch("agent.persistence.append_debug") as mock_append_debug,
+    ):
+        run(_call_run_subagent("code-expert", session=MagicMock(), verbose_telemetry=False))
+        run(_call_run_subagent("code-expert", session=None, verbose_telemetry=True))
+
+    mock_append_debug.assert_not_called()
 
 
 def test_no_delegate_tool_registered_for_main_or_subagent() -> None:

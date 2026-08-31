@@ -41,7 +41,7 @@ def _stub_tui_agent(working_dir: Path) -> GekaiAgent:
     stub = object.__new__(GekaiAgent)
     stub.working_dir = working_dir
     stub.permissions = Permissions(read=True, write=True, exec=True)
-    stub.debug = False
+    stub.verbose_telemetry = True
     stub.model = "fake-model"
     stub.effort = None
     stub._tier_error = None

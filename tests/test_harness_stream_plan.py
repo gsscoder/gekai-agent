@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent
+from agent.events import DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent, VerifyEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.llm import model_caps
@@ -26,6 +26,7 @@ from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock, 
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
+from agent.pipeline.verifier import Verdict
 from agent.session import Session
 from agent.settings import Permissions
 from agent.tools.catalog import ALL_TOOLS, RUNGS
@@ -123,6 +124,7 @@ def _make_scaling_harness(resolve: Callable[[TierName, str], ResolvedTier]) -> H
             sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
             root_dispatch_policy=policy,
             subagent_dispatch_policy=policy,
+            verifier_policy=policy,
             estimator=estimator_tier,
         )
     return harness
@@ -246,9 +248,9 @@ def test_seed_dispatch_of_non_auto_assignable_code_refactorer_succeeds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     # REQ: the literal regression from the live session bug report (bug A) --
-    # `code-refactorer` is `auto_assignable=False` (post-planning verify/
-    # repair-only), so the sequencer's own roster would never offer it as a
-    # legal choice; the seed-dispatch path must never ask the sequencer at
+    # `code-refactorer` is `auto_assignable=False` (delegate-only), so the
+    # sequencer's own roster would never offer it as a legal choice; the
+    # seed-dispatch path must never ask the sequencer at
     # all and must succeed cleanly.
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
@@ -574,6 +576,10 @@ def _fake_history_agent() -> MagicMock:
     fake_agent.run = AsyncMock(
         return_value=[Message(role="assistant", content=[TextBlock(text="done")])]
     )
+    # `.system` must be a real string, not the default MagicMock attribute:
+    # verbose telemetry is on by default, so `run_subagent` always logs it to
+    # debug.jsonl via `json.dumps`, which a MagicMock isn't serializable to.
+    fake_agent.system = "sys"
     return fake_agent
 
 
@@ -661,8 +667,12 @@ def test_graph_step_scope_fs_gets_full_tools_for_full_ceiling_agent(
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "do anything"))
 
-    # calls[0] is the step's dispatch; calls[1] is the trailing root-dispatch
-    # synthesis call (`_respond`, plan 32 Phase 3) -- not under test here.
+    # calls[0] is the step's dispatch; the verify gate (core.py's
+    # `verify_agent` closure) only calls the LLM verifier when the step's
+    # dispatch actually produced an `edit_file` diff -- `_spy_build_agent`'s
+    # fake never emits one, so this step auto-passes with no repair; calls[1]
+    # is the trailing root-dispatch synthesis call (`_respond`, plan 32
+    # Phase 3) -- not under test here.
     assert len(calls) == 2
     assert calls[0]["tools_override"] == _FULL_RUNG == frozenset(ALL_TOOLS)
     assert not any(isinstance(e, ToolScopeEvent) for e in collected)
@@ -719,8 +729,10 @@ def test_graph_step_scope_read_excludes_write_tools_for_subagent(
     assert scope_events == [ToolScopeEvent(unit="code-expert", chosen_rung="read", reason="narrowed to 'read'")]
 
 
-# --- mechanical verify must also require the step's own dispatch to have
-# actually touched a file when the step is scoped `edit`/`fs` ---
+# --- the coding-step verifier gate (core.py's `verify_agent` closure): an
+# LLM verifier call only ever fires when the step's own dispatch actually
+# produced an `edit_file` diff -- `step.verify`/`step.scope` no longer gate
+# this at all (that gate moved out of the interpreter, plan 36) ---
 
 
 def _make_touchless_run_subagent(text: str = "done, looks good"):
@@ -751,25 +763,224 @@ def _make_file_writing_run_subagent(path: str = "src/thing.py", text: str = "don
     return _run_subagent
 
 
-def test_mechanical_verify_fails_edit_step_that_touched_no_files_then_halts(
+def _make_edit_run_subagent(path: str = "src/thing.py", text: str = "done, looks good"):
+    """A fake `run_subagent` that emits a real `edit_file`
+    `ToolExecutionCompleted` on the bus -- `_bridge_llm_event` turns it into
+    a `DiffEvent(via="edit_file")`, the one thing the verify gate keys on to
+    decide a step's dispatch is worth an LLM verifier call. The trailing
+    `asyncio.sleep(0)` gives `_stream_graph`'s draining loop a chance to pull
+    the DiffEvent off the queue before this returns, mirroring the real
+    awaits a genuine tool-calling run always has after its last tool call."""
+
+    async def _run_subagent(agent, task, *, ctx, **kwargs):
+        ctx.bus.emit(ToolExecutionCompleted(
+            turn=0,
+            call=ToolUseBlock(id="1", name="edit_file", input={"path": path, "old_str": "old", "new_str": "new"}),
+            result=ToolResultBlock(tool_use_id="1", content="ok"),
+            duration_s=0.0,
+        ))
+        await asyncio.sleep(0)
+        return text
+
+    return _run_subagent
+
+
+def _make_overwrite_run_subagent(path: str = "src/thing.py", text: str = "done, looks good"):
+    """A fake `run_subagent` that emits a `write_file` `ToolExecutionCompleted`
+    whose result content is `"ok: overwritten"` -- `_bridge_llm_event` turns
+    this into a `DiffEvent(via="overwrite")`, which the verify gate now
+    treats as coding-worthy same as `edit_file`."""
+
+    async def _run_subagent(agent, task, *, ctx, **kwargs):
+        ctx.bus.emit(ToolExecutionCompleted(
+            turn=0,
+            call=ToolUseBlock(id="1", name="write_file", input={"path": path, "content": "x"}),
+            result=ToolResultBlock(tool_use_id="1", content="ok: overwritten"),
+            duration_s=0.0,
+        ))
+        await asyncio.sleep(0)
+        return text
+
+    return _run_subagent
+
+
+def test_write_file_overwrite_diff_triggers_verifier_call(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # REQ: a scope="edit" step whose dispatch produced non-empty text but
-    # touched zero files must fail mechanical verification -- not fail-open
-    # on text alone. The repair dispatch here is also touchless, so the
-    # existing repair/re-verify/halt policy (interpreter.py) halts on the
-    # second failure -- no new retry mechanism needed.
+    # REQ: a write_file overwrite (result content "ok: overwritten") mutates
+    # existing code just like edit_file -- the gate must include "overwrite",
+    # not just "edit_file", when deciding whether to call the LLM verifier.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(summary="overwrite a file", steps=[Task(agent="code-expert", instruction="overwrite the file", mission="overwrite the file")])
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_overwrite_run_subagent())
+    verify_mock = AsyncMock(return_value=Verdict(ok=True))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "overwrite the file"))
+
+    verify_mock.assert_awaited_once()
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+
+
+def test_write_file_new_path_emits_skipped_with_mutations_verify_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ (Phase 3 telemetry): a step that mutated files (write_file to a new
+    # path) but produced no edit_file/overwrite diff is a gate-skip, not a
+    # no-op -- it must emit a VerifyEvent(gate="skipped_with_mutations") so
+    # this escape is visible in telemetry, even though the LLM verifier
+    # itself never runs.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(summary="write a file", steps=[Task(agent="code-expert", instruction="write the file", mission="write the file")])
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_file_writing_run_subagent())
+    verify_mock = AsyncMock(return_value=Verdict(ok=True))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "write the file"))
+
+    verify_mock.assert_not_awaited()
+    verify_events = _only(collected, VerifyEvent)
+    assert len(verify_events) == 1
+    assert verify_events[0].gate == "skipped_with_mutations"
+
+
+def test_touchless_step_emits_no_verify_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ (Phase 3 telemetry, inverse): a genuinely touchless/discovery step
+    # (no files mutated) stays on the pre-Phase-3 never-emit-on-no-op
+    # convention -- no VerifyEvent at all.
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
-        summary="edit a file",
-        steps=[Task(
-            agent="code-expert", instruction="edit the file", mission="edit the file",
-            scope="edit", verify="mechanical",
-        )],
+        summary="do something",
+        steps=[Task(agent="code-expert", instruction="do it", mission="do it", scope="edit")],
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
+    verify_mock = AsyncMock(return_value=Verdict(ok=True))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "do it"))
+
+    verify_mock.assert_not_awaited()
+    assert not any(isinstance(e, VerifyEvent) for e in collected)
+
+
+def test_verify_event_step_index_matches_real_graph_position_not_call_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ (bug-hunter finding, confirmed): VerifyEvent.step_index must be the
+    # step's real 0-based position in the graph, not a running count of
+    # verify calls made -- a preceding step that emits ZERO verify calls
+    # (a genuinely silent gate-skip, no diff and no mutation) must not shift
+    # a later step's reported step_index down. Step 0 here is silent; step 1
+    # is a real edit, so its VerifyEvent must carry step_index=1, never 0.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="two steps",
+        steps=[
+            Task(agent="code-expert", instruction="look around", mission="look around"),
+            Task(agent="code-expert", instruction="edit the file", mission="edit the file"),
+        ],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+
+    touchless = _make_touchless_run_subagent()
+    editing = _make_edit_run_subagent()
+    call_count = [0]
+
+    async def _run_subagent(agent, task, *, ctx, **kwargs):
+        # run_task_graph dispatches strictly in order (one `for` loop, no
+        # concurrency) -- the first call is always step 0, the second always
+        # step 1, regardless of what sibling-step text `_inject_request_summary`
+        # wraps into either instruction.
+        call_count[0] += 1
+        fake = touchless if call_count[0] == 1 else editing
+        return await fake(agent, task, ctx=ctx, **kwargs)
+
+    monkeypatch.setattr(harness_core, "run_subagent", _run_subagent)
+    verify_mock = AsyncMock(return_value=Verdict(ok=True))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "do two things"))
+
+    verify_mock.assert_awaited_once()
+    verify_events = _only(collected, VerifyEvent)
+    assert len(verify_events) == 1
+    assert verify_events[0].step_index == 1
+
+
+def test_no_diff_at_all_skips_the_verifier_and_never_halts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: a step whose dispatch touched no files at all -- regardless of
+    # `scope` -- has nothing for the verify gate to check: no LLM call, no halt.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="do something",
+        steps=[Task(agent="code-expert", instruction="do it", mission="do it", scope="edit")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
+    verify_mock = AsyncMock(return_value=Verdict(ok=False, violations=["should never be seen"]))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "do it"))
+
+    verify_mock.assert_not_awaited()
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+
+
+def test_write_file_only_diff_skips_the_verifier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: a new-file write is not a "coding" diff for the gate's purposes --
+    # only an `edit_file` diff is worth an LLM verifier call.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(summary="write a file", steps=[Task(agent="code-expert", instruction="write the file", mission="write the file")])
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_file_writing_run_subagent())
+    verify_mock = AsyncMock(return_value=Verdict(ok=False, violations=["should never be seen"]))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "write the file"))
+
+    verify_mock.assert_not_awaited()
+    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
+    assert any(isinstance(e, DoneEvent) for e in collected)
+
+
+def test_edit_file_diff_triggers_verifier_call_and_halts_on_repeated_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # REQ: an actual `edit_file` diff is what makes the gate call the LLM
+    # verifier -- a failing verdict on both the original and repair attempts
+    # halts the graph (the fixed repair/re-verify/halt policy, unchanged),
+    # and the halt reason carries the verifier's own violations.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(summary="edit a file", steps=[Task(agent="code-expert", instruction="edit the file", mission="edit the file")])
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    monkeypatch.setattr(harness_core, "run_subagent", _make_edit_run_subagent())
+    monkeypatch.setattr(
+        harness_core.Verifier, "verify",
+        AsyncMock(return_value=Verdict(ok=False, violations=["renamed field mismatch"])),
+    )
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "edit the file"))
@@ -777,25 +988,20 @@ def test_mechanical_verify_fails_edit_step_that_touched_no_files_then_halts(
     halted = _only(collected, TaskGraphHaltedEvent)
     assert len(halted) == 1
     assert halted[0].step_index == 0
-    assert "failed verification twice" in halted[0].reason
+    assert "renamed field mismatch" in halted[0].reason
 
 
-def test_mechanical_verify_passes_edit_step_that_actually_touched_a_file(
+def test_edit_file_diff_triggers_verifier_call_and_passes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # REQ: unchanged happy path -- scope="edit" plus a real file touch still
-    # passes mechanical verification and the graph completes normally.
+    # REQ: happy path -- a passing verifier verdict on the real edit diff
+    # lets the graph complete normally.
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
-    graph = TaskGraph(
-        summary="edit a file",
-        steps=[Task(
-            agent="code-expert", instruction="edit the file", mission="edit the file",
-            scope="edit", verify="mechanical",
-        )],
-    )
+    graph = TaskGraph(summary="edit a file", steps=[Task(agent="code-expert", instruction="edit the file", mission="edit the file")])
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
-    monkeypatch.setattr(harness_core, "run_subagent", _make_file_writing_run_subagent())
+    monkeypatch.setattr(harness_core, "run_subagent", _make_edit_run_subagent())
+    monkeypatch.setattr(harness_core.Verifier, "verify", AsyncMock(return_value=Verdict(ok=True)))
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "edit the file"))
@@ -804,49 +1010,48 @@ def test_mechanical_verify_passes_edit_step_that_actually_touched_a_file(
     assert any(isinstance(e, DoneEvent) for e in collected)
 
 
-def test_mechanical_verify_still_passes_read_scoped_step_with_no_files_touched(
+def _make_batched_edit_run_subagent(path: str = "src/thing.py", text: str = "done, looks good"):
+    """A fake `run_subagent` that emits a real batched-`edits` `edit_file`
+    `ToolExecutionCompleted` on the bus -- the exact shape a production
+    session actually used (see test_edit_file_batched_edits_emit_one_diff_event_per_hunk
+    in test_harness_core.py) when the bridge's `edits` handling was missing
+    and the verifier gate never fired once in a live session."""
+
+    async def _run_subagent(agent, task, *, ctx, **kwargs):
+        ctx.bus.emit(ToolExecutionCompleted(
+            turn=0,
+            call=ToolUseBlock(id="1", name="edit_file", input={"path": path, "edits": [
+                {"old_str": "old", "new_str": "new"},
+            ]}),
+            result=ToolResultBlock(tool_use_id="1", content="ok"),
+            duration_s=0.0,
+        ))
+        await asyncio.sleep(0)
+        return text
+
+    return _run_subagent
+
+
+def test_batched_edit_file_diff_reaches_the_gate_end_to_end(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # REQ: unchanged behavior for scope in (None, "read") -- text-only check,
-    # zero files touched is legitimate and must not fail verification.
+    # REQ (integration, plan Phase 4): the bridge (`_bridge_llm_event`'s
+    # `edits` handling) and the gate (`verify_agent`'s `coding_diffs` check)
+    # exercised TOGETHER through the real event bus, not each against a stub
+    # of the other -- this is the exact production failure mode (session
+    # f30d462c: 7 batched edit_file calls, zero verify events). Revert the
+    # bridge's `edits` handling and this test fails, since no DiffEvent would
+    # reach `verify_agent` and the gate would silently skip the LLM call.
     harness = _make_harness()
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
-    graph = TaskGraph(
-        summary="read a file",
-        steps=[Task(
-            agent="code-expert", instruction="read the file", mission="read the file",
-            scope="read", verify="mechanical",
-        )],
-    )
+    graph = TaskGraph(summary="edit a file", steps=[Task(agent="code-expert", instruction="edit the file", mission="edit the file")])
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
-    monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
+    monkeypatch.setattr(harness_core, "run_subagent", _make_batched_edit_run_subagent())
+    verify_mock = AsyncMock(return_value=Verdict(ok=True))
+    monkeypatch.setattr(harness_core.Verifier, "verify", verify_mock)
 
     session = _make_session(tmp_path)
-    collected = run(_drain(harness, session, "read the file"))
+    collected = run(_drain(harness, session, "edit the file"))
 
+    verify_mock.assert_awaited_once()
     assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
-    assert any(isinstance(e, DoneEvent) for e in collected)
-
-
-def test_mechanical_verify_still_passes_unscoped_step_with_no_files_touched(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    # REQ: unchanged behavior for scope=None -- same as above, no scope
-    # means no filesystem-touch requirement.
-    harness = _make_harness()
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
-    graph = TaskGraph(
-        summary="do something",
-        steps=[Task(
-            agent="code-expert", instruction="do it", mission="do it",
-            scope=None, verify="mechanical",
-        )],
-    )
-    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
-    monkeypatch.setattr(harness_core, "run_subagent", _make_touchless_run_subagent())
-
-    session = _make_session(tmp_path)
-    collected = run(_drain(harness, session, "do it"))
-
-    assert not any(isinstance(e, TaskGraphHaltedEvent) for e in collected)
-    assert any(isinstance(e, DoneEvent) for e in collected)

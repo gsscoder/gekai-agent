@@ -1,7 +1,7 @@
 """TaskGraph data schema + validator (plan 27 origin; renamed under plan 28).
 
-v1 is data, not generated code: a flat list of Task nodes carrying
-verify/repair attributes, edges implicit-sequential. Conditional branching
+v1 is data, not generated code: a flat list of Task nodes carrying a
+verify attribute, edges implicit-sequential. Conditional branching
 is a deliberately deferred capability (plan 28) — until built, nesting/
 branching stays the fixed interpreter's job, not encoded here (plan 27
 decision 2, preserved).
@@ -26,7 +26,6 @@ class Task:
     instruction: str
     mission: str  # short human-readable phrase (~8-10 words) describing the step's job
     verify: str | None = None  # post-planning-only agent name, or a mechanical check command
-    repair: str | None = None  # post-planning-only agent name, or a mechanical check command
     scope: str | None = None  # sequencer's per-step tool-breadth classification: "read"/"edit"/"fs", or None if the sequencer emitted no signal (assignment-time tool scoping); inert until a later phase wires it into dispatch
 
 
@@ -80,7 +79,6 @@ def parse_task_graph(raw: dict, roster: list[Subagent]) -> TaskGraph:
         instruction = item.get("instruction")
         mission = item.get("mission")
         verify = item.get("verify")
-        repair = item.get("repair")
         scope = item.get("scope")
 
         if not (agent in by_name and by_name[agent].auto_assignable):
@@ -90,12 +88,11 @@ def parse_task_graph(raw: dict, roster: list[Subagent]) -> TaskGraph:
         if not mission or not isinstance(mission, str):
             raise ValueError(f"step {i}: mission must be a non-empty string, got {mission!r}")
         _check_post_planning_field(i, "verify", verify, by_name)
-        _check_post_planning_field(i, "repair", repair, by_name)
         _check_scope_field(i, scope)
         _check_refs(i, instruction, len(steps))
 
         steps.append(
-            Task(agent=agent, instruction=instruction, mission=mission, verify=verify, repair=repair, scope=scope)
+            Task(agent=agent, instruction=instruction, mission=mission, verify=verify, scope=scope)
         )
 
     _check_discovery_stages(steps, by_name)
@@ -113,7 +110,7 @@ def _check_post_planning_field(
     if value in by_name and by_name[value].auto_assignable:
         raise ValueError(
             f"step {index}: {field}={value!r} is an auto-assignable agent, "
-            "not a post-planning-only verify/repair agent"
+            "not a post-planning-only verify agent"
         )
 
 

@@ -31,6 +31,7 @@ from ..events import (
     ScaleEvent,
     TaskGraphStartedEvent,
     ToolScopeEvent,
+    VerifyEvent,
 )
 from ..permissions import PermissionCallback
 from ..session import Session
@@ -112,6 +113,7 @@ async def run_step(
                 "task_graph", session=session_id, turn=turn_id,
                 step_count=item.step_count, agents=item.agents,
                 verify_placements=item.verify_placements,
+                summary=item.summary, steps=item.steps,
             )
         elif isinstance(item, ScaleEvent):
             # Telemetry only (plan 28 Phase 2) — events-*.jsonl via
@@ -132,6 +134,14 @@ async def run_step(
             events.emit(
                 "tool_scope", session=session_id, turn=turn_id,
                 unit=item.unit, chosen_rung=item.chosen_rung, reason=item.reason,
+            )
+        elif isinstance(item, VerifyEvent):
+            # Telemetry only (same not-TUI-visible treatment as ScaleEvent above).
+            events.emit(
+                "verify", session=session_id, turn=turn_id,
+                step_index=item.step_index, agent=item.agent, ok=item.ok,
+                violation_count=item.violation_count, chosen_tier=item.chosen_tier,
+                duration_ms=item.duration_ms, gate=item.gate,
             )
         elif isinstance(item, DirectivePumpEvent):
             # Telemetry only (plan 28 Phase 3, hard problem 3) — same

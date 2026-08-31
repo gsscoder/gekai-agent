@@ -10,7 +10,7 @@ import pytest
 
 from agent.shell import ShellSpec, resolve_shell
 from agent.tools import _run_command
-from agent.tools.shell import _forbidden_token, _venv_env
+from agent.tools.shell import ShellCommandError, _forbidden_token, _venv_env
 from agent.workspace.ignore import load as _load_ignore_rules
 
 
@@ -138,8 +138,9 @@ class TestRunCommand:
         assert "hello" in result
 
     def test_nonzero_exit(self, tmp_path: Path) -> None:
-        result = run(_run_command("exit 1", working_dir=tmp_path))
-        assert "exit: 1" in result
+        with pytest.raises(ShellCommandError) as exc_info:
+            run(_run_command("exit 1", working_dir=tmp_path))
+        assert "exit: 1" in str(exc_info.value)
 
     def test_timeout(self, tmp_path: Path) -> None:
         result = run(_run_command(_sleep_cmd(), working_dir=tmp_path, timeout=1))

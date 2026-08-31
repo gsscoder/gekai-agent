@@ -291,6 +291,22 @@ class TestEditFileBatch:
 
 
 # ---------------------------------------------------------------------------
+# _write_file
+# ---------------------------------------------------------------------------
+
+class TestWriteFile:
+    def test_new_file_returns_ok(self, tmp_path):
+        result = run(_write_file("new.txt", "content", ctx=_ctx(tmp_path)))
+        assert result == "ok"
+
+    def test_overwriting_existing_file_returns_ok_overwritten(self, tmp_path):
+        _write(tmp_path / "existing.txt", "original")
+        result = run(_write_file("existing.txt", "replaced", ctx=_ctx(tmp_path)))
+        assert result == "ok: overwritten"
+        assert (tmp_path / "existing.txt").read_text() == "replaced"
+
+
+# ---------------------------------------------------------------------------
 # .aiignore red zone (forbidden, even via explicit path)
 # ---------------------------------------------------------------------------
 

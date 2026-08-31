@@ -19,7 +19,7 @@ def test_well_formed_graph_parses() -> None:
         "steps": [
             {"agent": "code-expert", "instruction": "scaffold repo", "mission": "scaffold the repo"},
             {"agent": "code-expert", "instruction": "write code", "mission": "write the code", "verify": "fact-checker"},
-            {"agent": "test-expert", "instruction": "write tests for {{step_2}}", "mission": "write tests", "repair": "fact-checker"},
+            {"agent": "test-expert", "instruction": "write tests for {{step_2}}", "mission": "write tests"},
         ],
     }
     graph = parse_task_graph(raw, _ROSTER)
@@ -27,7 +27,7 @@ def test_well_formed_graph_parses() -> None:
     assert graph == [
         Task(agent="code-expert", instruction="scaffold repo", mission="scaffold the repo"),
         Task(agent="code-expert", instruction="write code", mission="write the code", verify="fact-checker"),
-        Task(agent="test-expert", instruction="write tests for {{step_2}}", mission="write tests", repair="fact-checker"),
+        Task(agent="test-expert", instruction="write tests for {{step_2}}", mission="write tests"),
     ]
 
 

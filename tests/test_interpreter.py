@@ -7,6 +7,7 @@ import pytest
 from agent.harness.interpreter import TaskGraphHalted, resolve_refs, run_task_graph
 from agent.harness.scaling import WorkSignal
 from agent.pipeline.plan import Task, TaskGraph, parse_task_graph
+from agent.pipeline.verifier import Verdict
 from agent.subagents import SUBAGENTS
 from agent.tools.delegate import ERROR_PREFIX
 
@@ -38,7 +39,7 @@ def test_passing_graph_runs_all_steps_with_refs_substituted() -> None:
             Task(agent="test-expert", instruction="test {{step_1}}", mission="test tokenizer"),
         ],
     )
-    results = run(run_task_graph(graph, _dispatch_ok))
+    results = run(run_task_graph(graph, _dispatch_ok, "build a tokenizer with tests"))
     assert results[0].output.startswith("code-expert did:")
     assert results[0].output.endswith("write tokenizer")
     assert results[1].output.startswith("test-expert did:")
@@ -51,11 +52,11 @@ def test_step_failing_verify_once_is_repaired_then_passes() -> None:
     graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker")])
     verify_calls: list[str] = []
 
-    async def verify(step: Task, out: str) -> bool:
+    async def verify(step: Task, out: str, attempt: int, index: int) -> Verdict:
         verify_calls.append(out)
-        return len(verify_calls) > 1  # fail first call, pass second
+        return Verdict(ok=len(verify_calls) > 1)  # fail first call, pass second
 
-    results = run(run_task_graph(graph, _dispatch_ok, verify_agent=verify))
+    results = run(run_task_graph(graph, _dispatch_ok, "s", verify_agent=verify))
     assert len(results) == 1
     assert len(verify_calls) == 2
 
@@ -74,14 +75,26 @@ def test_step_failing_verify_twice_halts_and_later_steps_do_not_run() -> None:
         ran.append(agent)
         return f"{agent} output"
 
-    async def always_fail(step: Task, out: str) -> bool:
-        return False
+    async def always_fail(step: Task, out: str, attempt: int, index: int) -> Verdict:
+        return Verdict(ok=False)
 
     with pytest.raises(TaskGraphHalted) as exc_info:
-        run(run_task_graph(graph, dispatch, verify_agent=always_fail))
+        run(run_task_graph(graph, dispatch, "s", verify_agent=always_fail))
     assert exc_info.value.index == 0
     assert ran == ["code-expert", "code-expert"]  # original attempt + one repair, no test-expert
     assert exc_info.value.last_output == "code-expert output"  # the failed repair attempt's own output
+
+
+def test_halt_reason_includes_violations_text_when_present() -> None:
+    graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker")])
+
+    async def always_fail_with_violations(step: Task, out: str, attempt: int, index: int) -> Verdict:
+        return Verdict(ok=False, violations=["renamed field not updated on the other side", "missing null check"])
+
+    with pytest.raises(TaskGraphHalted) as exc_info:
+        run(run_task_graph(graph, _dispatch_ok, "s", verify_agent=always_fail_with_violations))
+    assert "renamed field not updated on the other side" in exc_info.value.reason
+    assert "missing null check" in exc_info.value.reason
 
 
 def test_repair_dispatch_receives_step_scope() -> None:
@@ -97,11 +110,11 @@ def test_repair_dispatch_receives_step_scope() -> None:
         scopes.append(scope)
         return f"{agent} output"
 
-    async def always_fail(step: Task, out: str) -> bool:
-        return False
+    async def always_fail(step: Task, out: str, attempt: int, index: int) -> Verdict:
+        return Verdict(ok=False)
 
     with pytest.raises(TaskGraphHalted):
-        run(run_task_graph(graph, dispatch, verify_agent=always_fail))
+        run(run_task_graph(graph, dispatch, "s", verify_agent=always_fail))
     assert scopes == ["edit", "edit"]  # initial dispatch and repair dispatch both carry the step's scope
 
 
@@ -111,7 +124,7 @@ def test_empty_dispatch_output_halts() -> None:
 
     graph = TaskGraph(summary="s", steps=[Task(agent="code-expert", instruction="write it", mission="write it")])
     with pytest.raises(TaskGraphHalted, match="empty dispatch output"):
-        run(run_task_graph(graph, empty_dispatch))
+        run(run_task_graph(graph, empty_dispatch, "s"))
 
 
 def test_error_sentinel_dispatch_output_halts() -> None:
@@ -127,12 +140,12 @@ def test_error_sentinel_dispatch_output_halts() -> None:
     )
     verify_calls: list[str] = []
 
-    async def verify(step: Task, out: str) -> bool:
+    async def verify(step: Task, out: str, attempt: int, index: int) -> Verdict:
         verify_calls.append(out)
-        return True  # would wrongly pass "mechanical" verify if the crash string ever reached here
+        return Verdict(ok=True)  # would wrongly pass "mechanical" verify if the crash string ever reached here
 
     with pytest.raises(TaskGraphHalted) as exc_info:
-        run(run_task_graph(graph, crashed_dispatch, verify_agent=verify))
+        run(run_task_graph(graph, crashed_dispatch, "s", verify_agent=verify))
     assert exc_info.value.index == 0
     assert verify_calls == []  # halted before ever reaching verify
     assert exc_info.value.results == []
@@ -152,7 +165,7 @@ def test_one_step_ws_explorer_graph_parses_and_produces_step_result() -> None:
     async def dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(), scope: str | None = None) -> str:
         return "found the banking pane in src/panes/banking.py"
 
-    results = run(run_task_graph(graph, dispatch))
+    results = run(run_task_graph(graph, dispatch, "investigate the banking pane"))
     assert len(results) == 1
     assert results[0].output == "found the banking pane in src/panes/banking.py"
 
@@ -160,10 +173,28 @@ def test_one_step_ws_explorer_graph_parses_and_produces_step_result() -> None:
     assert "found the banking pane in src/panes/banking.py" in outputs_block
 
 
-def test_repair_uses_named_repair_agent_not_original() -> None:
+def test_request_summary_carries_verbatim_user_input() -> None:
+    graph = TaskGraph(summary="paraphrased gist", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])
+    seen_instructions: list[str] = []
+
+    async def dispatch(agent: str, instruction: str, mission: str = "", signal: WorkSignal = WorkSignal(), scope: str | None = None) -> str:
+        seen_instructions.append(instruction)
+        return f"{agent} output"
+
+    run(run_task_graph(graph, dispatch, "fix X only in file A, do NOT touch the login flow"))
+    assert "fix X only in file A, do NOT touch the login flow" in seen_instructions[0]
+    assert "paraphrased gist" in seen_instructions[0]
+
+
+def test_edit_scoped_step_with_no_verify_still_checked_for_file_touch() -> None:
+    """An edit/fs-scoped step must still go through `verify_agent` even when
+    the sequencer never set `verify` — the interpreter calls `verify_agent`
+    unconditionally for every step, regardless of `verify`/`scope`; whether
+    a step actually needs a real check (e.g. did it touch a file) is
+    core.py's `verify_agent` closure's own gate, not this module's."""
     graph = TaskGraph(
         summary="s",
-        steps=[Task(agent="code-expert", instruction="write it", mission="write it", verify="fact-checker", repair="code-refactorer")],
+        steps=[Task(agent="code-expert", instruction="edit it", mission="edit it", verify=None, scope="edit")],
     )
     dispatched: list[str] = []
 
@@ -171,12 +202,30 @@ def test_repair_uses_named_repair_agent_not_original() -> None:
         dispatched.append(agent)
         return f"{agent} output"
 
-    calls = 0
+    async def verify_no_file_touched(step: Task, out: str, attempt: int, index: int) -> Verdict:
+        return Verdict(ok=False)
 
-    async def verify(step: Task, out: str) -> bool:
-        nonlocal calls
-        calls += 1
-        return calls > 1
+    with pytest.raises(TaskGraphHalted) as exc_info:
+        run(run_task_graph(graph, dispatch, "s", verify_agent=verify_no_file_touched))
+    assert exc_info.value.index == 0
+    assert dispatched == ["code-expert", "code-expert"]  # original attempt + one repair
 
-    run(run_task_graph(graph, dispatch, verify_agent=verify))
-    assert dispatched == ["code-expert", "code-refactorer"]
+
+def test_verify_agent_called_even_with_no_verify_and_no_scope() -> None:
+    """The interpreter no longer gates the call to `verify_agent` on
+    `step.verify`/`step.scope` — that gate lives in core.py's `verify_agent`
+    closure now. A step with neither set must still invoke it."""
+    graph = TaskGraph(
+        summary="s",
+        steps=[Task(agent="code-expert", instruction="do it", mission="do it", verify=None, scope=None)],
+    )
+    verify_calls = 0
+
+    async def verify_always_ok(step: Task, out: str, attempt: int, index: int) -> Verdict:
+        nonlocal verify_calls
+        verify_calls += 1
+        return Verdict(ok=True)
+
+    results = run(run_task_graph(graph, _dispatch_ok, "s", verify_agent=verify_always_ok))
+    assert len(results) == 1
+    assert verify_calls == 1
