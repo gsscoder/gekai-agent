@@ -824,7 +824,7 @@ class Harness:
                         f"{halted.last_output}\n\n"
                         if halted.last_output else ""
                     )
-                    + "prior steps' work is kept; nothing was rolled back.\n\n"
+                    + "prior steps' work is kept; nothing was rolled back\n\n"
                     "write the reply the user will see: report what was completed and name the step "
                     "that halted and why (drawing on its own last output above, when present), using "
                     "only the information above — ground every claim about what changed in <diffs> "
