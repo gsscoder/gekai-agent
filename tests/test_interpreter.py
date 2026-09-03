@@ -9,7 +9,7 @@ from agent.harness.scaling import WorkSignal
 from agent.pipeline.plan import Task, TaskGraph, parse_task_graph
 from agent.pipeline.verifier import Verdict
 from agent.subagents import SUBAGENTS
-from agent.tools.delegate import ERROR_PREFIX
+from agent.harness.dispatch import ERROR_PREFIX
 
 
 def run(coro):

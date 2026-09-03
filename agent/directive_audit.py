@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .atomic_io import atomic_write, lock_for
-from .openai_client import build_openai_client
+from .oneshot import complete
+from .tiers.resolve import ResolvedTier
 
 _log = logging.getLogger(__name__)
 
@@ -74,29 +75,14 @@ def _parse(raw: str) -> AuditVerdict:
 
 
 class Auditor:
-    def __init__(
-        self,
-        model: str,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        extra_params: dict | None = None,
-    ) -> None:
-        self._model = model
-        self._extra_params = extra_params or {}
-        self._client = build_openai_client(api_key, api_base)
+    def __init__(self, tier: ResolvedTier) -> None:
+        self._tier = tier
 
     async def audit(self, file_text: str) -> AuditVerdict:
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                temperature=0,
-                messages=[
-                    {"role": "system", "content": AUDIT_PROMPT},
-                    {"role": "user", "content": file_text},
-                ],
-                **self._extra_params,
-            )
-            raw: str = response.choices[0].message.content.strip()
+            raw = (await complete(
+                self._tier, system=AUDIT_PROMPT, user=file_text, temperature=0,
+            )).strip()
         except Exception:
             _log.warning("directive audit call failed; falling back to NO", exc_info=True)
             return _fallback()

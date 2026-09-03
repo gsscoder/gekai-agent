@@ -22,7 +22,7 @@ import pytest
 
 from agent import compact
 from agent.llm.model_caps import resolve_thinking_params
-from agent.llm.resolve import ResolvedTier
+from agent.tiers.resolve import ResolvedTier
 
 
 def _support_tier() -> ResolvedTier | None:

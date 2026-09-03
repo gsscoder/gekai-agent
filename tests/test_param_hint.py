@@ -31,7 +31,7 @@ from agent.agent import GekaiAgent
 from agent.commands.clear import ClearCommand
 from agent.commands.compact import CompactCommand
 from agent.commands.registry import CommandRegistry
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.tui.app import GekaiApp
 from agent.tui.palette import CommandPalette
 

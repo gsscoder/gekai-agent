@@ -26,7 +26,7 @@ from agent.commands.registry import CommandRegistry
 from agent.events import DoneEvent, SubAgentStartEvent
 from agent.harness import turn as harness_turn
 from agent.harness.turn import TurnResult
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.subagents import NAMESPACE_COLORS
 from agent.tui.app import GekaiApp
 from agent.tui.widgets import MessageWidget

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .directive_audit import file_sha
 from .persona import ROOT_SYSTEM_PROMPT
-from .settings import Permissions
+from .permissions import Permissions
 
 
 @dataclass(frozen=True)

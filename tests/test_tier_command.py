@@ -15,7 +15,8 @@ import pytest
 
 from agent import settings
 from agent.commands.tier import TierCommand
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
+from agent.tiers.catalog import ModelCatalogEntry, TierBinding, TierName
+from agent.tiers import store as tiers_store
 
 pytestmark = pytest.mark.asyncio
 
@@ -30,12 +31,12 @@ PRO = ModelCatalogEntry(
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings.Path, "home", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr(settings, "DEFAULT_MODEL_CATALOG", (FLASH, PRO))
+    monkeypatch.setattr(tiers_store, "DEFAULT_MODEL_CATALOG", (FLASH, PRO))
 
 
 @pytest.fixture(autouse=True)
 def _keyring(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
 
 
 async def _run(*args: str):
@@ -43,7 +44,7 @@ async def _run(*args: str):
 
 
 async def test_no_args_lists_every_tier_including_unconfigured_ones() -> None:
-    settings.save_tier_binding(TierName.FAST, TierBinding(model="flash", default_effort="low", thinking=False))
+    tiers_store.save_tier_binding(TierName.FAST, TierBinding(model="flash", default_effort="low", thinking=False))
 
     result = await _run()
 
@@ -57,19 +58,20 @@ async def test_no_args_lists_every_tier_including_unconfigured_ones() -> None:
 
 
 async def test_listing_reports_a_bound_model_whose_key_went_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings.save_tier_binding(TierName.FAST, TierBinding(model="flash", default_effort="low", thinking=False))
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: False)
+    tiers_store.save_tier_binding(TierName.FAST, TierBinding(model="flash", default_effort="low", thinking=False))
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: False)
 
     result = await _run()
 
     assert result.output.splitlines()[0].split()[-2:] == ["no", "key"]
 
 
-async def test_calling_with_a_tier_arg_directly_errors_since_assignment_is_ui_only() -> None:
-    # Confirms the headless command never tries to assign anything itself —
-    # the real app never reaches this path (see the module docstring).
+async def test_calling_with_a_tier_arg_hands_the_wizard_to_the_ui() -> None:
+    # The command parses and validates the tier name itself; only the picker
+    # UI is the view's job, requested through `ui_action`.
     result = await _run("CORE")
 
-    assert result.error is True
-    assert "interactive" in result.output
-    assert settings.load_tier_bindings() == {}
+    assert result.ui_action == "tier_wizard"
+    assert result.ui_arg == "core"
+    assert result.error is False
+    assert tiers_store.load_tier_bindings() == {}

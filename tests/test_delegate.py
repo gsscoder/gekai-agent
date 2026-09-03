@@ -13,9 +13,9 @@ import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agent.llm.resolve import ResolvedTier
-from agent.settings import Permissions
-from agent.tools.delegate import DispatchContext, make_delegate_tool, run_subagent
+from agent.tiers.resolve import ResolvedTier
+from agent.permissions import Permissions
+from agent.harness.dispatch import DispatchContext, make_delegate_tool, run_subagent
 
 _PERMISSIONS = Permissions(read=True, write=True, exec=True)
 _WORKING_DIR = Path(".")
@@ -39,8 +39,8 @@ def run(coro):
 @contextlib.contextmanager
 def _patched_build_agent(mock_agent):
     with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent),
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent),
+        patch("agent.harness.dispatch.enrich_system_base", return_value="sys"),
     ):
         yield
 
@@ -128,7 +128,7 @@ def test_verbose_telemetry_true_with_session_appends_subagent_system_prompt() ->
 
     with (
         _patched_build_agent(mock_agent),
-        patch("agent.persistence.append_debug") as mock_append_debug,
+        patch("agent.harness.dispatch.append_debug") as mock_append_debug,
     ):
         result = run(_call_run_subagent("code-expert", session=mock_session))
 
@@ -149,7 +149,7 @@ def test_verbose_telemetry_false_or_no_session_does_not_append_debug() -> None:
 
     with (
         _patched_build_agent(mock_agent),
-        patch("agent.persistence.append_debug") as mock_append_debug,
+        patch("agent.harness.dispatch.append_debug") as mock_append_debug,
     ):
         run(_call_run_subagent("code-expert", session=MagicMock(), verbose_telemetry=False))
         run(_call_run_subagent("code-expert", session=None, verbose_telemetry=True))
@@ -162,20 +162,20 @@ def test_no_delegate_tool_registered_for_main_or_subagent() -> None:
     `_build_agent` must never register a `delegate` tool, subagent or not."""
     import dataclasses
 
-    from agent.harness.core import _build_agent
+    from agent.harness.dispatch import build_agent
     from agent.subagents import SUBAGENTS
 
     code_expert = next(s for s in SUBAGENTS if s.name == "code-expert")
     code_expert_no_delegate = dataclasses.replace(code_expert, delegates_to=())
 
     with (
-        patch("agent.harness.core.OpenAIAdapter"),
-        patch("agent.harness.core.make_tools", return_value=[]),
+        patch("agent.harness.dispatch.OpenAIAdapter"),
+        patch("agent.harness.dispatch.make_tools", return_value=[]),
     ):
-        main_agent = _build_agent(
+        main_agent = build_agent(
             _RESOLVED, _WORKING_DIR, _PERMISSIONS, None, "sys", None,
         )
-        sub_agent = _build_agent(
+        sub_agent = build_agent(
             _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
             code_expert_no_delegate.build_system_base(), None,
             subagent=code_expert_no_delegate,
@@ -268,7 +268,7 @@ def test_calling_with_undeclared_but_real_agent_delegates_via_run_subagent() -> 
 def _build_real_agent(subagent=None, tools_override=None, can_delegate=True):
     import dataclasses
 
-    from agent.harness.core import _build_agent
+    from agent.harness.dispatch import build_agent
     from agent.subagents import SUBAGENTS
 
     code_expert = next(s for s in SUBAGENTS if s.name == "code-expert")
@@ -278,7 +278,7 @@ def _build_real_agent(subagent=None, tools_override=None, can_delegate=True):
     elif subagent == "code-expert-delegates":
         resolved_subagent = dataclasses.replace(code_expert, delegates_to=("test-expert",))
 
-    return _build_agent(
+    return build_agent(
         _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         resolved_subagent.build_system_base() if resolved_subagent else "sys",
         None,
@@ -329,8 +329,8 @@ def test_run_subagent_defaults_child_to_can_delegate_false() -> None:
     mock_agent.run = AsyncMock(return_value=fake_history)
 
     with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent) as mock_build,
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent) as mock_build,
+        patch("agent.harness.dispatch.enrich_system_base", return_value="sys"),
     ):
         run(_call_run_subagent("code-expert"))
 
@@ -348,8 +348,8 @@ def test_run_subagent_forwards_can_delegate_true() -> None:
     mock_agent.run = AsyncMock(return_value=fake_history)
 
     with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent) as mock_build,
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent) as mock_build,
+        patch("agent.harness.dispatch.enrich_system_base", return_value="sys"),
     ):
         run(_call_run_subagent("code-expert", can_delegate=True))
 
@@ -362,13 +362,13 @@ def test_read_scoped_parent_produces_child_with_no_edit_or_fs_tools() -> None:
     # subagent's own `tools`/`tool_policy` would normally allow it.
     import dataclasses
 
-    from agent.harness.core import _build_agent
+    from agent.harness.dispatch import build_agent
     from agent.subagents import SUBAGENTS
     from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, RUNGS
 
     code_expert = next(s for s in SUBAGENTS if s.name == "code-expert")
     read_only_parent = dataclasses.replace(code_expert, delegates_to=("test-expert",))
-    parent_agent = _build_agent(
+    parent_agent = build_agent(
         _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         read_only_parent.build_system_base(), None,
         subagent=read_only_parent,
@@ -377,7 +377,7 @@ def test_read_scoped_parent_produces_child_with_no_edit_or_fs_tools() -> None:
     assert "delegate" in parent_agent.tools
     parent_tools = frozenset(d.name for d in parent_agent.tools.definitions() if d.name != "delegate")
 
-    child = _build_agent(
+    child = build_agent(
         _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         "sys", None,
         subagent=next(s for s in SUBAGENTS if s.name == "test-expert"),  # no tools ceiling of its own
@@ -397,8 +397,8 @@ def test_run_subagent_intersects_parent_tools_into_tools_override() -> None:
     mock_agent.run = AsyncMock(return_value=fake_history)
 
     with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent) as mock_build,
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent) as mock_build,
+        patch("agent.harness.dispatch.enrich_system_base", return_value="sys"),
     ):
         run(_call_run_subagent(
             "code-expert",
@@ -417,11 +417,11 @@ def test_run_subagent_intersects_parent_tools_into_tools_override() -> None:
 # ---------------------------------------------------------------------------
 
 def _build_complexity_remover_agent(can_delegate=True):
-    from agent.harness.core import _build_agent
+    from agent.harness.dispatch import build_agent
     from agent.subagents import SUBAGENTS
 
     complexity_remover = next(s for s in SUBAGENTS if s.name == "complexity-remover")
-    return _build_agent(
+    return build_agent(
         _RESOLVED, _WORKING_DIR, _PERMISSIONS, None,
         complexity_remover.build_system_base(), None,
         subagent=complexity_remover,
@@ -449,8 +449,8 @@ def test_run_subagent_uses_parent_tools_alone_when_no_tools_override_given() -> 
     mock_agent.run = AsyncMock(return_value=fake_history)
 
     with (
-        patch("agent.harness.core._build_agent", return_value=mock_agent) as mock_build,
-        patch("agent.harness.core._enrich_system_base", return_value="sys"),
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent) as mock_build,
+        patch("agent.harness.dispatch.enrich_system_base", return_value="sys"),
     ):
         run(_call_run_subagent(
             "code-expert",

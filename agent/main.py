@@ -13,7 +13,8 @@ from .commands.models import ModelsCommand
 from .commands.tier import TierCommand
 from .commands.registry import CommandRegistry
 from .persistence import load_session, load_timeline
-from .settings import Permissions, bootstrap_global_settings, load_global_settings, load_permissions
+from .settings import bootstrap_global_settings, load_global_settings, load_permissions
+from .permissions import Permissions
 from .tui.app import GekaiApp
 from .shell import resolve_shell
 from .workspace import get_git_branch

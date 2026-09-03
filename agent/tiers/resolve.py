@@ -1,22 +1,22 @@
-"""Tier resolver (plan 28 Phase 1b): the one place a dispatch site turns a
-tier name into runnable API params. Layers catalog + binding + keyring
-credential + `model_caps` realizability on top of each other; every failure
-mode is a `TierResolutionError` (chat-visible, never a silent fallback —
-plan 28 decision 3/3b).
+"""Tier resolver: the one place a dispatch site turns a tier name into
+runnable API params. Layers catalog + binding + keyring credential +
+`model_caps` realizability on top of each other; every failure mode is a
+`TierResolutionError` (chat-visible, never a silent fallback).
 
-Returns the tier's own configured default_effort/thinking, unless the
-touchpoint being resolved declares its own operating point — see
-`resolve_tier`'s `touchpoint_name`.
+Returns the tier's own configured default_effort/thinking unless the caller
+overrides either — see `resolve_tier`'s `effort`/`thinking` arguments. The
+harness passes a touchpoint's own operating point that way
+(`harness/touchpoints.py`), which is what keeps this module free of any
+dependency on the harness.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .. import credentials
-from .model_caps import resolve_thinking_params
-from .tiers import ModelCatalogEntry, Suitability, TierBinding, TierName, validate_binding
-from ..harness.touchpoints import touchpoint
+from ..llm.model_caps import resolve_thinking_params
+from . import credentials
+from .catalog import ModelCatalogEntry, Suitability, TierBinding, TierName, validate_binding
 
 
 class TierResolutionError(Exception):
@@ -36,14 +36,15 @@ def resolve_tier(
     tier: TierName,
     catalog: dict[str, ModelCatalogEntry],
     bindings: dict[TierName, TierBinding],
-    touchpoint_name: str | None = None,
+    *,
+    effort: str | None = None,
+    thinking: bool | None = None,
 ) -> ResolvedTier:
-    """Turn a tier name into runnable API params. `touchpoint_name`, when
-    given, additionally applies that touchpoint's own operating point
-    (`Touchpoint.effort`/`.thinking`) on top of the binding — the binding
-    still decides WHICH model and WHICH credential, the touchpoint only
-    decides HOW that model is operated for its job. Passing a touchpoint that
-    declares no override resolves exactly as passing none at all."""
+    """Turn a tier name into runnable API params. `effort`/`thinking`, when
+    given, override the binding's own operating point — the binding still
+    decides WHICH model and WHICH credential, the caller only decides HOW
+    that model is operated for its job. Passing neither resolves purely from
+    the binding."""
     binding = bindings.get(tier)
     if binding is None:
         raise TierResolutionError(f"tier {tier.value!r} is not configured — run /tier")
@@ -61,32 +62,21 @@ def resolve_tier(
         api_key = credentials.get_api_key(cred_key)
     except LookupError:
         raise TierResolutionError(f"no stored credential for model {binding.model!r} — run /models")
-    tp = touchpoint(touchpoint_name) if touchpoint_name is not None else None
-    effort = binding.default_effort if tp is None or tp.effort is None else tp.effort
-    thinking = binding.thinking if tp is None or tp.thinking is None else tp.thinking
-    if effort not in entry.efforts:
+    effective_effort = binding.default_effort if effort is None else effort
+    effective_thinking = binding.thinking if thinking is None else thinking
+    if effective_effort not in entry.efforts:
         raise TierResolutionError(
-            f"touchpoint {touchpoint_name!r} asks for effort {effort!r}, which is not among "
-            f"{binding.model!r}'s declared efforts {entry.efforts}"
+            f"effort {effective_effort!r} is not among {binding.model!r}'s declared "
+            f"efforts {entry.efforts}"
         )
     return ResolvedTier(
         model=binding.model,
         api_key=api_key,
         api_base=entry.base_url,
-        extra_params=resolve_thinking_params(binding.model, effort, enabled=thinking),
+        extra_params=resolve_thinking_params(
+            binding.model, effective_effort, enabled=effective_thinking,
+        ),
     )
-
-
-def resolve_touchpoint(
-    name: str,
-    catalog: dict[str, ModelCatalogEntry],
-    bindings: dict[TierName, TierBinding],
-) -> ResolvedTier:
-    """`touchpoint(name).nominal_tier` is the static rule (plan 28 Phase 1b),
-    at that touchpoint's own declared operating point. The scaled dispatch
-    sites can't use this — `scale()` has already picked a tier by then — so
-    they call `resolve_tier(tier, ..., touchpoint_name=name)` directly."""
-    return resolve_tier(touchpoint(name).nominal_tier, catalog, bindings, name)
 
 
 @dataclass(frozen=True)
@@ -169,7 +159,6 @@ __all__ = [
     "ResolvedTier",
     "TierResolutionError",
     "resolve_tier",
-    "resolve_touchpoint",
     "TierRowStatus",
     "tier_status",
     "all_tiers_ready",

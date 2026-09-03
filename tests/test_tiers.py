@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.llm.tiers import (
+from agent.tiers.catalog import (
     TierName,
     TierPolicy,
     TierSuitability,
@@ -58,7 +58,7 @@ def test_suitability_known_model_verdicts(model: str, tier: TierName, expected: 
 
 
 def test_suitability_thinking_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    from agent.llm.tiers import MODEL_SUITABILITY
+    from agent.tiers.catalog import MODEL_SUITABILITY
     monkeypatch.setitem(
         MODEL_SUITABILITY, "synthetic-model",
         TierSuitability(core="warning", core_thinking="ok"),

@@ -5,7 +5,7 @@ import itertools
 import pytest
 
 from agent.harness.scaling import WorkSignal, _sequencer_signal, node_signal, scale
-from agent.llm.tiers import TierName, TierPolicy
+from agent.tiers.catalog import TierName, TierPolicy
 from agent.pipeline.plan import Task
 
 

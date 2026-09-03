@@ -4,10 +4,10 @@ against the global tier catalog+bindings, not `GEKAI_CORE_*`/`GEKAI_SUPPORT_*`
 env vars.
 
 Isolation follows tests/test_resolve.py's pattern (monkeypatch
-`agent.llm.resolve.credentials.has_api_key`/`get_api_key` directly — no real
+`agent.tiers.resolve.credentials.has_api_key`/`get_api_key` directly — no real
 keyring — keyed by `provider:model`, so a stub returns `key-for-<credential_key>`) plus monkeypatching `agent.agent.load_model_catalog`/
 `load_tier_bindings` (the names imported into `agent.agent`'s namespace) —
-no real `~/.gekai/settings.json` touched. `agent.logging.Path.home` is also
+no real `~/.gekai/settings.json` touched. `agent.telemetry.Path.home` is also
 patched so `EventLogger`'s always-on log file lands in `tmp_path`, not the
 real home directory.
 """
@@ -20,21 +20,21 @@ from pathlib import Path
 import pytest
 
 from agent import agent as agent_module
-from agent import logging as agent_logging
+from agent import telemetry as agent_telemetry
 from agent.agent import GekaiAgent
-from agent.llm.tiers import TierBinding, TierName
-from agent.settings import Permissions
+from agent.tiers.catalog import TierBinding, TierName
+from agent.permissions import Permissions
 from tests.conftest import TIER_BINDINGS, TIER_CATALOG
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(agent_logging.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(agent_telemetry.Path, "home", classmethod(lambda cls: tmp_path))
 
 
 def _stub_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
 
 
 def _make_agent(tmp_path: Path) -> GekaiAgent:
@@ -86,7 +86,7 @@ def test_construction_succeeds_and_wires_each_touchpoint_to_its_resolved_model(
 
     # estimator (FAST)
     assert agent._root._estimator is not None
-    assert agent._root._estimator._model == "fast-model"
+    assert agent._root._estimator._tier.model == "fast-model"
 
     # sequencer/root-dispatch/subagent-dispatch (plan 28 Phase 2) are no
     # longer frozen `ResolvedTier`s on the Harness — they're a resolver

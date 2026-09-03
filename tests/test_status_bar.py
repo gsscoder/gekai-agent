@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.tui.app import (
+from agent.tui.status import (
     _fmt_status_left,
     _fmt_status_right,
     _fmt_tokens_k,

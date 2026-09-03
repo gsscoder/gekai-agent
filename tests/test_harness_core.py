@@ -13,7 +13,7 @@ forwards that signal into Harness.stream's yielded item sequence; the
 salvage mechanism itself is already covered by tests/test_llm_agent.py.
 
 `Harness.stream` hardwires `OpenAIAdapter` inside `_build_agent`
-(agent/harness/core.py), so `agent.harness.core.OpenAIAdapter` is
+(agent/harness/core.py), so `agent.harness.dispatch.OpenAIAdapter` is
 monkeypatched with a fake adapter class for the duration of each test —
 mirroring tests/test_llm_agent.py's `_ScriptedProvider` pattern but adapted to
 `OpenAIAdapter`'s method surface (agent/llm/providers/openai.py).
@@ -42,20 +42,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.harness import dispatch as harness_dispatch
 from agent.directive_pump import PUMP_BUDGET
 from agent.events import AgentEvent, BudgetExhaustedEvent, DiffEvent, DirectivePumpEvent, DoneEvent, LogEvent, MaxIterationsEvent, TextChunkEvent
 from agent.harness import core as harness_core
-from agent.harness.core import Harness, _MAX_ITERATIONS
+from agent.harness.core import Harness
+from agent.harness.dispatch import MAX_ITERATIONS as _MAX_ITERATIONS
 from agent.llm.events import AgentStopped, EventBus
-from agent.llm.resolve import ResolvedTier
-from agent.llm.tiers import TierName, TierPolicy
+from agent.tiers.resolve import ResolvedTier
+from agent.tiers.catalog import TierName, TierPolicy
 from agent.llm.tools import Tool
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, TextDelta, ToolUseBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
 from agent.session import Session
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.subagents import NAMESPACE_DIRECTIVES, NAMESPACE_DIRECTIVE_RANK
 
 
@@ -68,7 +70,7 @@ class _ScriptedAdapter:
 
     Mirrors tests/test_llm_agent.py's `_ScriptedProvider`, but constructed as
     a zero-arg-instantiable class so it can stand in for `OpenAIAdapter` at
-    the `agent.harness.core.OpenAIAdapter(api_key=..., base_url=...)` call
+    the `agent.harness.dispatch.OpenAIAdapter(api_key=..., base_url=...)` call
     site via a class-level response script.
     """
 
@@ -179,7 +181,7 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_finds_text(
         CompletionResponse(content=[TextBlock(text="salvaged answer")], stop_reason="end_turn")
     )
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -197,7 +199,7 @@ def test_budget_exhausted_event_reaches_stream_when_salvage_also_fails(
     responses = [_tool_call_response(f"call-{i}") for i in range(1, _MAX_ITERATIONS + 1)]
     responses.append(CompletionResponse(content=[], stop_reason="end_turn"))
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -220,7 +222,7 @@ def test_write_file_emits_diff_event(
         CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
     ]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -243,7 +245,7 @@ def test_write_file_overwrite_emits_diff_event_with_overwrite_via(
         CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
     ]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -269,7 +271,7 @@ def test_edit_file_single_form_emits_one_diff_event(
         CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
     ]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -301,7 +303,7 @@ def test_edit_file_batched_edits_emit_one_diff_event_per_hunk(
         CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
     ]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -337,7 +339,7 @@ def test_edit_file_batched_edits_partial_failure_emits_no_phantom_diff(
         CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
     ]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -356,20 +358,20 @@ def test_no_graph_path_never_passes_tools_override(
     # REQ (plan 31 Phase 3, item 5): the no-graph, single-agent branch of
     # `Harness.stream` has no sequencer/task-graph step to read a `scope`
     # signal from, so it must never narrow root's tool grant -- its
-    # `_build_agent(...)` call site stays untouched, always default
+    # `build_agent(...)` call site stays untouched, always default
     # (`tools_override=None`), root always runs full there.
     responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
-    real_build_agent = harness_core._build_agent
+    real_build_agent = harness_dispatch.build_agent
     calls: list[dict[str, Any]] = []
 
     def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
         calls.append(kwargs)
         return real_build_agent(*args, **kwargs)
 
-    monkeypatch.setattr(harness_core, "_build_agent", _spy_build_agent)
+    monkeypatch.setattr(harness_dispatch, "build_agent", _spy_build_agent)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -392,7 +394,7 @@ def test_plain_english_prompt_emits_directive_pump_event_on_root_dispatch(
     call site."""
     responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -416,7 +418,7 @@ def test_estimator_receives_session_history(
     silently does nothing (the plan's "hard problem 1")."""
     responses = [CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
     mock_estimate = AsyncMock(return_value=ScopeEstimate(scope="solo"))
@@ -443,7 +445,7 @@ def test_chat_scope_strips_extra_params(
     responses = [CompletionResponse(content=[TextBlock(text="hi")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
     _ScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
@@ -474,7 +476,7 @@ def test_solo_scope_keeps_tier_extra_params(
     responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
     _ScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
@@ -496,44 +498,6 @@ def test_solo_scope_keeps_tier_extra_params(
     assert call_kwargs["reasoning_effort"] == "high"
 
 
-def test_explicit_extra_params_override_wins_over_chat_scope(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """The `extra_params` argument to `stream()` is an explicit override used
-    by the subagent path and existing callers -- it must win regardless of
-    what the estimator resolves, including `chat`."""
-    responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
-    _ScriptedAdapter.responses = responses
-    _ScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
-
-    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
-    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
-    harness = Harness(
-        resolve=lambda _tier, _touchpoint: tier,
-        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
-        root_dispatch_policy=policy,
-        subagent_dispatch_policy=policy,
-        verifier_policy=policy,
-        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
-    )
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
-
-    session = _make_session(tmp_path)
-
-    async def _drain_with_override() -> list[AgentEvent | str]:
-        collected: list[AgentEvent | str] = []
-        async for item in harness.stream(session, "hi", extra_params={"foo": "bar"}):
-            collected.append(item)
-        return collected
-
-    run(_drain_with_override())
-
-    assert len(_ScriptedAdapter.instances) == 1
-    call_kwargs = _ScriptedAdapter.instances[0].calls[0]
-    assert call_kwargs["foo"] == "bar"
-
-
 def test_chat_scope_uses_explicit_disable_payload_not_bare_dict(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -547,7 +511,7 @@ def test_chat_scope_uses_explicit_disable_payload_not_bare_dict(
     responses = [CompletionResponse(content=[TextBlock(text="hi")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
     _ScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     tier = ResolvedTier(model="deepseek-v4-flash", api_key="key", api_base="http://localhost", extra_params={"reasoning_effort": "high"})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
@@ -578,16 +542,16 @@ def test_chat_rung_registers_zero_tools(
     the answer call's system prompt carries no `<tools>` JSON schemas."""
     responses = [CompletionResponse(content=[TextBlock(text="Hi! What can I help you with?")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
-    real_build_agent = harness_core._build_agent
+    real_build_agent = harness_dispatch.build_agent
     calls: list[dict[str, Any]] = []
 
     def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
         calls.append(kwargs)
         return real_build_agent(*args, **kwargs)
 
-    monkeypatch.setattr(harness_core, "_build_agent", _spy_build_agent)
+    monkeypatch.setattr(harness_dispatch, "build_agent", _spy_build_agent)
 
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
@@ -616,16 +580,16 @@ def test_solo_rung_still_registers_normal_tool_set(
     unlike `chat`."""
     responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
-    real_build_agent = harness_core._build_agent
+    real_build_agent = harness_dispatch.build_agent
     calls: list[dict[str, Any]] = []
 
     def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
         calls.append(kwargs)
         return real_build_agent(*args, **kwargs)
 
-    monkeypatch.setattr(harness_core, "_build_agent", _spy_build_agent)
+    monkeypatch.setattr(harness_dispatch, "build_agent", _spy_build_agent)
 
     tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
@@ -727,7 +691,7 @@ def test_nested_agent_stopped_with_different_run_id_does_not_end_stream(
         is_async=True,
         required_permission="none",
     )
-    monkeypatch.setattr(harness_core, "make_tools", lambda *a, **kw: [stray_tool])
+    monkeypatch.setattr(harness_dispatch, "make_tools", lambda *a, **kw: [stray_tool])
 
     responses = [
         _tool_call_response("call-1"),
@@ -735,7 +699,7 @@ def test_nested_agent_stopped_with_different_run_id_does_not_end_stream(
         CompletionResponse(content=[TextBlock(text="final answer")], stop_reason="end_turn"),
     ]
     _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -768,7 +732,7 @@ def test_no_graph_direct_dispatch_emits_text_chunk_events_in_order(
     ]
     _ChunkedScriptedAdapter.chunks = [chunks]
     _ChunkedScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ChunkedScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ChunkedScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()
@@ -801,7 +765,7 @@ def test_graph_routed_turn_emits_zero_text_chunk_events(
     ]
     _ChunkedScriptedAdapter.chunks = [["streamed ", "step ", "text"]]
     _ChunkedScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ChunkedScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ChunkedScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
@@ -829,7 +793,7 @@ def test_no_graph_direct_dispatch_text_streams_and_tool_call_stay_in_causal_orde
         ["Sure, ", "done."],                 # turn 2: streamed text after the tool result
     ]
     _ChunkedScriptedAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ChunkedScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ChunkedScriptedAdapter)
 
     session = _make_session(tmp_path)
     harness = _make_harness()

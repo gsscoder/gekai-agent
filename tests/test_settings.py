@@ -1,6 +1,7 @@
 import json
 
-from agent.settings import Permissions, load_allow_hidden, save_allow_hidden, save_permissions
+from agent.settings import load_allow_hidden, save_allow_hidden, save_permissions
+from agent.permissions import Permissions
 
 
 # ---------------------------------------------------------------------------

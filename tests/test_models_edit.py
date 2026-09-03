@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.tui.app import _mask_key, _models_display_key, _models_key_present
+from agent.tui.status import _mask_key, _models_display_key, _models_key_present
 
 
 # ---- _mask_key -------------------------------------------------------

@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..llm.tiers import TierName, TierPolicy
+from ..tiers.catalog import ModelCatalogEntry, TierBinding, TierName, TierPolicy
+from ..tiers.resolve import ResolvedTier, resolve_tier
 
 
 @dataclass(frozen=True)
@@ -101,4 +102,36 @@ def touchpoint(name: str) -> Touchpoint:
         raise ValueError(f"unknown touchpoint {name!r}; known: {sorted(TOUCHPOINTS_BY_NAME)}") from None
 
 
-__all__ = ["Touchpoint", "TOUCHPOINTS", "TOUCHPOINTS_BY_NAME", "touchpoint"]
+def resolve_at_tier(
+    tier: TierName,
+    name: str,
+    catalog: dict[str, ModelCatalogEntry],
+    bindings: dict[TierName, TierBinding],
+) -> ResolvedTier:
+    """Resolve `name`'s touchpoint at an explicitly chosen `tier`, applying
+    that touchpoint's own operating point on top of the binding. The scaled
+    dispatch sites use this: `scale()` has already picked the tier by then,
+    but it throws the touchpoint's identity away, and the declared operating
+    point must survive tier movement."""
+    tp = touchpoint(name)
+    return resolve_tier(tier, catalog, bindings, effort=tp.effort, thinking=tp.thinking)
+
+
+def resolve_touchpoint(
+    name: str,
+    catalog: dict[str, ModelCatalogEntry],
+    bindings: dict[TierName, TierBinding],
+) -> ResolvedTier:
+    """Resolve `name` at its own `nominal_tier` — the static rule, for the
+    dispatch sites that do no scaling."""
+    return resolve_at_tier(touchpoint(name).nominal_tier, name, catalog, bindings)
+
+
+__all__ = [
+    "Touchpoint",
+    "TOUCHPOINTS",
+    "TOUCHPOINTS_BY_NAME",
+    "touchpoint",
+    "resolve_at_tier",
+    "resolve_touchpoint",
+]

@@ -14,7 +14,8 @@ from __future__ import annotations
 import json
 import re
 
-from ..openai_client import build_openai_client
+from ..oneshot import complete
+from ..tiers.resolve import ResolvedTier
 from ..subagents import SUBAGENTS, Subagent
 from .plan import TaskGraph, parse_task_graph
 
@@ -94,16 +95,8 @@ def _build_prompt(roster: list[Subagent]) -> str:
 
 
 class Sequencer:
-    def __init__(
-        self,
-        model: str,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        extra_params: dict | None = None,
-    ) -> None:
-        self._model = model
-        self._extra_params = extra_params or {}
-        self._client = build_openai_client(api_key, api_base, read_timeout=120.0)
+    def __init__(self, tier: ResolvedTier) -> None:
+        self._tier = tier
         roster = [s for s in SUBAGENTS if s.auto_assignable]
         self._full_roster = list(SUBAGENTS)
         self._prompt = _build_prompt(roster)
@@ -112,15 +105,9 @@ class Sequencer:
         """Returns a validated TaskGraph. Raises ValueError if the model's output
         fails schema/roster/phase validation (fail loud — plan 27 decision 6).
         """
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": self._prompt},
-                {"role": "user", "content": user_input},
-            ],
-            **self._extra_params,
+        raw_text = await complete(
+            self._tier, system=self._prompt, user=user_input, read_timeout=120.0,
         )
-        raw_text: str = response.choices[0].message.content or ""
         match = _JSON_OBJECT.search(raw_text)
         if not match:
             raise ValueError(f"sequencer returned no JSON object: {raw_text!r}")

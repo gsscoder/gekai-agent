@@ -1,10 +1,8 @@
-"""Model-tier data types (plan 28, Phase 0).
+"""Model-tier data types and the code-side model catalog.
 
-Inert: defines the shape of a per-component tier policy, not consulted by
-any dispatch path yet. A tier is a capability contract, not a model — the
-same model may occupy multiple tiers at different operating points. Phase 1
-wires a global tier->(model, creds, url) config; Phase 2 wires assignment-
-time scaling within a component's declared space.
+A tier is a capability contract, not a model — the same model may occupy
+multiple tiers at different operating points. `store.py` persists which model
+fills each tier; `resolve.py` turns a tier into runnable API params.
 """
 
 from __future__ import annotations
@@ -12,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
+
+from ..llm.model_caps import MODEL_CAPS
 
 # Reuses the effort vocabulary already established in model_caps.py's
 # _EFFORT_TO_PARAMS ladder — not a new scale.
@@ -202,7 +202,6 @@ def _build_default_catalog() -> tuple[ModelCatalogEntry, ...]:
     a proxy/gateway URL we cannot guess, never fabricated here) and the full
     effort ladder (no known gaps for these models today; a future entry with
     a real gap declares its own explicit, shorter `efforts` tuple)."""
-    from .model_caps import MODEL_CAPS  # same package; no cycle (model_caps.py has no tiers.py dependency)
     return tuple(
         ModelCatalogEntry(
             name=name,

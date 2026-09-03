@@ -4,7 +4,8 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from ..openai_client import build_openai_client
+from ..oneshot import complete
+from ..tiers.resolve import ResolvedTier
 
 _log = logging.getLogger(__name__)
 
@@ -39,33 +40,21 @@ _ESTIMATE_PROMPT = (
 
 
 class Estimator:
-    def __init__(
-        self,
-        model: str,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        extra_params: dict | None = None,
-    ) -> None:
-        self._model = model
-        self._extra_params = extra_params or {}
-        self._client = build_openai_client(api_key, api_base)
+    def __init__(self, tier: ResolvedTier) -> None:
+        self._tier = tier
 
     async def estimate(self, user_input: str, history: list[dict] | None = None) -> ScopeEstimate:
         context_msgs: list[dict] = []
         if history:
             context_msgs = [m for m in history if m["role"] in ("user", "assistant")][-6:]
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
+            raw = (await complete(
+                self._tier,
+                system=_ESTIMATE_PROMPT,
+                user=user_input,
+                context=context_msgs,
                 temperature=0,
-                messages=[
-                    {"role": "system", "content": _ESTIMATE_PROMPT},
-                    *context_msgs,
-                    {"role": "user", "content": user_input},
-                ],
-                **self._extra_params,
-            )
-            raw: str = response.choices[0].message.content.strip()
+            )).strip()
         except Exception:
             _log.warning("estimate call failed; falling back to solo", exc_info=True)
             return ScopeEstimate(scope="solo")

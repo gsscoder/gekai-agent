@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from ..pipeline.plan import Task, TaskGraph
 from ..pipeline.verifier import Verdict
-from ..tools.delegate import ERROR_PREFIX
+from .dispatch import ERROR_PREFIX
 from .scaling import WorkSignal, node_signal
 
 DispatchFn = Callable[[str, str, str, WorkSignal, str | None], Awaitable[str]]

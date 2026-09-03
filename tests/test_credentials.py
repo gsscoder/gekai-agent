@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import credentials
+from agent.tiers import credentials
 
 
 @pytest.fixture(autouse=True)

@@ -26,7 +26,7 @@ from textual.widgets import Static, TextArea
 
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.tui.app import GekaiApp
 
 pytestmark = pytest.mark.asyncio

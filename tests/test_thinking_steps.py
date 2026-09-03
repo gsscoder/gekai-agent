@@ -1,4 +1,4 @@
-"""Coverage for the TUI's thinking-preview machinery (agent/tui/app.py):
+"""Coverage for the TUI's thinking-preview machinery (agent/tui/render.py):
 `_split_thinking_steps`, the pure sentence-segmentation helper, and
 `_ThinkingLine`, the shared per-turn ticker line it feeds into via
 `update_chunk`.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.tui.app import (
+from agent.tui.render import (
     _BRAILLE_FRAMES,
     _THINKING_LINE_CAP,
     _THINKING_LINE_SENTENCE_RESET,

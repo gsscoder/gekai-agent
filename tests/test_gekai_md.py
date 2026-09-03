@@ -4,7 +4,7 @@ Covers `GekaiAgent.start_session`'s auto-read of `GEKAI.md` at the workspace
 root (present / absent / unreadable) and `harness.core._gekai_md_system_base`'s
 injection under `<project_instructions source="GEKAI.md">` — verbatim, root
 system-base only. Isolation follows `tests/test_agent_tiers.py`'s pattern:
-`agent.logging.Path.home` is patched so `EventLogger`'s always-on log file
+`agent.telemetry.Path.home` is patched so `EventLogger`'s always-on log file
 never touches the real home directory.
 """
 
@@ -15,19 +15,19 @@ from pathlib import Path
 import pytest
 
 from agent import agent as agent_module
-from agent import logging as agent_logging
+from agent import telemetry as agent_telemetry
 from agent.agent import GekaiAgent
 from agent.directive_audit import file_sha
-from agent.harness.core import _gekai_md_system_base
+from agent.harness.dispatch import gekai_md_system_base
 from agent.persona import ROOT_SYSTEM_PROMPT
 from agent.session import IngestedFile, Session
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.subagents import Subagent
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(agent_logging.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(agent_telemetry.Path, "home", classmethod(lambda cls: tmp_path))
 
 
 def _make_agent(working_dir: Path) -> GekaiAgent:
@@ -88,7 +88,7 @@ def test_injection_renders_tag_with_verbatim_content(tmp_path: Path) -> None:
     text = "  weird   spacing\nand a trailing line  \n"
     session.gekai_md = IngestedFile(rel_path="GEKAI.md", text=text, sha=file_sha(text))
 
-    result = _gekai_md_system_base("base prompt", session)
+    result = gekai_md_system_base("base prompt", session)
 
     assert result.startswith("base prompt")
     assert '<project_instructions source="GEKAI.md">' in result
@@ -100,7 +100,7 @@ def test_injection_renders_nothing_when_gekai_md_is_none(tmp_path: Path) -> None
     session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
     assert session.gekai_md is None
 
-    result = _gekai_md_system_base("base prompt", session)
+    result = gekai_md_system_base("base prompt", session)
 
     assert result == "base prompt"
     assert "project_instructions" not in result
@@ -120,7 +120,7 @@ def test_subagent_system_base_never_carries_project_instructions(tmp_path: Path)
     session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
     session.gekai_md = IngestedFile(rel_path="GEKAI.md", text="secret project rule", sha="deadbeef")
 
-    root_base = _gekai_md_system_base(ROOT_SYSTEM_PROMPT, session)
+    root_base = gekai_md_system_base(ROOT_SYSTEM_PROMPT, session)
     assert '<project_instructions source="GEKAI.md">' in root_base
     assert "secret project rule" in root_base
 

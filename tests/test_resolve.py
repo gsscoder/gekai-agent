@@ -5,8 +5,9 @@ import pytest
 from agent.harness.touchpoints import TOUCHPOINTS
 from agent.llm import model_caps
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
-from agent.llm.resolve import TierResolutionError, all_tiers_ready, resolve_tier, resolve_touchpoint, tier_status
-from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierSuitability
+from agent.harness.touchpoints import resolve_at_tier, resolve_touchpoint
+from agent.tiers.resolve import TierResolutionError, all_tiers_ready, resolve_tier, tier_status
+from agent.tiers.catalog import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierSuitability
 
 
 CATALOG = {
@@ -28,15 +29,15 @@ def test_resolve_tier_raises_for_unresolvable_binding(bindings, match):
 
 
 def test_resolve_tier_missing_credential(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: False)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: False)
     bindings = {TierName.FAST: TierBinding(model="flash", default_effort="low")}
     with pytest.raises(TierResolutionError, match="no stored credential"):
         resolve_tier(TierName.FAST, CATALOG, bindings)
 
 
 def test_resolve_tier_success(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: "secret-key")
     bindings = {TierName.CORE: TierBinding(model="pro", default_effort="high", thinking=True)}
     resolved = resolve_tier(TierName.CORE, CATALOG, bindings)
     assert resolved.model == "pro"
@@ -48,8 +49,8 @@ def test_resolve_tier_success(monkeypatch):
 def test_resolve_tier_thinking_false_resolves_to_explicit_disable_payload(monkeypatch):
     # plan 34 phase 1: a `thinking: false` binding must not silently resolve
     # to `{}` (which DeepSeek interprets as "unspecified" -> reasoning ON).
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: "secret-key")
     monkeypatch.setitem(MODEL_CAPS, "flash", ModelCaps(thinking=False, thinking_style="deepseek"))
     bindings = {TierName.FAST: TierBinding(model="flash", default_effort="low", thinking=False)}
     resolved = resolve_tier(TierName.FAST, CATALOG, bindings)
@@ -59,8 +60,8 @@ def test_resolve_tier_thinking_false_resolves_to_explicit_disable_payload(monkey
 def test_resolve_tier_thinking_true_unchanged(monkeypatch):
     # Regression guard: a thinking=True binding's extra_params must be
     # byte-identical to before the `enabled` param existed.
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: "secret-key")
     monkeypatch.setitem(
         MODEL_CAPS, "pro", ModelCaps(thinking=True, thinking_style="deepseek", default_effort="high")
     )
@@ -75,8 +76,8 @@ def test_resolve_tier_thinking_true_unchanged(monkeypatch):
 
 
 def test_resolve_touchpoint_uses_nominal_tier(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "secret-key")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: "secret-key")
     bindings = {
         TierName.FAST: TierBinding(model="flash", default_effort="low"),
         TierName.CORE: TierBinding(model="pro", default_effort="high"),
@@ -96,7 +97,7 @@ def _record_credential_keys(monkeypatch) -> list[str]:
         seen.append(name)
         return f"key-for-{name}"
 
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", _get_api_key)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", _get_api_key)
     return seen
 
 
@@ -121,8 +122,8 @@ def test_touchpoint_without_an_override_resolves_identically_to_its_bare_tier(mo
     # Regression guard for every touchpoint but the sequencer: declaring no
     # operating point must resolve byte-identically to resolving its tier
     # directly, exactly as before per-touchpoint overrides existed.
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: f"key-for-{name}")
     bindings = {
         TierName.FAST: TierBinding(model="flash", default_effort="low"),
         TierName.SUPP: TierBinding(model="flash", default_effort="medium"),
@@ -145,14 +146,14 @@ def test_touchpoint_override_follows_whatever_tier_scaling_landed_on(monkeypatch
         asked.append((model, effort, enabled))
         return {}
 
-    monkeypatch.setattr("agent.llm.resolve.resolve_thinking_params", _spy)
+    monkeypatch.setattr("agent.tiers.resolve.resolve_thinking_params", _spy)
     catalog = dict(CATALOG)
     catalog["flash"] = ModelCatalogEntry(
         name="flash", base_url="https://api.example.com", efforts=EFFORT_LADDER, thinking=False
     )
     bindings = {TierName.SUPP: TierBinding(model="flash", default_effort="low")}
 
-    resolved = resolve_tier(TierName.SUPP, catalog, bindings, "sequencer")
+    resolved = resolve_at_tier(TierName.SUPP, "sequencer", catalog, bindings)
 
     assert resolved.model == "flash"  # the demoted tier's model...
     assert asked == [("flash", "high", False)]  # ...operated at the sequencer's own point
@@ -168,7 +169,7 @@ def test_touchpoint_override_effort_the_model_does_not_declare_fails_loud(monkey
         name="pro", base_url="https://api.example.com", efforts=("xhigh", "max"), thinking=True
     )
     bindings = {TierName.CORE: TierBinding(model="pro", default_effort="xhigh", thinking=True)}
-    with pytest.raises(TierResolutionError, match="'sequencer' asks for effort 'high'"):
+    with pytest.raises(TierResolutionError, match="effort 'high' is not among 'pro'"):
         resolve_touchpoint("sequencer", catalog, bindings)
 
 
@@ -190,7 +191,7 @@ def test_tier_status_stale_model_missing_from_catalog():
 
 
 def test_tier_status_no_credential(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: False)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: False)
     bindings = {TierName.FAST: TierBinding(model="flash", default_effort="low")}
     status = tier_status(TierName.FAST, CATALOG, bindings)
     assert status.entry is not None
@@ -211,7 +212,7 @@ def test_tier_status_invalid_binding_thinking_on_non_thinking_model():
 
 
 def test_tier_status_ready(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
     bindings = {TierName.FAST: TierBinding(model="flash", default_effort="low")}
     status = tier_status(TierName.FAST, CATALOG, bindings)
     assert status.ready is True
@@ -219,7 +220,7 @@ def test_tier_status_ready(monkeypatch):
 
 
 def test_tier_status_verdict_surfaces_in_label(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
     catalog = dict(CATALOG)
     catalog["flash"] = ModelCatalogEntry(
         name="flash", base_url="https://api.example.com", efforts=("low", "medium"), thinking=False,
@@ -232,7 +233,7 @@ def test_tier_status_verdict_surfaces_in_label(monkeypatch):
 
 
 def test_all_tiers_ready_false_until_every_tier_resolves(monkeypatch):
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
     bindings = {
         TierName.FAST: TierBinding(model="flash", default_effort="low"),
         TierName.SUPP: TierBinding(model="flash", default_effort="low"),
@@ -250,7 +251,7 @@ def test_all_tiers_ready_false_when_binding_present_but_no_credential(monkeypatc
     def _has_key(name: str) -> bool:
         return name != "openai:flash"
 
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", _has_key)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", _has_key)
     bindings = {
         TierName.FAST: TierBinding(model="flash", default_effort="low"),
         TierName.SUPP: TierBinding(model="flash", default_effort="low"),

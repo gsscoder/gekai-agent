@@ -61,13 +61,16 @@ from textual.containers import ScrollableContainer
 from textual.pilot import Pilot
 from textual.widgets import TextArea
 
-from agent import credentials, settings
+from agent import settings
+from agent.tiers import credentials
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
-from agent.llm.tiers import ModelCatalogEntry
-from agent.settings import Permissions
-from agent.tui.app import GekaiApp, _mask_key
+from agent.tiers.catalog import ModelCatalogEntry
+from agent.permissions import Permissions
+from agent.tui.app import GekaiApp
+from agent.tui.status import _mask_key
 from agent.tui.widgets import MessageWidget, ModelsPanel
+from agent.tiers import store as tiers_store
 
 pytestmark = pytest.mark.asyncio
 
@@ -97,7 +100,7 @@ def _stub_init_session(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "DEFAULT_MODEL_CATALOG", (MODEL_A, MODEL_B))
+    monkeypatch.setattr(tiers_store, "DEFAULT_MODEL_CATALOG", (MODEL_A, MODEL_B))
 
 
 def _patch_credentials(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:

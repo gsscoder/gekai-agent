@@ -4,12 +4,11 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from agent.pipeline.verifier import _VERIFIER_PROMPT, Verdict, Verifier
-from tests.conftest import mock_llm_response, run
+from tests.conftest import ONESHOT_TIER, mock_llm_response, run
 
 
 def _make_verifier() -> Verifier:
-    with patch("openai.AsyncOpenAI"):
-        return Verifier(model="test-model", api_key="key")
+    return Verifier(ONESHOT_TIER)
 
 
 def _verify(verifier: Verifier) -> Verdict:
@@ -23,50 +22,48 @@ def _verify(verifier: Verifier) -> Verdict:
     )
 
 
-def test_pass_response_yields_ok_verdict() -> None:
+def test_pass_response_yields_ok_verdict(llm_create) -> None:
     verifier = _make_verifier()
     raw = json.dumps({"verdict": "pass", "violations": []})
-    verifier._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
+    llm_create.return_value = mock_llm_response(raw)
 
     verdict = _verify(verifier)
 
     assert verdict == Verdict(ok=True, violations=[])
 
 
-def test_fail_response_yields_violations() -> None:
+def test_fail_response_yields_violations(llm_create) -> None:
     verifier = _make_verifier()
     raw = json.dumps({"verdict": "fail", "violations": ["field renamed on one side only"]})
-    verifier._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
+    llm_create.return_value = mock_llm_response(raw)
 
     verdict = _verify(verifier)
 
     assert verdict == Verdict(ok=False, violations=["field renamed on one side only"])
 
 
-def test_malformed_json_fails_open() -> None:
+def test_malformed_json_fails_open(llm_create) -> None:
     verifier = _make_verifier()
-    verifier._client.chat.completions.create = AsyncMock(
-        return_value=mock_llm_response("not json at all")
-    )
+    llm_create.return_value = mock_llm_response("not json at all")
 
     verdict = _verify(verifier)
 
     assert verdict == Verdict(ok=True, violations=[])
 
 
-def test_client_exception_fails_open() -> None:
+def test_client_exception_fails_open(llm_create) -> None:
     verifier = _make_verifier()
-    verifier._client.chat.completions.create = AsyncMock(side_effect=RuntimeError("network error"))
+    llm_create.side_effect = RuntimeError("network error")
 
     verdict = _verify(verifier)
 
     assert verdict == Verdict(ok=True, violations=[])
 
 
-def test_fail_verdict_with_malformed_violations_key_does_not_crash() -> None:
+def test_fail_verdict_with_malformed_violations_key_does_not_crash(llm_create) -> None:
     verifier = _make_verifier()
     raw = json.dumps({"verdict": "fail", "violations": "not a list"})
-    verifier._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
+    llm_create.return_value = mock_llm_response(raw)
 
     verdict = _verify(verifier)
 
@@ -74,14 +71,14 @@ def test_fail_verdict_with_malformed_violations_key_does_not_crash() -> None:
     assert verdict.violations == []
 
 
-def test_prompt_includes_lifecycle_invalidation_check() -> None:
+def test_prompt_includes_lifecycle_invalidation_check(llm_create) -> None:
     assert "lifecycle-invalidation gap" in _VERIFIER_PROMPT
 
 
-def test_fail_verdict_with_missing_violations_key_does_not_crash() -> None:
+def test_fail_verdict_with_missing_violations_key_does_not_crash(llm_create) -> None:
     verifier = _make_verifier()
     raw = json.dumps({"verdict": "fail"})
-    verifier._client.chat.completions.create = AsyncMock(return_value=mock_llm_response(raw))
+    llm_create.return_value = mock_llm_response(raw)
 
     verdict = _verify(verifier)
 

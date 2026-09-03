@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..llm.tiers import TierName, TierPolicy
+from ..tiers.catalog import TierName, TierPolicy
 from ..pipeline.plan import Task
 
 

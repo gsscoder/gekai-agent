@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.llm.tiers import (
+from agent.tiers.catalog import (
     ModelCatalogEntry,
     TierBinding,
     TierName,

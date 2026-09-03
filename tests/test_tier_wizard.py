@@ -40,15 +40,19 @@ import pytest
 from textual.containers import ScrollableContainer
 from textual.widgets import TextArea
 
-from agent import credentials, settings
+from agent import settings
+from agent.tiers import credentials
 from agent.agent import GekaiAgent
+from agent.commands.models import ModelsCommand
+from agent.commands.tier import TierCommand
 from agent.commands.exit import ExitCommand
 from agent.commands.registry import CommandRegistry
-from agent.logging import EventLogger
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
-from agent.settings import Permissions
+from agent.telemetry import EventLogger
+from agent.tiers.catalog import ModelCatalogEntry, TierBinding, TierName
+from agent.permissions import Permissions
 from agent.tui.app import GekaiApp
 from agent.tui.widgets import ChoiceBar, MessageWidget, ModelsPanel
+from agent.tiers import store as tiers_store
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,7 +81,7 @@ def _stub_init_session(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _seed_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "DEFAULT_MODEL_CATALOG", (MODEL_A, MODEL_B))
+    monkeypatch.setattr(tiers_store, "DEFAULT_MODEL_CATALOG", (MODEL_A, MODEL_B))
 
 
 def _patch_credentials(monkeypatch: pytest.MonkeyPatch, keyed: set[str]) -> None:
@@ -98,9 +102,12 @@ def _stub_tui_agent(working_dir: Path) -> GekaiAgent:
 
 
 def _make_app(tmp_path: Path) -> GekaiApp:
+    registry = CommandRegistry()
+    registry.register(ModelsCommand())
+    registry.register(TierCommand())
     return GekaiApp(
         agent=_stub_tui_agent(tmp_path),
-        registry=CommandRegistry(),
+        registry=registry,
         working_dir=tmp_path,
         version="test",
         branch=None,
@@ -164,7 +171,7 @@ async def test_non_core_tier_never_shows_a_thinking_step_even_for_a_thinking_mod
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings()[TierName.FAST] == TierBinding(
+        assert tiers_store.load_tier_bindings()[TierName.FAST] == TierBinding(
             model="model-b", default_effort="xhigh", thinking=False
         )
         assert bar.display is False
@@ -202,7 +209,7 @@ async def test_core_plus_thinking_model_shows_the_thinking_step(
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings()[TierName.CORE] == TierBinding(
+        assert tiers_store.load_tier_bindings()[TierName.CORE] == TierBinding(
             model="model-b", default_effort="high", thinking=True
         )
 
@@ -231,7 +238,7 @@ async def test_core_with_a_non_thinking_model_skips_the_thinking_step(
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings()[TierName.CORE].thinking is False
+        assert tiers_store.load_tier_bindings()[TierName.CORE].thinking is False
 
 
 async def test_only_keyed_models_are_offered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,7 +299,7 @@ async def test_back_from_effort_returns_to_model_and_the_new_pick_sticks(
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings()[TierName.SUPP].model == "model-b"
+        assert tiers_store.load_tier_bindings()[TierName.SUPP].model == "model-b"
 
 
 async def test_back_from_confirm_lands_on_thinking_when_applicable(
@@ -328,7 +335,7 @@ async def test_back_from_confirm_lands_on_thinking_when_applicable(
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings()[TierName.CORE].thinking is True
+        assert tiers_store.load_tier_bindings()[TierName.CORE].thinking is True
 
 
 async def test_back_from_confirm_lands_on_effort_when_thinking_is_not_applicable(
@@ -362,7 +369,7 @@ async def test_back_from_confirm_lands_on_effort_when_thinking_is_not_applicable
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings()[TierName.SUPP].default_effort == "medium"
+        assert tiers_store.load_tier_bindings()[TierName.SUPP].default_effort == "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +396,7 @@ async def test_cancel_at_confirm_saves_nothing(tmp_path: Path, monkeypatch: pyte
         await _confirm(app, pilot)
 
         await task
-        assert settings.load_tier_bindings() == {}
+        assert tiers_store.load_tier_bindings() == {}
         assert any(w.has_class("command_result") and w.text == "cancelled" for w in _messages(conversation))
 
 
@@ -412,7 +419,7 @@ async def test_escape_mid_wizard_cancels_the_whole_flow(
 
         await task
         assert app.query_one(ChoiceBar).display is False
-        assert settings.load_tier_bindings() == {}
+        assert tiers_store.load_tier_bindings() == {}
         assert any(w.has_class("command_result") and w.text == "cancelled" for w in _messages(conversation))
 
 
@@ -434,7 +441,7 @@ async def test_no_keyed_models_errors_without_ever_opening_a_choice_bar(
         await app._run_tier_wizard(TierName.FAST, conversation)  # returns immediately, no future to drive
 
         assert app.query_one(ChoiceBar).display is False
-        assert settings.load_tier_bindings() == {}
+        assert tiers_store.load_tier_bindings() == {}
         assert any(
             w.has_class("error") and "/models" in w.text for w in _messages(conversation)
         )
@@ -502,7 +509,7 @@ async def test_tiers_unconfigured_blocks_prompt_except_models_tier_exit(
         await pilot.pause()
         conversation = app.query_one("#conversation", ScrollableContainer)
         prompt = app.query_one("#prompt", TextArea)
-        assert settings.tiers_configured() is False
+        assert tiers_store.tiers_configured() is False
 
         prompt.text = "hello there"
         await asyncio.wait_for(pilot.press("enter"), timeout=5)
@@ -552,8 +559,8 @@ async def test_completing_the_last_tier_reruns_the_directive_audit_like_clear(
     tier (leaving one still unconfigured) must not trigger this."""
     _seed_catalog(monkeypatch)
     _patch_credentials(monkeypatch, {KEY_A, KEY_B})
-    settings.save_tier_binding(TierName.FAST, TierBinding(model="model-a", default_effort="low", thinking=False))
-    settings.save_tier_binding(TierName.SUPP, TierBinding(model="model-a", default_effort="low", thinking=False))
+    tiers_store.save_tier_binding(TierName.FAST, TierBinding(model="model-a", default_effort="low", thinking=False))
+    tiers_store.save_tier_binding(TierName.SUPP, TierBinding(model="model-a", default_effort="low", thinking=False))
     app = _make_app(tmp_path)
 
     calls = 0
@@ -566,7 +573,7 @@ async def test_completing_the_last_tier_reruns_the_directive_audit_like_clear(
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert settings.tiers_configured() is False
+        assert tiers_store.tiers_configured() is False
         conversation = app.query_one("#conversation", ScrollableContainer)
         task = asyncio.create_task(app._run_tier_wizard(TierName.CORE, conversation))
         await pilot.pause()
@@ -585,7 +592,7 @@ async def test_completing_the_last_tier_reruns_the_directive_audit_like_clear(
 
         await task
         assert calls == 1
-        assert settings.tiers_configured() is True
+        assert tiers_store.tiers_configured() is True
 
 
 async def test_typing_slash_tier_with_an_unknown_name_shows_an_error(

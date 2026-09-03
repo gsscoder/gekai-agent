@@ -2,25 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
 from .atomic_io import atomic_write, lock_for
-from .llm.tiers import DEFAULT_MODEL_CATALOG, ModelCatalogEntry, TierBinding, TierName
-
-
-@dataclass
-class Permissions:
-    read: bool
-    write: bool
-    exec: bool = False
-
-
-PERMISSION_CHOICES = [
-    ("read_only", "Read Only — scan and read files, no modifications"),
-    ("full", "Full Access — read, write, and delete files"),
-    ("deny", "No Access — chat only, no file operations"),
-]
+from .permissions import Permissions
 
 
 def _settings_path(working_dir: Path) -> Path:
@@ -131,16 +116,6 @@ def load_global_settings() -> None:
         pass
 
 
-def resolve_permissions(choice: str) -> Permissions | None:
-    if choice == "read_only":
-        return Permissions(read=True, write=False)
-    if choice == "full":
-        return Permissions(read=True, write=True)
-    if choice == "deny":
-        return Permissions(read=False, write=False, exec=False)
-    return None
-
-
 def load_context_limit(working_dir: Path) -> int | None:
     for path in (_settings_path(working_dir), Path.home() / ".gekai" / "settings.json"):
         try:
@@ -150,81 +125,3 @@ def load_context_limit(working_dir: Path) -> int | None:
         except (OSError, ValueError):
             pass
     return None
-
-
-# --- model tiers (plan 28 Phase 1a) --------------------------------------
-# Global-only for now (user-home ~/.gekai/settings.json); project-level
-# override is explicitly deferred (decision 3b).
-
-def _global_settings_path() -> Path:
-    return Path.home() / ".gekai" / "settings.json"
-
-
-def _load_global_data(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_global_data(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, json.dumps(data, indent=2) + "\n")
-
-
-def _binding_to_dict(binding: TierBinding) -> dict:
-    return {"model": binding.model, "default_effort": binding.default_effort, "thinking": binding.thinking}
-
-
-def _binding_from_dict(d: dict) -> TierBinding:
-    return TierBinding(model=d["model"], default_effort=d["default_effort"], thinking=d.get("thinking", False))
-
-
-def load_model_catalog() -> dict[str, ModelCatalogEntry]:
-    """Always a live read of the code-side catalog — the set of *available*
-    models is never persisted to disk, so a newly-added model in
-    `DEFAULT_MODEL_CATALOG` shows up immediately without a stale on-disk
-    copy to go out of date."""
-    return {e.name: e for e in DEFAULT_MODEL_CATALOG}
-
-
-def load_tier_bindings() -> dict[TierName, TierBinding]:
-    data = _load_global_data(_global_settings_path())
-    bindings: dict[TierName, TierBinding] = {}
-    for tier_key, binding_dict in data.get("tiers", {}).items():
-        try:
-            tier = TierName(tier_key)
-        except ValueError:
-            continue
-        bindings[tier] = _binding_from_dict(binding_dict)
-    return bindings
-
-
-def save_tier_binding(tier: TierName, binding: TierBinding) -> None:
-    path = _global_settings_path()
-    with lock_for(path):
-        data = _load_global_data(path)
-        tiers = data.setdefault("tiers", {})
-        tiers[tier.value] = _binding_to_dict(binding)
-        _save_global_data(path, data)
-
-
-def tiers_configured() -> bool:
-    """True only once all three tiers (FAST/SUPP/CORE) are fully resolvable
-    — bound to a model still present in the catalog, with a valid effort for
-    that model, and a stored keyring credential — not merely "has a binding"
-    (a binding alone can still fail to resolve at dispatch time, e.g. no
-    stored credential, which is the exact incoherence this used to allow).
-    Partial or unresolvable configuration still counts as "not configured"
-    for the purpose of the startup/prompt nudge (there's no
-    reduced-functionality mode).
-
-    Deferred import to avoid a circular import: `agent.llm.resolve` imports
-    `agent.harness.touchpoints`, which imports the `agent.harness` package,
-    which imports `agent.harness.core`, which does `from ..settings import
-    Permissions` — a module-level import here would be circular. See
-    `agent/llm/tiers.py::_build_default_catalog()` for the identical
-    pattern."""
-    from .llm.resolve import all_tiers_ready
-
-    return all_tiers_ready(load_model_catalog(), load_tier_bindings())

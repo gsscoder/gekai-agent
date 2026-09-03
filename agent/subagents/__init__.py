@@ -5,7 +5,7 @@ import pkgutil
 from dataclasses import dataclass
 
 from ..persona import _IDENTITY_SUB, _SHARED_BODY
-from ..settings import Permissions
+from ..permissions import Permissions
 from ..tools.catalog import RUNGS
 
 # action namespaces and their TUI badge colors — co-located so a namespace

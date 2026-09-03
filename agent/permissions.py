@@ -3,7 +3,31 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from .settings import Permissions
+
+@dataclass
+class Permissions:
+    read: bool
+    write: bool
+    exec: bool = False
+
+
+# The choices the first-run permission picker offers, in display order.
+PERMISSION_CHOICES = [
+    ("read_only", "Read Only — scan and read files, no modifications"),
+    ("full", "Full Access — read, write, and delete files"),
+    ("deny", "No Access — chat only, no file operations"),
+]
+
+
+def resolve_permissions(choice: str) -> Permissions | None:
+    """Turn a `PERMISSION_CHOICES` key into a grant. `None` for an unknown key."""
+    if choice == "read_only":
+        return Permissions(read=True, write=False)
+    if choice == "full":
+        return Permissions(read=True, write=True)
+    if choice == "deny":
+        return Permissions(read=False, write=False, exec=False)
+    return None
 
 
 PermissionCallback = Callable[[str, str], Awaitable[bool]]

@@ -17,17 +17,26 @@ from textual.containers import Container, ScrollableContainer
 from textual.geometry import Region
 from textual.message import Message
 from textual.strip import Strip
-from textual.widgets import ProgressBar, Static, TextArea
+from textual.widgets import Static, TextArea
 from textual.worker import Worker
 
-from agent import compact, credentials
+from agent import compact
 from agent.agent import GekaiAgent
 from agent.directive_audit import AuditVerdict
 from agent.harness import turn as harness_turn
+from agent.harness.touchpoints import resolve_touchpoint
 from agent.commands.registry import CommandRegistry
 from agent.diff import DiffLine
-from agent.llm.resolve import TierResolutionError, resolve_touchpoint
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
+from agent.tiers import (
+    ModelCatalogEntry,
+    TierBinding,
+    TierName,
+    credentials,
+    load_model_catalog,
+    load_tier_bindings,
+    save_tier_binding,
+    tiers_configured,
+)
 from agent.persistence import (
     append_command,
     append_compact,
@@ -38,23 +47,27 @@ from agent.persistence import (
 )
 from agent.session import Session
 from agent.subagents import NAMESPACE_COLORS, SUBAGENTS, Subagent
-from agent.settings import (
-    PERMISSION_CHOICES,
-    load_context_limit,
-    load_model_catalog,
-    load_tier_bindings,
-    resolve_permissions,
-    save_permissions,
-    save_tier_binding,
-    tiers_configured,
-)
+from agent.settings import load_context_limit, save_permissions
+from agent.permissions import PERMISSION_CHOICES, resolve_permissions
 from agent.workspace import list_files, list_dirs
 from agent.tui.styles import OPERATIVE_COLOR, _OPERATIVE_VERB
 from agent.events import AgentEvent, SubAgentStartEvent, LogEvent, DiffEvent, InferEndEvent, DoneEvent, StatusUpdateEvent, TextChunkEvent, ThinkingTokenEvent, DelegationStartEvent, DelegationDoneEvent, TaskGraphHaltedEvent
-from agent.tools.catalog import EDIT_TOOLS, FS_TOOLS, READ_TOOLS, SHELL_TOOLS
 
 from .palette import CommandPalette
 from .history import PromptHistory
+from .render import _SPINNER_FRAMES, SubAgentRenderer, _ThinkingLine, _subagent_header_markup
+from .status import (
+    _context_limit,
+    _estimate_session_tokens,
+    _fmt_duration,
+    _fmt_status,
+    _fmt_status_left,
+    _fmt_status_right,
+    _models_display_key,
+    _models_key_present,
+    _ms,
+    _strip_default_bg,
+)
 from .widgets import ChoiceBar, DiffWidget, FilePanel, HistoryPanel, MessageKind, MessageWidget, ModelRowView, ModelsPanel, WelcomeOverlay
 
 
@@ -68,335 +81,6 @@ class ConversationContainer(ScrollableContainer):
         super().watch_scroll_y(old_value, new_value)
         at_end = new_value >= self.max_scroll_y or self.max_scroll_y <= 0
         self.post_message(self.Scrolled(at_end=at_end))
-
-
-_SPINNER_FRAMES = ["·", "•", "●", "•"]
-_BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-_THINKING_LINE_CAP = 80  # max characters of the rolling thinking-buffer tail shown on the shared line
-_THINKING_LINE_SENTENCE_RESET = 5  # completed-step count that triggers a full wipe/restart of the block
-_DIAMOND = "◆"
-_SQUARE = "■"
-_SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
-
-
-def _tool_kind_color(tool_name: str) -> str:
-    """green = read, red = write (edit + filesystem mutation), yellow = shell."""
-    if tool_name in READ_TOOLS:
-        return "green"
-    if tool_name in EDIT_TOOLS or tool_name in FS_TOOLS:
-        return "red"
-    if tool_name in SHELL_TOOLS:
-        return "yellow"
-    return "#666666"
-
-
-def _split_thinking_steps(buffer: str) -> tuple[list[str], str]:
-    """Split a thinking-token buffer into completed "steps" — each ending in
-    `.`/`!`/`?` — and the remaining in-progress tail (not yet a full step)."""
-    steps: list[str] = []
-    start = 0
-    for m in _SENTENCE_END_RE.finditer(buffer):
-        step = buffer[start:m.end()].strip()
-        if step:
-            steps.append(step)
-        start = m.end()
-    return steps, buffer[start:]
-
-
-class SubAgentRenderer:
-    """Manages header, L-connector, token accumulation, and Done line for subagent events."""
-
-    def __init__(self, conversation: ScrollableContainer, depth: int = 0) -> None:
-        self._conversation = conversation
-        self._depth = depth
-        self.name: str = ""
-        self._total_tokens: int = 0
-        self._infer_count: int = 0
-        self._start_time: float = time.monotonic()
-        self._log_widgets: list[Static] = []
-        self._progress_bar: ProgressBar | None = None
-        self._header_widget: MessageWidget | None = None
-        self._spinner_task: asyncio.Task | None = None
-        self._badge_namespace: str | None = None
-        self._badge_color: str = ""
-        self._tool_calls: int = 0
-        self._last_tool_name: str = ""
-
-    async def _mount(self, widget: Static | MessageWidget | ProgressBar, *, after: Static | MessageWidget | None = None) -> None:
-        """Single chokepoint every mount site routes through. Every card
-        aligns to column 0 regardless of `self._depth` — nesting depth beyond
-        1 is conveyed only by the "⎿" connector (`_animate_dot`/`done`), not
-        by left indentation."""
-        if after is not None:
-            await self._conversation.mount(widget, after=after)
-        else:
-            await self._conversation.mount(widget)
-
-    async def _animate_dot(self) -> None:
-        frame = 0
-        dot_color = self._badge_color if self._badge_namespace is not None else "#666666"
-        # depth 0 is root's own header, depth 1 is a subagent's first-level
-        # activation — neither draws a connector; only depth > 1 (a subagent
-        # delegating to another subagent) is genuinely nested under a peer
-        # badge line, so only that gets the "⎿" connector.
-        prefix = "⎿ " if self._depth > 1 else ""
-        try:
-            while True:
-                if self._header_widget is not None:
-                    char = _BRAILLE_FRAMES[frame % len(_BRAILLE_FRAMES)]
-                    self._header_widget.query_one(".header-dot", Static).update(f"[{dot_color}]{prefix}{char}[/{dot_color}]")
-                frame += 1
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            pass
-
-    async def start(self, name: str, *, namespace: str | None = None, ui_label: str = "", bg_color: str = "") -> None:
-        self.name = name
-        self._badge_namespace = namespace
-        self._badge_color = bg_color
-        # Root's own plain turn (namespace is None) mounts no header of its
-        # own — the shared `_ThinkingLine` above already shows "Thinking..."
-        # then "Thought for ..." for it, and a second "Triaging..."/"Thought
-        # for X" header here would just duplicate that. The lead-in spacer
-        # only exists to set a badge header apart, so it moves inside this
-        # branch too — otherwise it strands a stray blank row between the
-        # shared thinking line and the answer, on top of the answer's own
-        # `margin-top: 1` (MessageWidget.assistant, agent/tui/widgets.py).
-        if namespace is not None:
-            await self._mount(Static("", classes="assistant-spacer"))
-            header_markup = _subagent_header_markup(name, bg_color, ui_label)
-            widget = MessageWidget(MessageKind.HEADER, header_markup, nested=self._depth > 1)
-            await self._mount(widget)
-            self._header_widget = widget
-            self._spinner_task = asyncio.create_task(self._animate_dot())
-
-    async def log(self, message: str, tool_name: str = "") -> None:
-        if tool_name:
-            self._tool_calls += 1
-        if message.endswith("..."):
-            return
-        marker = f"[{_tool_kind_color(tool_name)}]{_SQUARE}[/{_tool_kind_color(tool_name)}]" if tool_name else " "
-        if tool_name:
-            # kind (the verb, e.g. "Run") vs detail (its argument, e.g. the
-            # command/path) — split via Text.append with explicit styles
-            # (not markup interpolation) so a detail containing "[" (a
-            # plausible path/command fragment) can never be misparsed as a
-            # markup tag, same reasoning as the shared thinking-line rendering.
-            # Not gated on a debug flag: that gate existed only to skip the
-            # old "(N calls)" aggregation, which no longer exists — every
-            # call gets its own line now, styled the same way in every mode.
-            kind, _, detail = message.partition(" ")
-            line = Text.from_markup(f"{marker} ")
-            line.append(kind, style="#666666")
-            if detail:
-                line.append(f" {detail}", style="white")
-            if tool_name == self._last_tool_name and self._log_widgets:
-                self._log_widgets[-1].update(line)
-                self._conversation.scroll_end(animate=False)
-                return
-            widget = Static(line)
-        else:
-            widget = Static(f"{marker} {message}")
-        await self._mount(widget)
-        self._log_widgets.append(widget)
-        self._last_tool_name = tool_name
-        self._conversation.scroll_end(animate=False)
-
-    async def status_update(self, event: "StatusUpdateEvent") -> None:
-        if self._progress_bar is None:
-            bar = ProgressBar(total=event.total, show_eta=False, show_percentage=True, classes="subagent-progress")
-            await self._mount(bar)
-            self._progress_bar = bar
-            self._conversation.scroll_end(animate=False)
-        elif event.total is not None:
-            self._progress_bar.update(total=event.total, progress=event.progress)
-
-    def stop_spinner(self) -> None:
-        if self._spinner_task is not None:
-            self._spinner_task.cancel()
-            self._spinner_task = None
-
-    def accumulate_tokens(self, event: "InferEndEvent") -> None:
-        if event.prompt_tokens:
-            self._total_tokens += event.prompt_tokens
-        if event.completion_tokens:
-            self._total_tokens += event.completion_tokens
-        self._infer_count += 1
-
-    async def done(self, thinking_chars: int = 0) -> str:
-        if self._spinner_task is not None:
-            self._spinner_task.cancel()
-            self._spinner_task = None
-        for w in self._log_widgets:
-            await w.remove()
-        self._log_widgets.clear()
-        if self._progress_bar is not None:
-            await self._progress_bar.remove()
-            self._progress_bar = None
-        elapsed = time.monotonic() - self._start_time
-        if self._badge_namespace is not None:
-            parts: list[str] = []
-            if self._tool_calls > 0:
-                parts.append(f"{self._tool_calls} tool" + ("s" if self._tool_calls != 1 else ""))
-            if self._total_tokens > 0:
-                parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
-            parts.append(_fmt_duration_verbose(elapsed))
-            summary = " · ".join(parts)
-            if self._header_widget is not None:
-                dot_prefix = "⎿ " if self._depth > 1 else ""
-                self._header_widget.query_one(".header-dot", Static).update(f"[{self._badge_color}]{dot_prefix}●[/{self._badge_color}]")
-                self._header_widget = None
-            # badge header persists untouched — mount the Done summary as a
-            # permanent line beneath it. Depth > 1 (true nested delegation,
-            # a subagent delegating to another subagent) still anchors an
-            # L-connector to its parent badge; depth 1 (first-level
-            # activation, root's own subagent) has no peer badge line to
-            # connect to, so no connector.
-            done_prefix = "  ⎿ " if self._depth > 1 else "  "
-            await self._mount(Static(f"{done_prefix}Done ({summary})"))
-            self._conversation.scroll_end(animate=False)
-            return summary
-        else:
-            summary = self.turn_summary_text()
-            if self._header_widget is not None:
-                self._header_widget.query_one(".header-dot", Static).update(f"[white]{_DIAMOND}[/white]")
-                self._header_widget.query_one(".header-text", Static).update(f"[#666666]Thought for {summary}[/#666666]")
-                self._header_widget = None
-            self._conversation.scroll_end(animate=False)
-            return summary
-
-    def turn_summary_text(self) -> str:
-        """Root-style `"{elapsed} · {tokens} tokens · {N} call(s)"` summary
-        computed from this renderer's tracked `_start_time`/`_total_tokens`/
-        `_infer_count` — the same fields regardless of badge status, so this
-        is also what the shared per-turn thinking line uses to render its
-        final `"Thought for ..."` text even when `ws_renderer` itself has a
-        badge (explicit `/alias` seed dispatch)."""
-        elapsed = time.monotonic() - self._start_time
-        parts = [_fmt_duration_verbose(elapsed)]
-        if self._total_tokens > 0:
-            parts.append(f"{_fmt_tokens(self._total_tokens)} tokens")
-        if self._infer_count > 0:
-            calls = f"{self._infer_count} call" + ("s" if self._infer_count != 1 else "")
-            parts.append(calls)
-        return " · ".join(parts)
-
-
-class _ThinkingLine:
-    """The turn's single shared thinking-preview block. Unlike a
-    `SubAgentRenderer`'s own header/badge (one per renderer), there is
-    exactly one of these per turn — mounted once at the very top of the
-    turn's output before any renderer can mount anything else, and fed by
-    every `ThinkingTokenEvent` regardless of which renderer (root, subagent,
-    nested delegation) is currently active. Renders as up to
-    `_THINKING_LINE_SENTENCE_RESET` stacked lines — each completed sentence
-    becomes its own line, the newest (still in-progress) one carries the
-    spinner dot — and once a line beyond that count would be needed, the
-    whole block wipes and restarts from a bare "Thinking...". Built as a
-    plain `Static`, not a `MessageWidget`, so it stays invisible to every
-    `isinstance(w, MessageWidget)` filter the rest of the app/tests use to
-    count header lines.
-
-    Kept pinned to the top of the visible viewport while the turn is active
-    by re-scrolling `conversation` to this widget's own top on every redraw
-    (`scroll_to_widget(..., top=True)`) — not a second widget, just active
-    scroll management on the one in-flow copy — so it stays in view even as
-    the turn's own subagent cards/logs grow beneath it."""
-
-    def __init__(self, conversation: ScrollableContainer) -> None:
-        self._conversation = conversation
-        self._widget: Static | None = None
-        self._buffer: str = ""
-        self._frame: int = 0
-        self._spinner_task: asyncio.Task | None = None
-
-    async def mount(self) -> None:
-        await self._conversation.mount(Static("", classes="assistant-spacer"))
-        self._widget = Static(self._render())
-        await self._conversation.mount(self._widget)
-        self._pin_to_top()
-        self._spinner_task = asyncio.create_task(self._animate())
-
-    async def _animate(self) -> None:
-        try:
-            while True:
-                self._frame += 1
-                self._redraw()
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            pass
-
-    def update_chunk(self, text: str) -> None:
-        self._buffer += text
-        steps, _ = _split_thinking_steps(self._buffer)
-        if len(steps) >= _THINKING_LINE_SENTENCE_RESET:
-            # Full cycle wipe: once a 5th line would be needed, clear
-            # everything and restart from "Thinking..." rather than scrolling.
-            self._buffer = ""
-        self._redraw()
-
-    @staticmethod
-    def _cap(text: str) -> str:
-        tail = text[-_THINKING_LINE_CAP:]
-        ellipsis = "…" if len(text) > _THINKING_LINE_CAP else ""
-        return f"{ellipsis}{tail}"
-
-    def _render(self) -> Text:
-        # One Text redraw per frame (dot + lines together) — this widget is
-        # a plain Static, not a MessageWidget, so unlike SubAgentRenderer's
-        # header it has no separate `.header-dot`/`.header-text` to update
-        # independently. Completed sentences stack as lines above the
-        # current in-progress one; the dot always marks the active (last)
-        # line, same dim color throughout.
-        dot_char = _BRAILLE_FRAMES[self._frame % len(_BRAILLE_FRAMES)]
-        steps, tail = _split_thinking_steps(self._buffer)
-        lines = [*steps, tail] if tail else list(steps)
-        text = Text(no_wrap=True)
-        if not lines:
-            text.append(dot_char, style="#666666")
-            text.append(" Thinking...", style="#666666")
-            return text
-        # rich.text.Text, never a markup string, so a literal "[" streamed
-        # by the model can never be misparsed as a markup tag — same
-        # reasoning as `SubAgentRenderer.log()`.
-        for i, line in enumerate(lines):
-            if i > 0:
-                text.append("\n")
-            prefix = dot_char if i == len(lines) - 1 else " "
-            text.append(f"{prefix} {self._cap(line)}", style="#666666")
-        return text
-
-    def _redraw(self) -> None:
-        if self._widget is not None:
-            self._widget.update(self._render())
-        self._pin_to_top()
-
-    def _pin_to_top(self) -> None:
-        # Fired on every 0.1s animation tick, so any scroll-to-bottom another
-        # event triggers in between (e.g. `DiffEvent`'s `scroll_end`) is
-        # corrected back within one frame.
-        if self._widget is not None:
-            self._conversation.scroll_to_widget(self._widget, animate=False, top=True)
-
-    def stop_spinner(self) -> None:
-        if self._spinner_task is not None:
-            self._spinner_task.cancel()
-            self._spinner_task = None
-
-    def finish(self, summary_text: str) -> None:
-        self.stop_spinner()
-        if self._widget is not None:
-            line = Text(no_wrap=True)
-            line.append(_DIAMOND, style="white")
-            line.append(f" {summary_text}", style="#666666")
-            self._widget.update(line)
-
-
-def _subagent_header_markup(name: str, bg_color: str, ui_label: str) -> str:
-    markup = f"[black on {bg_color} bold] {name} [/]"
-    if ui_label:
-        markup += f"[white]\\[{ui_label}][/white]"
-    return markup
 
 
 _REQUEST_SUMMARY_BLOCK = re.compile(r"<request_summary>.*?</request_summary>\s*", re.DOTALL)
@@ -416,162 +100,6 @@ def _fallback_ui_label(text: str, max_words: int = 12) -> str:
 
 def _resolve_at_refs(text: str) -> str:
     return re.sub(r"@(\S+)", lambda m: f"`{m.group(1)}`", text)
-
-
-def _ms(seconds: float) -> int:
-    return round(seconds * 1000)
-
-
-_MASK_STARS = 6  # fixed width — a long key must not blow up the row with 1-for-1 stars
-
-
-def _mask_key(key: str) -> str:
-    """Display form of a real key value: first 2 + last 3 characters kept,
-    the middle replaced with a fixed-width run of '*' (never 1-for-1 with
-    true length — some keys are long enough that would dominate the row).
-    Keys of 5 characters or fewer are too short for head/tail to mean
-    anything distinct, so they're masked in full at the same fixed width."""
-    if len(key) <= 5:
-        return "*" * _MASK_STARS
-    return key[:2] + "*" * _MASK_STARS + key[-3:]
-
-
-def _models_display_key(cred_key: str, key_input: dict[str, str]) -> str:
-    """Non-editing display for the key cell: an in-progress edit for this
-    model (`key_input`, including an explicit clear stored as "") always wins
-    over whatever's actually in the keyring."""
-    if cred_key in key_input:
-        value = key_input[cred_key]
-        return _mask_key(value) if value else "no key"
-    if credentials.has_api_key(cred_key):
-        return _mask_key(credentials.get_api_key(cred_key))
-    return "no key"
-
-
-def _models_key_present(cred_key: str, key_input: dict[str, str]) -> bool:
-    """Whether this model currently has a usable key once this edit lands —
-    an in-progress edit (including an explicit clear) wins over the real
-    stored credential, same precedence as `_models_display_key`."""
-    if cred_key in key_input:
-        return bool(key_input[cred_key])
-    return credentials.has_api_key(cred_key)
-
-
-def _fmt_duration(elapsed: float) -> str:
-    if elapsed < 60:
-        return f"{elapsed:.0f}s"
-    return f"{elapsed / 60:.1f}m"
-
-
-def _fmt_tokens(n: int) -> str:
-    if n >= 1000:
-        return f"{n / 1000:.1f}k"
-    return str(n)
-
-
-def _fmt_duration_verbose(elapsed: float) -> str:
-    if elapsed < 1:
-        return f"{elapsed * 1000:.0f}ms"
-    if elapsed < 60:
-        return f"{elapsed:.0f}s"
-    minutes = int(elapsed // 60)
-    seconds = int(elapsed % 60)
-    return f"{minutes}m {seconds}s"
-
-
-def _fmt_elapsed(elapsed: float) -> str:
-    secs = int(elapsed)
-    if secs < 60:
-        return f"{secs}s"
-    return f"{secs // 60}m {secs % 60}s"
-
-
-def _fmt_status(verb: str, elapsed: float) -> str:
-    return f"{verb.capitalize()}... [white]({_fmt_elapsed(elapsed)})[/white]"
-
-
-_CONTEXT_LIMITS: dict[str, int] = {
-    "gpt-4o": 128_000,
-    "gpt-4-turbo": 128_000,
-    "gpt-4": 8_192,
-    "gpt-3.5": 16_385,
-    "claude": 200_000,
-    "gemini-1.5": 1_048_576,
-    "gemini-2": 1_048_576,
-    "deepseek-chat": 128_000,
-}
-
-
-def _context_limit(model: str) -> int:
-    lower = model.lower()
-    for key, limit in _CONTEXT_LIMITS.items():
-        if key in lower:
-            return limit
-    return 128_000
-
-
-def _fmt_context_pct(prompt_tokens: int, limit: int) -> str:
-    pct = round(prompt_tokens / limit * 100, 1)
-    return f"{pct}% context"
-
-
-def _fmt_tokens_k(n: int) -> str:
-    return f"{n / 1000:.1f}k"
-
-
-_PATH_TRUNCATE_BUDGET = 30
-
-
-def _truncate_path_middle(path: str, budget: int = _PATH_TRUNCATE_BUDGET) -> str:
-    if len(path) <= budget:
-        return path
-    head_len = budget // 2 - 1
-    tail_len = budget - head_len - 1
-    return f"{path[:head_len]}…{path[-tail_len:]}"
-
-
-def _fmt_status_left(
-    model: str, effort: str | None, session_tokens: int, other_tokens: int, prompt_tokens: int, limit: int,
-) -> str:
-    model_label = f"{model} ({effort})" if effort else model
-    tokens = f"{_fmt_tokens_k(session_tokens)} · {_fmt_tokens_k(other_tokens)} tokens"
-    pct = _fmt_context_pct(prompt_tokens, limit)
-    return f"\\[{model_label}] | {tokens} | {pct}"
-
-
-def _fmt_status_right(working_dir: str, branch: str | None) -> str:
-    location = f"📁 {_truncate_path_middle(working_dir)}"
-    if branch:
-        location += f" | ⎇ {branch}"
-    return location
-
-
-def _estimate_session_tokens(session: Session) -> int:
-    # Includes transcript + persistent system messages ([artifact], <lang>).
-    # Artifacts from prior Query turns are what make this number grow meaningfully.
-    return sum(len(str(m.get("content") or "")) for m in session.messages) // 4
-
-
-def _strip_default_bg(style: Style | None) -> Style | None:
-    if style is None or style.bgcolor is None or not style.bgcolor.is_default:
-        return style
-    return Style(
-        color=style.color,
-        bold=style.bold,
-        dim=style.dim,
-        italic=style.italic,
-        underline=style.underline,
-        blink=style.blink,
-        blink2=style.blink2,
-        reverse=style.reverse,
-        conceal=style.conceal,
-        strike=style.strike,
-        underline2=style.underline2,
-        frame=style.frame,
-        encircle=style.encircle,
-        overline=style.overline,
-        link=style.link,
-    )
 
 
 @dataclass
@@ -1236,8 +764,13 @@ class GekaiApp(App[None]):
         self._hide_directive_notice()
         conversation = self.query_one("#conversation", ScrollableContainer)
         if not tiers_configured():
+            # Only the commands that declare `works_unconfigured` stay
+            # reachable — the ones that let the user configure tiers, or quit.
+            # Which those are is each command's own declaration, not a list
+            # the view keeps in sync.
             _slash_name = stripped.lstrip("/").split(None, 1)[0] if stripped.startswith("/") else ""
-            if _slash_name not in ("models", "tier", "exit"):
+            _cmd = self._command_registry.get(_slash_name) if _slash_name else None
+            if not getattr(_cmd, "works_unconfigured", False):
                 await conversation.mount(MessageWidget(
                     MessageKind.WARNING,
                     "model tiers are not configured — run /models to store API keys, then /tier to assign FAST/SUPP/CORE",
@@ -1264,69 +797,18 @@ class GekaiApp(App[None]):
                     exclusive=True,
                 )
                 return
-            if _slash_name == "models":
-                await conversation.mount(MessageWidget(MessageKind.USER, stripped))
-                conversation.scroll_end(animate=False)
-                await self._open_models_panel(conversation)
-                self._focus_prompt()
-                return
-            if _slash_name == "tier":
-                # Only a single token after the name is the wizard's
-                # trigger — no args (listing) or extra tokens (a usage
-                # error) fall through to the plain `TierCommand` dispatch
-                # below, unchanged.
-                _tier_arg = _slash_parts[1].strip() if len(_slash_parts) > 1 else ""
-                if _tier_arg and " " not in _tier_arg:
-                    await conversation.mount(MessageWidget(MessageKind.USER, stripped))
-                    conversation.scroll_end(animate=False)
-                    try:
-                        _tier = TierName(_tier_arg.lower())
-                    except ValueError:
-                        names = "/".join(t.value.upper() for t in TierName)
-                        await conversation.mount(MessageWidget(
-                            MessageKind.ERROR, f"unknown tier {_tier_arg!r} — expected one of {names}"
-                        ))
-                        conversation.scroll_end(animate=False)
-                        self._focus_prompt()
-                        return
-                    # Must run as a worker, not be awaited inline: this call
-                    # is itself inside the Enter keybinding's own action
-                    # handler, which Textual's message pump awaits directly.
-                    # `_run_tier_wizard` blocks on `_ask_choice` futures that
-                    # only resolve from a LATER keypress — awaited inline,
-                    # the pump would never get back around to dispatch that
-                    # keypress, deadlocking the whole app (confirmed: it did).
-                    # `_init_session`'s identical `_ask_choice` usage avoids
-                    # this the same way, via `run_worker` below.
-                    self.run_worker(self._run_tier_wizard(_tier, conversation), exclusive=True)
-                    self._focus_prompt()
-                    return
-            if _slash_name == "compact":
-                if self._worker is not None and not self._worker.is_finished:
-                    await conversation.mount(MessageWidget(MessageKind.ERROR, "a turn is already running — wait for it to finish before compacting"))
-                    conversation.scroll_end(animate=False)
-                    self._focus_prompt()
-                    return
-                if self._session is None:
-                    await conversation.mount(MessageWidget(MessageKind.ERROR, "no active session to compact"))
-                    conversation.scroll_end(animate=False)
-                    self._focus_prompt()
-                    return
-                _user_prompt = _slash_parts[1].strip() if len(_slash_parts) > 1 else ""
-                await conversation.mount(MessageWidget(MessageKind.USER, stripped))
-                conversation.scroll_end(animate=False)
-                await self._run_compact(conversation, _user_prompt)
-                return
             await conversation.mount(MessageWidget(MessageKind.USER, stripped))
             conversation.scroll_end(animate=False)
             had_prior = self.session_has_interactions
             if self._session is not None:
                 append_command(self._session, stripped)
-            cmd_name = stripped.lstrip("/").split(maxsplit=1)[0] if stripped.lstrip("/").split() else ""
-            self._agent.events.emit("command", session=self.session_id, name=cmd_name)
+            self._agent.events.emit("command", session=self.session_id, name=_slash_name)
             result = await self._command_registry.dispatch(stripped)
             if result.clear_session:
                 await self._clear_session(command_text=stripped)
+                return
+            if result.ui_action:
+                await self._run_ui_action(result.ui_action, result.ui_arg, conversation)
                 return
             output = result.output or ""
             await conversation.mount(MessageWidget(MessageKind.ERROR if result.error else MessageKind.COMMAND_RESULT, output))
@@ -1348,6 +830,36 @@ class GekaiApp(App[None]):
             return
         await conversation.mount(MessageWidget(MessageKind.USER, stripped))
         self._worker = self.run_worker(self._stream(_resolve_at_refs(stripped)), exclusive=True)
+
+    async def _run_ui_action(
+        self, action: str, arg: str, conversation: ScrollableContainer,
+    ) -> None:
+        """Runs the live-UI half of a command that could not finish inside its
+        own `execute()`. The command already validated its arguments; what is
+        left here is drawing and the app-state guards only the view can make."""
+        if action == "models":
+            await self._open_models_panel(conversation)
+        elif action == "tier_wizard":
+            # Must run as a worker, not be awaited inline: this call is
+            # itself inside the Enter keybinding's own action handler, which
+            # Textual's message pump awaits directly. `_run_tier_wizard`
+            # blocks on `_ask_choice` futures that only resolve from a LATER
+            # keypress — awaited inline, the pump would never get back around
+            # to dispatch that keypress, deadlocking the whole app
+            # (confirmed: it did). `_init_session`'s identical `_ask_choice`
+            # usage avoids this the same way.
+            self.run_worker(self._run_tier_wizard(TierName(arg), conversation), exclusive=True)
+        elif action == "compact":
+            if self._worker is not None and not self._worker.is_finished:
+                await conversation.mount(MessageWidget(MessageKind.ERROR, "a turn is already running — wait for it to finish before compacting"))
+                conversation.scroll_end(animate=False)
+            elif self._session is None:
+                await conversation.mount(MessageWidget(MessageKind.ERROR, "no active session to compact"))
+                conversation.scroll_end(animate=False)
+            else:
+                await self._run_compact(conversation, arg)
+                return  # `_run_compact` owns focus for the rest of the run
+        self._focus_prompt()
 
     async def _open_models_panel(self, conversation: ScrollableContainer) -> None:
         """`/models`'s real implementation: no worker, no async "flow" — just

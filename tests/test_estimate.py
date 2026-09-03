@@ -14,45 +14,45 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from agent.pipeline.estimate import Estimator, ScopeEstimate
-from tests.conftest import mock_llm_response, run
+from agent.tiers.resolve import ResolvedTier
+from tests.conftest import ONESHOT_TIER, mock_llm_response, run
 
 
 def _make_estimator() -> Estimator:
-    with patch("agent.openai_client.AsyncOpenAI"):
-        return Estimator(model="test-model", api_key="key", api_base="http://localhost")
+    return Estimator(ONESHOT_TIER)
 
 
-def test_estimate_chat() -> None:
+def test_estimate_chat(llm_create) -> None:
     e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("CHAT"))
+    llm_create.return_value = mock_llm_response("CHAT")
     result = run(e.estimate("hi there"))
     assert result == ScopeEstimate(scope="chat")
 
 
-def test_estimate_solo() -> None:
+def test_estimate_solo(llm_create) -> None:
     e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("SOLO"))
+    llm_create.return_value = mock_llm_response("SOLO")
     result = run(e.estimate("write a small script"))
     assert result == ScopeEstimate(scope="solo")
 
 
-def test_estimate_mutate() -> None:
+def test_estimate_mutate(llm_create) -> None:
     e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("MUTATE"))
+    llm_create.return_value = mock_llm_response("MUTATE")
     result = run(e.estimate("build a module and its test suite"))
     assert result == ScopeEstimate(scope="mutate")
 
 
-def test_estimate_parse_failure_falls_back_to_solo() -> None:
+def test_estimate_parse_failure_falls_back_to_solo(llm_create) -> None:
     e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("nonsense-token"))
+    llm_create.return_value = mock_llm_response("nonsense-token")
     result = run(e.estimate("do something"))
     assert result == ScopeEstimate(scope="solo")
 
 
-def test_estimate_exception_falls_back_to_solo() -> None:
+def test_estimate_exception_falls_back_to_solo(llm_create) -> None:
     e = _make_estimator()
-    e._client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+    llm_create.side_effect = RuntimeError("boom")
     result = run(e.estimate("do something"))
     assert result == ScopeEstimate(scope="solo")
 
@@ -61,13 +61,12 @@ def test_estimate_default_scope_is_solo() -> None:
     assert ScopeEstimate().scope == "solo"
 
 
-def test_estimate_history_filtered_and_sliced_to_last_six() -> None:
+def test_estimate_history_filtered_and_sliced_to_last_six(llm_create) -> None:
     """Mirrors `Gate.gate()`'s history handling exactly: only user/assistant
     messages are kept, and only the last 6 of those, positioned between the
     system prompt and the current user_input in the chat completion call."""
     e = _make_estimator()
-    mock_create = AsyncMock(return_value=mock_llm_response("SOLO"))
-    e._client.chat.completions.create = mock_create
+    llm_create.return_value = mock_llm_response("SOLO")
 
     history = [
         {"role": "system", "content": "should be dropped"},
@@ -81,52 +80,46 @@ def test_estimate_history_filtered_and_sliced_to_last_six() -> None:
     ]
     run(e.estimate("do it", history=history))
 
-    messages = mock_create.call_args.kwargs["messages"]
+    messages = llm_create.call_args.kwargs["messages"]
     assert messages[0]["role"] == "system"
     assert messages[-1] == {"role": "user", "content": "do it"}
     assert messages[1:-1] == history[-6:]
     assert all(m["role"] in ("user", "assistant") for m in messages[1:-1])
 
 
-def test_estimate_no_history_omits_context_messages() -> None:
+def test_estimate_no_history_omits_context_messages(llm_create) -> None:
     e = _make_estimator()
-    mock_create = AsyncMock(return_value=mock_llm_response("SOLO"))
-    e._client.chat.completions.create = mock_create
+    llm_create.return_value = mock_llm_response("SOLO")
 
     run(e.estimate("hi"))
 
-    messages = mock_create.call_args.kwargs["messages"]
+    messages = llm_create.call_args.kwargs["messages"]
     assert len(messages) == 2
     assert messages[-1] == {"role": "user", "content": "hi"}
 
 
-def test_estimate_sends_extra_params() -> None:
+def test_estimate_sends_extra_params(llm_create) -> None:
     # plan 34 phase 1: the estimator must forward whatever extra_params its
     # resolved tier carries (e.g. the explicit thinking-disable payload) —
     # a `thinking: false` binding must not silently degrade to `{}`.
-    with patch("agent.openai_client.AsyncOpenAI"):
-        e = Estimator(
-            model="test-model",
-            api_key="key",
-            api_base="http://localhost",
-            extra_params={"extra_body": {"thinking": {"type": "disabled"}}},
-        )
-    mock_create = AsyncMock(return_value=mock_llm_response("CHAT"))
-    e._client.chat.completions.create = mock_create
+    e = Estimator(ResolvedTier(
+        model="test-model", api_key="key", api_base="http://localhost",
+        extra_params={"extra_body": {"thinking": {"type": "disabled"}}},
+    ))
+    llm_create.return_value = mock_llm_response("CHAT")
 
     run(e.estimate("hi"))
 
-    assert mock_create.call_args.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert llm_create.call_args.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
-def test_estimate_no_extra_params_defaults_to_empty() -> None:
+def test_estimate_no_extra_params_defaults_to_empty(llm_create) -> None:
     e = _make_estimator()
-    mock_create = AsyncMock(return_value=mock_llm_response("CHAT"))
-    e._client.chat.completions.create = mock_create
+    llm_create.return_value = mock_llm_response("CHAT")
 
     run(e.estimate("hi"))
 
-    assert "extra_body" not in mock_create.call_args.kwargs
+    assert "extra_body" not in llm_create.call_args.kwargs
 
 
 def test_estimate_prompt_flags_multi_layer_requests_as_mutate() -> None:

@@ -10,9 +10,14 @@ wizard itself (see `agent/tui/app.py::_run_tier_wizard`), exactly as
 
 from __future__ import annotations
 
-from ..llm.resolve import tier_status
-from ..llm.tiers import ModelCatalogEntry, TierBinding, TierName
-from ..settings import load_model_catalog, load_tier_bindings
+from ..tiers import (
+    ModelCatalogEntry,
+    TierBinding,
+    TierName,
+    load_model_catalog,
+    load_tier_bindings,
+    tier_status,
+)
 from .base import CommandResult
 
 
@@ -43,11 +48,18 @@ class TierCommand:
     name = "tier"
     description = "Assign a model to a tier (interactive picker) or list current assignments"
     params = "<FAST|SUPP|CORE>"
+    works_unconfigured = True  # must stay reachable before tiers are configured
 
     async def execute(self, args: list[str]) -> CommandResult:
         if not args:
             return CommandResult(output=_render_table(load_model_catalog(), load_tier_bindings()))
-        # Reachable only outside the TUI (this command has no UI of its own
-        # to run the picker with) — the real app never gets here for a
-        # 1-arg call, see the module docstring.
-        return CommandResult(output=f"usage: /tier {self.params} — interactive, run inside the app", error=True)
+        if len(args) > 1:
+            return CommandResult(output=f"usage: /tier {self.params}", error=True)
+        try:
+            tier = TierName(args[0].lower())
+        except ValueError:
+            names = "/".join(t.value.upper() for t in TierName)
+            return CommandResult(
+                output=f"unknown tier {args[0]!r} — expected one of {names}", error=True,
+            )
+        return CommandResult(ui_action="tier_wizard", ui_arg=tier.value)

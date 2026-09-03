@@ -10,7 +10,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from ..openai_client import build_openai_client
+from ..oneshot import complete
+from ..tiers.resolve import ResolvedTier
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _DIFF_CHAR_LIMIT = 8000
@@ -59,16 +60,8 @@ _VERIFIER_PROMPT = (
 
 
 class Verifier:
-    def __init__(
-        self,
-        model: str,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        extra_params: dict | None = None,
-    ) -> None:
-        self._model = model
-        self._extra_params = extra_params or {}
-        self._client = build_openai_client(api_key, api_base, read_timeout=60.0)
+    def __init__(self, tier: ResolvedTier) -> None:
+        self._tier = tier
 
     async def verify(
         self,
@@ -91,15 +84,9 @@ class Verifier:
                 f"<diff>\n{truncated_diff}\n</diff>\n"
                 f"<step_output>\n{output}\n</step_output>"
             )
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": _VERIFIER_PROMPT},
-                    {"role": "user", "content": message},
-                ],
-                **self._extra_params,
+            raw_text = await complete(
+                self._tier, system=_VERIFIER_PROMPT, user=message, read_timeout=60.0,
             )
-            raw_text: str = response.choices[0].message.content or ""
             match = _JSON_OBJECT.search(raw_text)
             if not match:
                 return Verdict(ok=True, violations=[])

@@ -14,67 +14,63 @@ from agent.directive_audit import (
     load_cached_verdict,
     save_cached_verdict,
 )
-from tests.conftest import mock_llm_response, run
+from tests.conftest import ONESHOT_TIER, mock_llm_response, run
 
 
 def _make_auditor() -> Auditor:
-    with patch("agent.openai_client.AsyncOpenAI"):
-        return Auditor(model="test-model", api_key="key", api_base="http://localhost")
+    return Auditor(ONESHOT_TIER)
 
 
 # ---------------------------------------------------------------------------
 # parsing — YES, NO, and malformed output
 # ---------------------------------------------------------------------------
 
-def test_audit_yes() -> None:
+def test_audit_yes(llm_create) -> None:
     a = _make_auditor()
-    a._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("YES"))
+    llm_create.return_value = mock_llm_response("YES")
     result = run(a.audit("# Agent Instructions\nyou must always run tests before committing"))
     assert result == AuditVerdict(has_directives=True, raw="YES")
 
 
-def test_audit_no() -> None:
+def test_audit_no(llm_create) -> None:
     a = _make_auditor()
-    a._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("NO"))
+    llm_create.return_value = mock_llm_response("NO")
     result = run(a.audit("# Changelog\n..."))
     assert result == AuditVerdict(has_directives=False, raw="NO")
 
 
-def test_audit_lowercase_is_accepted() -> None:
+def test_audit_lowercase_is_accepted(llm_create) -> None:
     a = _make_auditor()
-    a._client.chat.completions.create = AsyncMock(return_value=mock_llm_response("yes"))
+    llm_create.return_value = mock_llm_response("yes")
     result = run(a.audit("file text"))
     assert result.has_directives is True
 
 
-def test_audit_malformed_output_falls_back_to_no() -> None:
+def test_audit_malformed_output_falls_back_to_no(llm_create) -> None:
     a = _make_auditor()
-    a._client.chat.completions.create = AsyncMock(
-        return_value=mock_llm_response("uh, this file looks fine I guess"),
-    )
+    llm_create.return_value = mock_llm_response("uh, this file looks fine I guess")
     result = run(a.audit("file text"))
     assert result.has_directives is False
 
 
-def test_audit_exception_falls_back_to_no() -> None:
+def test_audit_exception_falls_back_to_no(llm_create) -> None:
     a = _make_auditor()
-    a._client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+    llm_create.side_effect = RuntimeError("boom")
     result = run(a.audit("file text"))
     assert result.has_directives is False
 
 
-def test_audit_system_prompt_carries_the_question_and_file_is_the_user_message() -> None:
+def test_audit_system_prompt_carries_the_question_and_file_is_the_user_message(llm_create) -> None:
     a = _make_auditor()
-    mock_create = AsyncMock(return_value=mock_llm_response("NO"))
-    a._client.chat.completions.create = mock_create
+    llm_create.return_value = mock_llm_response("NO")
 
     run(a.audit("my file text"))
 
-    messages = mock_create.call_args.kwargs["messages"]
+    messages = llm_create.call_args.kwargs["messages"]
     assert messages[0]["role"] == "system"
     assert "YES or NO" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "my file text"}
-    assert mock_create.call_args.kwargs["temperature"] == 0
+    assert llm_create.call_args.kwargs["temperature"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +102,6 @@ def test_cache_keyed_by_rel_path(tmp_path) -> None:
     assert load_cached_verdict(tmp_path, "AGENTS.md", "sha1") is None
 
 
-def test_file_sha_stable_and_content_sensitive() -> None:
+def test_file_sha_stable_and_content_sensitive(llm_create) -> None:
     assert file_sha("hello") == file_sha("hello")
     assert file_sha("hello") != file_sha("hello!")

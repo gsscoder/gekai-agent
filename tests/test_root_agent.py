@@ -6,15 +6,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.harness import dispatch as harness_dispatch
 from agent.harness import core as harness_core
-from agent.harness.core import Harness, _recency_turns, _build_agent, _RECENCY_N, _recap
-from agent.llm.resolve import ResolvedTier
-from agent.llm.tiers import TierName, TierPolicy
+from agent.harness.core import Harness, _recency_turns, _RECENCY_N, _recap
+from agent.harness.dispatch import build_agent
+from agent.tiers.resolve import ResolvedTier
+from agent.tiers.catalog import TierName, TierPolicy
 from agent.llm.types import Message, TextBlock
 from agent.pipeline.plan import Task, TaskGraph
 from agent.harness.interpreter import StepResult, TaskGraphHalted
 from agent.session import Session
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.subagents import Subagent
 from agent.tools.catalog import ALL_TOOLS, READ_TOOLS
 
@@ -118,7 +120,7 @@ _DUMMY_RESOLVED = ResolvedTier(model="dummy-model", api_key="dummy-key", api_bas
 
 def _build(tmp_path: Path, subagent: Subagent | None, permissions: Permissions = _FULL_PERMS) -> tuple:
     base = subagent.build_system_base() if subagent else "base prompt"
-    agent = _build_agent(
+    agent = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, permissions, None, base, None,
         subagent=subagent,
@@ -155,7 +157,7 @@ def test_tools_block_narrows_with_permissions(tmp_path: Path):
 
 
 def test_build_agent_tools_override_narrows_selected(tmp_path: Path):
-    agent = _build_agent(
+    agent = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, "base prompt", None,
         tools_override=frozenset(READ_TOOLS),
@@ -165,11 +167,11 @@ def test_build_agent_tools_override_narrows_selected(tmp_path: Path):
 
 
 def test_build_agent_tools_override_none_leaves_selected_unchanged(tmp_path: Path):
-    agent_default = _build_agent(
+    agent_default = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, "base prompt", None,
     )
-    agent_explicit_none = _build_agent(
+    agent_explicit_none = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, "base prompt", None,
         tools_override=None,
@@ -183,7 +185,7 @@ def test_build_agent_tools_override_still_respects_subagent_allowlist(tmp_path: 
     # tools_override is a second, narrower filter on top of subagent.tools —
     # it must not widen the grant back past the subagent's own allowlist.
     sub = Subagent(name="t", namespace="coding", description="d", tools=list(READ_TOOLS))
-    agent = _build_agent(
+    agent = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
         subagent=sub,
@@ -209,7 +211,7 @@ def test_tools_block_full_set_for_unrestricted_subagent(tmp_path: Path):
 
 def test_build_agent_uses_subagent_max_iterations_override(tmp_path: Path):
     sub = Subagent(name="t", namespace="coding", description="d", max_iterations=8)
-    agent = _build_agent(
+    agent = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
         subagent=sub,
@@ -219,12 +221,12 @@ def test_build_agent_uses_subagent_max_iterations_override(tmp_path: Path):
 
 def test_build_agent_falls_back_to_global_default_max_iterations(tmp_path: Path):
     sub = Subagent(name="t", namespace="coding", description="d")  # max_iterations=None -> inherit
-    agent = _build_agent(
+    agent = build_agent(
         _DUMMY_RESOLVED,
         tmp_path, _FULL_PERMS, None, sub.build_system_base(), None,
         subagent=sub,
     )
-    assert agent.max_iterations == harness_core._MAX_ITERATIONS
+    assert agent.max_iterations == harness_dispatch.MAX_ITERATIONS
 
 
 def test_direct_mode_tools_block_uses_full_set(tmp_path: Path):
@@ -265,7 +267,7 @@ def _spy_build_agent_capturing_run(monkeypatch: pytest.MonkeyPatch) -> MagicMock
     fake_agent.run = AsyncMock(
         return_value=[Message(role="assistant", content=[TextBlock(text="synthesized answer")])]
     )
-    monkeypatch.setattr(harness_core, "_build_agent", lambda *a, **kw: fake_agent)
+    monkeypatch.setattr(harness_dispatch, "build_agent", lambda *a, **kw: fake_agent)
     return fake_agent
 
 
@@ -307,7 +309,7 @@ def test_respond_falls_back_to_recap_on_synthesis_error(monkeypatch: pytest.Monk
     def _raise(*args, **kwargs):
         raise RuntimeError("model unavailable")
 
-    monkeypatch.setattr(harness_core, "_build_agent", _raise)
+    monkeypatch.setattr(harness_dispatch, "build_agent", _raise)
 
     session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
     graph = TaskGraph(summary="did the thing", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])
@@ -329,7 +331,7 @@ def test_respond_halted_path_falls_back_to_recap_on_synthesis_error(monkeypatch:
     def _raise(*args, **kwargs):
         raise RuntimeError("model unavailable")
 
-    monkeypatch.setattr(harness_core, "_build_agent", _raise)
+    monkeypatch.setattr(harness_dispatch, "build_agent", _raise)
 
     session = Session(working_dir=tmp_path, permissions=Permissions(read=True, write=True, exec=True))
     graph = TaskGraph(summary="did the thing", steps=[Task(agent="code-expert", instruction="do it", mission="do it")])

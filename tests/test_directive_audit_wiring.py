@@ -25,7 +25,7 @@ from textual.color import Color
 from textual.widgets import Static
 
 from agent import agent as agent_module
-from agent import logging as agent_logging
+from agent import telemetry as agent_telemetry
 from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.directive_audit import (
@@ -34,14 +34,15 @@ from agent.directive_audit import (
     load_cached_verdict,
     save_cached_verdict,
 )
-from agent.llm.resolve import ResolvedTier, TierResolutionError
-from agent.settings import Permissions, save_directive_audit_enabled
+from agent.tiers.resolve import ResolvedTier, TierResolutionError
+from agent.settings import save_directive_audit_enabled
+from agent.permissions import Permissions
 from agent.tui.app import GekaiApp
 
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(agent_logging.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(agent_telemetry.Path, "home", classmethod(lambda cls: tmp_path))
 
 
 def _make_agent(working_dir: Path) -> GekaiAgent:
@@ -75,7 +76,7 @@ def _patch_auditor(monkeypatch: pytest.MonkeyPatch, verdict: AuditVerdict) -> li
     calls: list[str] = []
 
     class _StubAuditor:
-        def __init__(self, *, model: str, api_key: str, api_base: str | None, extra_params: dict) -> None:
+        def __init__(self, tier: object) -> None:
             pass
 
         async def audit(self, file_text: str) -> AuditVerdict:

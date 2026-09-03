@@ -9,14 +9,19 @@ from pathlib import Path
 
 from . import __version__
 from .directive_audit import Auditor, AuditVerdict, file_sha, load_cached_verdict, save_cached_verdict
-from .llm.resolve import ResolvedTier, TierResolutionError, resolve_tier, resolve_touchpoint
-from .llm.tiers import TierName
+from .tiers import (
+    ResolvedTier,
+    TierName,
+    TierResolutionError,
+    load_model_catalog,
+    load_tier_bindings,
+)
 from .harness import Harness, HiddenGrantCallback
-from .harness.touchpoints import touchpoint
-from .permissions import PermissionCallback
+from .harness.touchpoints import resolve_at_tier, resolve_touchpoint, touchpoint
+from .permissions import PermissionCallback, Permissions
 from .session import IngestedFile, Session
-from .settings import Permissions, load_directive_audit_enabled, load_model_catalog, load_tier_bindings
-from .logging import EventLogger
+from .settings import load_directive_audit_enabled
+from .telemetry import EventLogger
 
 from .events import DirectiveAuditEvent, MaxIterationsEvent, AgentEvent
 from .persistence import append_message, append_debug, append_event
@@ -125,7 +130,7 @@ class GekaiAgent:
         # point (effort/thinking) still applies at whatever tier `scale()`
         # picked — the tier alone no longer says who is being resolved.
         def _resolve(tier: TierName, touchpoint_name: str) -> ResolvedTier:
-            return resolve_tier(tier, catalog, bindings, touchpoint_name)
+            return resolve_at_tier(tier, touchpoint_name, catalog, bindings)
 
         self._root = Harness(
             resolve=_resolve,
@@ -263,10 +268,7 @@ class GekaiAgent:
         t0 = time.monotonic()
         try:
             resolved = resolve_touchpoint("directive-audit", load_model_catalog(), load_tier_bindings())
-            auditor = Auditor(
-                model=resolved.model, api_key=resolved.api_key,
-                api_base=resolved.api_base, extra_params=resolved.extra_params,
-            )
+            auditor = Auditor(resolved)
             verdict = await auditor.audit(ingested.text)
         except Exception:
             _log.warning("directive audit failed; falling back to NO", exc_info=True)

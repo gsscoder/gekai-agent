@@ -30,8 +30,9 @@ from agent.commands.registry import CommandRegistry
 from agent.events import DelegationDoneEvent, DelegationStartEvent, DoneEvent, LogEvent, StatusUpdateEvent, SubAgentStartEvent
 from agent.harness import turn as harness_turn
 from agent.harness.turn import TurnResult
-from agent.settings import Permissions
-from agent.tui.app import GekaiApp, SubAgentRenderer
+from agent.permissions import Permissions
+from agent.tui.app import GekaiApp
+from agent.tui.render import SubAgentRenderer
 from agent.tui.widgets import MessageWidget
 
 pytestmark = pytest.mark.asyncio

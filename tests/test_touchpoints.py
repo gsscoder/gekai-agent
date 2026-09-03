@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent.harness.touchpoints import TOUCHPOINTS, touchpoint
-from agent.llm.tiers import TierName, TierPolicy
+from agent.tiers.catalog import TierName, TierPolicy
 
 
 def test_all_touchpoints_have_unique_names() -> None:

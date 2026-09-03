@@ -20,18 +20,11 @@ from ..agent import DirectiveVerdictCallback, GekaiAgent
 from ..events import (
     AgentEvent,
     BudgetExhaustedEvent,
-    DirectivePumpEvent,
     DoneEvent,
-    EstimateEvent,
     ForeignFileDetectedEvent,
     InferEndEvent,
     LogEvent,
     MaxIterationsEvent,
-    ResponderEvent,
-    ScaleEvent,
-    TaskGraphStartedEvent,
-    ToolScopeEvent,
-    VerifyEvent,
 )
 from ..permissions import PermissionCallback
 from ..session import Session
@@ -102,68 +95,23 @@ async def run_step(
 
         if isinstance(item, str):
             answer_chunks.append(item)
-        elif isinstance(item, EstimateEvent):
+            continue
+
+        # Telemetry-declaring events go straight to events-*.jsonl (see
+        # `AgentEvent.telemetry`). None of them render: `on_event` above
+        # already offered every item to the caller, and the TUI's handler
+        # recognizes none of these, so they are not TUI-visible.
+        if item.telemetry is not None:
             events.emit(
-                "estimate", session=session_id, turn=turn_id,
-                decision=item.decision, specialists=item.specialists,
-                duration_ms=item.duration_ms,
+                item.telemetry, session=session_id, turn=turn_id,
+                **item.telemetry_payload(),
             )
-        elif isinstance(item, TaskGraphStartedEvent):
-            events.emit(
-                "task_graph", session=session_id, turn=turn_id,
-                step_count=item.step_count, agents=item.agents,
-                verify_placements=item.verify_placements,
-                summary=item.summary, steps=item.steps,
-            )
-        elif isinstance(item, ScaleEvent):
-            # Telemetry only (plan 28 Phase 2) — events-*.jsonl via
-            # `EventLogger.emit`, same sink as `estimate`/`task_graph` above.
-            # `_on_event` above already re-emits it to the TUI's `on_event`
-            # like every other item, but the TUI's own handler doesn't
-            # recognize `ScaleEvent` (same as `EstimateEvent`/
-            # `TaskGraphStartedEvent`), so it renders nothing — not
-            # TUI-visible, per the event's docstring.
-            events.emit(
-                "scale", session=session_id, turn=turn_id,
-                component=item.component, default_tier=item.default_tier,
-                chosen_tier=item.chosen_tier, reason=item.reason,
-            )
-        elif isinstance(item, ToolScopeEvent):
-            # Telemetry only (plan 31 Phase 3) — same not-TUI-visible
-            # treatment as ScaleEvent above.
-            events.emit(
-                "tool_scope", session=session_id, turn=turn_id,
-                unit=item.unit, chosen_rung=item.chosen_rung, reason=item.reason,
-            )
-        elif isinstance(item, VerifyEvent):
-            # Telemetry only (same not-TUI-visible treatment as ScaleEvent above).
-            events.emit(
-                "verify", session=session_id, turn=turn_id,
-                step_index=item.step_index, agent=item.agent, ok=item.ok,
-                violation_count=item.violation_count, chosen_tier=item.chosen_tier,
-                duration_ms=item.duration_ms, gate=item.gate,
-            )
-        elif isinstance(item, DirectivePumpEvent):
-            # Telemetry only (plan 28 Phase 3, hard problem 3) — same
-            # not-TUI-visible treatment as ScaleEvent above.
-            events.emit(
-                "directive_pump", session=session_id, turn=turn_id,
-                domains=item.domains,
-            )
-        elif isinstance(item, ForeignFileDetectedEvent):
-            # Not telemetry-only: this is the trigger itself (plan 35 Phase
-            # 3) — `start_foreign_file_audit` does its own cache-check/call/
+
+        if isinstance(item, ForeignFileDetectedEvent):
+            # Not telemetry-only: this is the trigger itself —
+            # `start_foreign_file_audit` does its own cache-check/call/
             # swallow/telemetry, mirroring `start_directive_audit`.
             agent.start_foreign_file_audit(item.rel_path, item.text, on_directive_verdict)
-        elif isinstance(item, ResponderEvent):
-            # Telemetry only (mirrors ScaleEvent/DirectivePumpEvent above) —
-            # the TUI's event handler doesn't recognize ResponderEvent, so
-            # nothing renders for it; the turn's actual answer text (yielded
-            # separately, right after this event) is what the user sees.
-            events.emit(
-                "responder", session=session_id, turn=turn_id,
-                duration_ms=item.duration_ms, fell_back=item.fell_back,
-            )
         elif isinstance(item, LogEvent):
             if item.tool_name:
                 result.tool_counts[item.tool_name] = result.tool_counts.get(item.tool_name, 0) + 1

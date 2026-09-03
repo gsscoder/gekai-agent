@@ -2,51 +2,60 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
 import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 
-from agent.llm import Agent
-from agent.llm.errors import MaxIterationsExceeded
-from agent.llm.events import AgentStopped, DelegationCompleted, DelegationStarted, Event as LlmEvent, EventBus, TextChunkReceived, ThinkingChunkReceived, ToolExecutionCompleted, ToolExecutionStarted, UsageUpdated
-from agent.llm.providers.openai import OpenAIAdapter
-from agent.llm.types import Message, TextBlock, ThinkingBlock, ToolUseBlock
-
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-from ..directive_pump import pump as pump_directives
+from ..llm.errors import MaxIterationsExceeded
+from ..llm.events import Event as LlmEvent, EventBus
 from ..llm.model_caps import resolve_thinking_params
-from ..llm.tiers import TierName, TierPolicy
-from ..permissions import PermissionCallback, PermissionGate
+from ..llm.types import Message, TextBlock, ThinkingBlock
+from ..events import (
+    AgentEvent,
+    DirectivePumpEvent,
+    DiffEvent,
+    DoneEvent,
+    EstimateEvent,
+    MaxIterationsEvent,
+    ResponderEvent,
+    ScaleEvent,
+    SubAgentStartEvent,
+    TaskGraphHaltedEvent,
+    TaskGraphStartedEvent,
+    ToolScopeEvent,
+    VerifyEvent,
+)
+from ..permissions import PermissionCallback
 from ..persistence import append_debug
-from ..persona import ROOT_SYSTEM_PROMPT, render_tool_instruction
+from ..persona import ROOT_SYSTEM_PROMPT
 from ..pipeline.estimate import Estimator
 from ..pipeline.plan import Task, TaskGraph
 from ..pipeline.sequencer import Sequencer
 from ..pipeline.verifier import Verdict, Verifier
-from ..harness.interpreter import TaskGraphHalted, StepResult, run_task_graph
-from ..harness.scaling import WorkSignal, scale, _sequencer_signal
 from ..session import Session
-from ..settings import Permissions
 from ..text_format import clean_output
-from ..diff import build_diff
-from ..events import BudgetExhaustedEvent, DelegationDoneEvent, DelegationStartEvent, DirectivePumpEvent, DiffEvent, DoneEvent, EstimateEvent, ForeignFileDetectedEvent, InferEndEvent, LogEvent, MaxIterationsEvent, AgentEvent, ResponderEvent, ScaleEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, SubAgentStartEvent, TextChunkEvent, ThinkingTokenEvent, ToolScopeEvent, VerifyEvent
-from ..shell import resolve_shell
+from ..tiers.catalog import TierName, TierPolicy
+from ..tiers.resolve import ResolvedTier
 from ..subagents import SUBAGENTS, Subagent
-from ..tools import HiddenGrantCallback, make_tools
-from ..tools.delegate import DispatchContext, make_delegate_tool, run_subagent
+from ..tools import HiddenGrantCallback
+from .bridge import (
+    bridge_llm_event,
+    format_diff_summary,
+    maybe_flag_foreign_instruction_file,
+    truncate_diffs_block,
+)
+from . import dispatch
+from .dispatch import (
+    DispatchContext,
+    enrich_system_base,
+    gekai_md_system_base,
+    pumped_system_base,
+    run_subagent,
+)
+from .interpreter import TaskGraphHalted, StepResult, run_task_graph
+from .scaling import WorkSignal, scale, _sequencer_signal
 from .tool_scope import scope as tool_scope
-
-if TYPE_CHECKING:
-    # deferred: agent.llm.resolve imports agent.harness.touchpoints, which
-    # would otherwise cycle back through agent.harness's package __init__
-    # (`from .core import Harness`) before this module finishes loading.
-    # `from __future__ import annotations` (top of file) makes this
-    # type-checking-only import safe for the annotations below.
-    from ..llm.resolve import ResolvedTier
 
 _log = logging.getLogger(__name__)
 
@@ -54,230 +63,9 @@ _ROOT_COLOR = "#4169E1"
 _RECENCY_N = 2
 
 
-def _pumped_system_base(system_base: str) -> tuple[str, list[str]]:
-    """Dynamic-directive pump (plan 28 Phase 3, decision 12): appends the
-    escaping directives, unconditionally, for whichever call site invokes
-    this. Never called for a subagent dispatch — pumping is root-only
-    (decision 13, the specialist already carries its own directives)."""
-    text, domains = pump_directives()
-    if text:
-        system_base = f"{system_base}\n<domain_directives>\n{text}"
-    return system_base, domains
-
-
-def _gekai_md_system_base(system_base: str, session: Session) -> str:
-    """GEKAI.md injection (plan 35 Concept 1): root's own project-context
-    file, appended verbatim beside the domain-directive pump, under its own
-    `<project_instructions source="GEKAI.md">` tag so the model can always
-    tell the user's rules from Gekai's own `<directives>` block. Root-only
-    by construction, not by a flag: both call sites below only reach this
-    function from the `subagent is None` branch, mirroring exactly how
-    `_pumped_system_base` is root-only (decision 10 / plan 28 decision 13)
-    — a subagent's context is isolated by design, and project instructions
-    are precisely the channel that isolation exists to close.
-
-    The system base — not a simulated read-and-understand turn in message
-    history — is where this lives because message history is what
-    `/compact` evicts. A GEKAI.md seeded as a turn would silently stop
-    applying somewhere around turn 40 with no signal to anyone; the system
-    base is reassembled every turn and never falls out of the window.
-
-    No truncation, no normalization, no reordering (decision 1): if the
-    file is oversized that is a telemetry fact for later, not a silent
-    edit here. Nothing is appended when there is nothing to inject — same
-    "don't emit an empty tag" discipline as `_pumped_system_base`.
-    """
-    if session.gekai_md is None:
-        return system_base
-    return f'{system_base}\n<project_instructions source="GEKAI.md">\n{session.gekai_md.text}'
-
-
-def _enrich_system_base(system_base: str, working_dir: Path) -> str:
-    is_empty = not any(p for p in working_dir.iterdir() if p.name != ".gekai")
-    return system_base + (
-        f"\nworking root directory: {working_dir}"
-        f"\nfile tool paths are relative to this root"
-        f"\nthe directory name is only a label — do not infer requirements from it or use it to add unrequested features or complexity"
-        + ("\nthis directory is empty — do not create a redundant wrapper subdirectory mirroring the project name; package layout (src/, tests/, etc.) is fine" if is_empty else "")
-    )
-
-
 def _recency_turns(messages: list[dict], n: int) -> list[Message]:
     turns = [m for m in messages[:-1] if m["role"] in ("user", "assistant")]
     return [Message(role=m["role"], content=m["content"]) for m in turns[-(n * 2):]]
-
-
-def _fmt_tool_call(call: ToolUseBlock) -> str:
-    inp = call.input or {}
-    if call.name == "read_file":
-        return f"Read {inp.get('path', '')}"
-    if call.name == "list_files":
-        return f"List {inp.get('pattern', '')}"
-    if call.name == "grep":
-        pat = inp.get("pattern", "")
-        path = inp.get("path", "")
-        return f"Grep {pat}" + (f" in {path}" if path else "")
-    if call.name == "edit_file":
-        return f"Edit {inp.get('path', '')}"
-    if call.name == "write_file":
-        return f"Write {inp.get('path', '')}"
-    if call.name == "move_file":
-        return f"Move {inp.get('src', '')} → {inp.get('dst', '')}"
-    if call.name == "copy_file":
-        return f"Copy {inp.get('src', '')} → {inp.get('dst', '')}"
-    if call.name == "delete_file":
-        return f"Delete {inp.get('path', '')}"
-    if call.name == "make_dir":
-        return f"Mkdir {inp.get('path', '')}"
-    if call.name == "run_command":
-        return f"Run {inp.get('command', '')[:60]}"
-    return call.name.capitalize()
-
-
-_DEBUG_TRUNCATE_LIMIT = 1000
-
-
-def _truncate_debug_text(text: str) -> str:
-    if len(text) <= _DEBUG_TRUNCATE_LIMIT:
-        return text
-    return text[:_DEBUG_TRUNCATE_LIMIT] + f"…+{len(text) - _DEBUG_TRUNCATE_LIMIT} more chars"
-
-
-_DIFFS_BLOCK_CHAR_LIMIT = 8000
-
-
-def _format_diff_summary(event: DiffEvent) -> str:
-    """Renders a DiffEvent as compact plain text (add/del lines only) for
-    root's synthesis prompt, which needs a plain string, not the rich.Text
-    that `render_diff` (agent/diff.py) produces for TUI display."""
-    lines = [f"--- {event.path} ---"]
-    for dl in event.diff_lines:
-        if dl.kind == "add":
-            lines.append(f"+{dl.text}")
-        elif dl.kind == "del":
-            lines.append(f"-{dl.text}")
-    return "\n".join(lines)
-
-
-def _truncate_diffs_block(text: str) -> str:
-    if len(text) <= _DIFFS_BLOCK_CHAR_LIMIT:
-        return text
-    return text[:_DIFFS_BLOCK_CHAR_LIMIT] + "... (truncated)"
-
-
-def _fmt_debug_tool_input(call: ToolUseBlock) -> dict:
-    """Debug-log representation of a tool call's input.
-
-    write_file/edit_file inputs carry full file contents or old/new diff strings —
-    these are logged as path-only (the path is never truncated; it's always short and
-    is the only part of those inputs that's useful for debugging without bloating the
-    debug log with entire file bodies). All other tools get their full input dict,
-    JSON-serialized and truncated like any other debug text.
-    """
-    inp = call.input or {}
-    if call.name in ("write_file", "edit_file"):
-        return {"name": call.name, "path": inp.get("path", "")}
-    return {"name": call.name, "input": _truncate_debug_text(json.dumps(inp, default=str))}
-
-
-# Tool-calling rounds allowed per turn. `Agent`'s own default (10) is a
-# conservative library default; a turn here routinely spends rounds walking a
-# real repo — a single "explain this codebase" turn was observed spending all
-# ten on reads alone and never reaching an answer. Raised as harness policy so
-# the vendored default stays untouched. This is a ceiling, not a target: turns
-# that finish early still stop early, and the closing salvage call
-# (`Agent._salvage_kwargs`) still catches whatever does reach the ceiling.
-_MAX_ITERATIONS = 25
-
-
-def _build_agent(
-    resolved: ResolvedTier,
-    working_dir: Path,
-    permissions: Permissions,
-    permission_callback: PermissionCallback | None,
-    system_base: str,
-    bus: EventBus | None = None,
-    subagent: Subagent | None = None,
-    hidden_grant_callback: HiddenGrantCallback | None = None,
-    tools_override: frozenset[str] | None = None,
-    can_delegate: bool = True,
-) -> Agent:
-    if subagent and subagent.permissions is not None:
-        effective = Permissions(
-            read=permissions.read and subagent.permissions.read,
-            write=permissions.write and subagent.permissions.write,
-            exec=permissions.exec and subagent.permissions.exec,
-        )
-    else:
-        effective = permissions
-
-    selected = []
-    for t in make_tools(working_dir, grant_cb=hidden_grant_callback):
-        if subagent and subagent.tools is not None and t.name not in subagent.tools:
-            continue
-        perm = t.required_permission
-        if perm != "none" and not getattr(effective, perm, False) and permission_callback is None:
-            continue
-        selected.append(t)
-
-    if tools_override is not None:
-        selected = [t for t in selected if t.name in tools_override]
-
-    # `delegate` is declared, not ambient (plan-delegate-reintroduction Phase
-    # 3): only a subagent (never root — `subagent is None` excludes it by
-    # construction, no redundant check needed) that names targets in its own
-    # `delegates_to` gets the tool, and only when this build is itself
-    # allowed to delegate (`can_delegate`, the depth-1 cap — a subagent
-    # reached via delegation is always built with `can_delegate=False`, see
-    # `tools/delegate.py`'s `run_subagent`). Appended straight to `selected`
-    # after the `tools_override` filter above, never through `make_tools()`
-    # — `delegate` is not a filesystem/shell rung and must stay out of
-    # `tools/catalog.py`. `parent_tools` captures this build's own selected
-    # tool-name set (pre-delegate) so the child's effective grant can only
-    # ever be tightened, never widened, past it (tighten-only invariant).
-    if subagent is not None and subagent.delegates_to and can_delegate:
-        selected = selected + [make_delegate_tool(
-            subagent.delegates_to,
-            DispatchContext(
-                model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base,
-                extra_params=resolved.extra_params, working_dir=working_dir,
-                permissions=permissions, permission_callback=permission_callback,
-                bus=bus, hidden_grant_callback=hidden_grant_callback,
-            ),
-            frozenset(t.name for t in selected),
-        )]
-
-    system = f"{system_base}\n<tools>\n{render_tool_instruction([t.name for t in selected], shell_kind=resolve_shell().kind)}"
-
-    max_iterations = (
-        subagent.max_iterations
-        if subagent is not None and subagent.max_iterations is not None
-        else _MAX_ITERATIONS
-    )
-    adapter = OpenAIAdapter(api_key=resolved.api_key, base_url=resolved.api_base)
-    agent = Agent(
-        provider=adapter,
-        model=resolved.model,
-        system=system,
-        event_bus=bus,
-        extra_params=resolved.extra_params,
-        max_iterations=max_iterations,
-    )
-    for t in selected:
-        agent.tools.register(t)
-    agent.tools.set_gate(PermissionGate(
-        permissions=effective,
-        on_request=permission_callback,
-    ))
-
-    # Root still never receives `delegate` — it stays a pure work-operator;
-    # the harness (sequencer + interpreter) owns all cross-agent control flow
-    # for root's own dispatches (plan 27 decision 11, superseding plan 25's
-    # agents-as-tools). Subagent-level delegation, wired above, is a
-    # separate, bounded axis layered on top of that invariant, not a
-    # reversal of it: declared per-unit (`delegates_to`), depth-capped at 1,
-    # and tighten-only on tool capability.
-    return agent
 
 
 class Harness:
@@ -312,16 +100,7 @@ class Harness:
         self._subagent_dispatch_policy = subagent_dispatch_policy
         self._verifier_policy = verifier_policy
         self._verbose_telemetry = verbose_telemetry
-        self._estimator = (
-            Estimator(
-                model=estimator.model,
-                api_key=estimator.api_key,
-                api_base=estimator.api_base,
-                extra_params=estimator.extra_params,
-            )
-            if estimator is not None
-            else None
-        )
+        self._estimator = Estimator(estimator) if estimator is not None else None
         # `Sequencer` is no longer built once here: the sequencer's tier is
         # chosen per `_stream_graph()` call (pre-plan signal), so it is
         # constructed fresh there, against a freshly resolved tier.
@@ -331,36 +110,31 @@ class Harness:
         session: Session,
         user_input: str,
         permission_callback: PermissionCallback | None = None,
-        subagent: Subagent | None = None,
-        extra_params: dict | None = None,
         hidden_grant_callback: HiddenGrantCallback | None = None,
         seed: str | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
 
-        estimate_decision = "skipped"
+        subagent: Subagent | None = None
         estimate_duration_ms = 0
-        if subagent is None:
-            if seed is not None:
-                # Explicit slash-alias dispatch (e.g. `/refactor ...`): a
-                # single task action bound to this session, not a mutation
-                # for the sequencer to plan. Bypasses the sequencer/task
-                # graph entirely and resolves straight to a cold-ish
-                # subagent run below — this is the only way `stream()`'s own
-                # `subagent` local ever gets bound (delegate.py's
-                # `run_subagent` builds its own `Agent` and never calls
-                # `stream()`).
-                estimate_decision = "dispatch"
-                subagent = next((s for s in SUBAGENTS if s.name == seed), None)
-                if subagent is None:
-                    raise ValueError(f"unknown seed agent {seed!r}")
-            elif self._estimator is not None:
-                t0 = time.monotonic()
-                estimate = await self._estimator.estimate(user_input, history=session.messages)
-                estimate_duration_ms = round((time.monotonic() - t0) * 1000)
-                estimate_decision = estimate.scope
-            else:
-                estimate_decision = "solo"  # no estimator wired — safest default, no planning
+        if seed is not None:
+            # Explicit slash-alias dispatch (e.g. `/refactor ...`): a single
+            # task action bound to this session, not a mutation for the
+            # sequencer to plan. Bypasses the sequencer/task graph entirely
+            # and resolves straight to a cold-ish subagent run below — this
+            # is the only way `subagent` here ever gets bound (delegate.py's
+            # `run_subagent` builds its own `Agent` and never calls this).
+            estimate_decision = "dispatch"
+            subagent = next((s for s in SUBAGENTS if s.name == seed), None)
+            if subagent is None:
+                raise ValueError(f"unknown seed agent {seed!r}")
+        elif self._estimator is not None:
+            t0 = time.monotonic()
+            estimate = await self._estimator.estimate(user_input, history=session.messages)
+            estimate_duration_ms = round((time.monotonic() - t0) * 1000)
+            estimate_decision = estimate.scope
+        else:
+            estimate_decision = "solo"  # no estimator wired — safest default, no planning
         yield EstimateEvent(decision=estimate_decision, specialists=[], duration_ms=estimate_duration_ms)
 
         if estimate_decision == "mutate":
@@ -371,7 +145,7 @@ class Harness:
             return
 
         async for item in self._stream_solo(
-            session, user_input, permission_callback, subagent, extra_params,
+            session, user_input, permission_callback, subagent,
             hidden_grant_callback, bus, chat_rung=(estimate_decision == "chat"),
         ):
             yield item
@@ -382,7 +156,6 @@ class Harness:
         user_input: str,
         permission_callback: PermissionCallback | None,
         subagent: Subagent | None,
-        extra_params: dict | None,
         hidden_grant_callback: HiddenGrantCallback | None,
         bus: EventBus,
         *,
@@ -408,26 +181,20 @@ class Harness:
         if subagent is None:
             system_base = ROOT_SYSTEM_PROMPT
             if not chat_rung:
-                system_base, pumped_domains = _pumped_system_base(system_base)
-            system_base = _gekai_md_system_base(system_base, session)
+                system_base, pumped_domains = pumped_system_base(system_base)
+            system_base = gekai_md_system_base(system_base, session)
         else:
             system_base = subagent.build_system_base()
-        system_base = _enrich_system_base(system_base, session.working_dir)
+        system_base = enrich_system_base(system_base, session.working_dir)
         if pumped_domains:
             yield DirectivePumpEvent(domains=pumped_domains)
 
         root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
-        if extra_params is not None:
-            effective_extra_params = extra_params
-        elif chat_rung:
-            # Estimator's chat rung (plan 33): strip reasoning params on
-            # chit-chat. Formerly keyed off the now-deleted Gate/Route's
-            # `trivial` flag (plan 33 Phase 2 merged that axis into the
-            # Estimator; Phase 3 deleted Gate entirely). A bare `{}` here
-            # is "unspecified", which providers like DeepSeek default to
-            # reasoning ON (plan 34 phase 1's fix, applied here too) — so
-            # this must resolve to root's model's explicit-disable payload,
-            # not an empty dict.
+        if chat_rung:
+            # The chat rung strips reasoning params on chit-chat. A bare `{}`
+            # here is "unspecified", which providers like DeepSeek default to
+            # reasoning ON — so this must resolve to root's model's explicit-
+            # disable payload, not an empty dict.
             effective_extra_params = resolve_thinking_params(root_dispatch_resolved.model, enabled=False)
         else:
             effective_extra_params = root_dispatch_resolved.extra_params
@@ -448,7 +215,7 @@ class Harness:
             tools_override, _scope_reason = tool_scope(subagent.tool_policy, None)
         else:
             tools_override = None
-        agent = _build_agent(
+        agent = dispatch.build_agent(
             dataclasses.replace(root_dispatch_resolved, extra_params=effective_extra_params),
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
@@ -458,15 +225,14 @@ class Harness:
         if self._verbose_telemetry:
             append_debug(session, {"content": {"system": agent.system, "extra_params": effective_extra_params}})
 
-        queue: asyncio.Queue[
-            LogEvent | DiffEvent | InferEndEvent | ThinkingTokenEvent | TextChunkEvent | BudgetExhaustedEvent
-            | DelegationStartEvent | DelegationDoneEvent | ForeignFileDetectedEvent | None
-        ] = asyncio.Queue()
+        # `None` is the sentinel `bridge_llm_event` pushes when this run's own
+        # `AgentStopped` arrives, ending the consumption loop below.
+        queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
         files_touched: list[str] = []
         root_run_id = uuid.uuid4().hex
 
         def _on_event(event: LlmEvent) -> None:
-            _bridge_llm_event(
+            bridge_llm_event(
                 event, queue, session, files_touched, self._verbose_telemetry, root_run_id,
                 emit_text_chunks=subagent is None,
             )
@@ -475,7 +241,7 @@ class Harness:
             # involved) — a specialist's incidental `read_file` must never
             # raise this, only a root dispatch the user is actually driving.
             if subagent is None:
-                _maybe_flag_foreign_instruction_file(event, queue)
+                maybe_flag_foreign_instruction_file(event, queue)
 
         if emit_start_event:
             yield SubAgentStartEvent(
@@ -550,7 +316,7 @@ class Harness:
         all_diff_events: list[DiffEvent] = []
 
         # Per-dispatch diff/mutation tracking for the verifier gate (below):
-        # populated SYNCHRONOUSLY inside `_bridge_llm_event`, called directly
+        # populated SYNCHRONOUSLY inside `bridge_llm_event`, called directly
         # by `bus.emit()` — unlike `all_diff_events` above, which only fills
         # up as this generator's own consumption loop drains `queue` at its
         # own pace, racing against `graph_task`. `dispatch()` awaits the
@@ -561,7 +327,7 @@ class Harness:
         dispatch_mutation_count: list[int] = [0]
 
         def _on_event(event: LlmEvent) -> None:
-            _bridge_llm_event(
+            bridge_llm_event(
                 event, queue, session, files_touched, self._verbose_telemetry, run_id=None,
                 diff_sink=dispatch_diff_sink, mutation_count=dispatch_mutation_count,
             )
@@ -587,10 +353,7 @@ class Harness:
                 chosen_tier=sequencer_tier.value,
                 reason=sequencer_reason,
             )
-        sequencer = Sequencer(
-            model=resolved_sequencer.model, api_key=resolved_sequencer.api_key,
-            api_base=resolved_sequencer.api_base, extra_params=resolved_sequencer.extra_params,
-        )
+        sequencer = Sequencer(resolved_sequencer)
 
         try:
             graph = await sequencer.sequence(user_input)
@@ -598,7 +361,7 @@ class Harness:
             unsubscribe()
             _log.warning("sequencer failed to produce a valid task graph; falling back to solo: %s", exc)
             async for item in self._stream_solo(
-                session, user_input, permission_callback, None, None,
+                session, user_input, permission_callback, None,
                 hidden_grant_callback, bus, chat_rung=False, emit_start_event=False,
             ):
                 yield item
@@ -690,7 +453,7 @@ class Harness:
                     ))
                 return Verdict(ok=True, violations=[])
 
-            diff_text = "\n\n".join(_format_diff_summary(d) for d in coding_diffs)
+            diff_text = "\n\n".join(format_diff_summary(d) for d in coding_diffs)
             signal = WorkSignal(retry=attempt)  # attempt 0 -> SUPP (default), attempt 1 (re-check after repair) -> promoted toward CORE
             tier, reason = scale(self._verifier_policy, signal)
             resolved = self._resolve(tier, "verifier")
@@ -699,7 +462,7 @@ class Harness:
                     component="verifier", default_tier=self._verifier_policy.default.value,
                     chosen_tier=tier.value, reason=reason,
                 ))
-            verifier = Verifier(model=resolved.model, api_key=resolved.api_key, api_base=resolved.api_base, extra_params=resolved.extra_params)
+            verifier = Verifier(resolved)
             start = time.monotonic()
             verdict = await verifier.verify(
                 user_input=user_input, step_instruction=step.instruction,
@@ -724,13 +487,13 @@ class Harness:
                 except asyncio.TimeoutError:
                     continue
                 if isinstance(item, DiffEvent):
-                    diff_summaries.append(_format_diff_summary(item))
+                    diff_summaries.append(format_diff_summary(item))
                     all_diff_events.append(item)
                 yield item
             while not queue.empty():
                 item = queue.get_nowait()
                 if isinstance(item, DiffEvent):
-                    diff_summaries.append(_format_diff_summary(item))
+                    diff_summaries.append(format_diff_summary(item))
                     all_diff_events.append(item)
                 yield item
 
@@ -786,10 +549,10 @@ class Harness:
         t0 = time.monotonic()
         try:
             resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
-            system_base, _pumped_domains = _pumped_system_base(ROOT_SYSTEM_PROMPT)
-            system_base = _gekai_md_system_base(system_base, session)
-            system_base = _enrich_system_base(system_base, session.working_dir)
-            agent = _build_agent(
+            system_base, _pumped_domains = pumped_system_base(ROOT_SYSTEM_PROMPT)
+            system_base = gekai_md_system_base(system_base, session)
+            system_base = enrich_system_base(system_base, session.working_dir)
+            agent = dispatch.build_agent(
                 resolved,
                 session.working_dir, session.permissions, permission_callback, system_base,
                 hidden_grant_callback=hidden_grant_callback,
@@ -798,7 +561,7 @@ class Harness:
                 f"--- step {i + 1} output ---\n{r.output}" for i, r in enumerate(results)
             )
             files_touched_line = f"files actually modified this turn: {', '.join(files_touched) if files_touched else '(none)'}"
-            diffs_block = _truncate_diffs_block(
+            diffs_block = truncate_diffs_block(
                 "\n\n".join(diff_summaries) if diff_summaries else "(no diffs captured)"
             )
             if halted is None:
@@ -849,33 +612,6 @@ class Harness:
             return recap, ResponderEvent(duration_ms=round((time.monotonic() - t0) * 1000), fell_back=True)
 
 
-def _maybe_flag_foreign_instruction_file(event: LlmEvent, queue: asyncio.Queue) -> None:
-    """Plan 35 v3's foreign-file trigger, hung off the same
-    `ToolExecutionCompleted` moment `_bridge_llm_event` already reacts to
-    for `edit_file`/`write_file` — kept as its own function rather than a
-    branch inside `_bridge_llm_event` because that function is shared with
-    the graph path's cold subagent steps (`_stream_graph`'s own
-    `_on_event`), which must never reach here (decision 11); the caller
-    only invokes this under its own `subagent is None` guard.
-
-    Markdown-only, no prefilter (v3 deletes the regex prefilter — decision
-    5): every root-dispatched `.md` `read_file` result fires a
-    `ForeignFileDetectedEvent` unconditionally; the one cheap LLM question
-    (`agent.directive_audit.Auditor`) is the only judgment left, downstream.
-    Whether the audit is even enabled is checked once, downstream, in
-    `GekaiAgent.start_foreign_file_audit` — the same place GEKAI.md's own
-    audit already checks it; not duplicated here.
-    """
-    if not isinstance(event, ToolExecutionCompleted):
-        return
-    if event.result.is_error or event.call.name != "read_file":
-        return
-    path = (event.call.input or {}).get("path", "")
-    if not path.lower().endswith(".md"):
-        return
-    queue.put_nowait(ForeignFileDetectedEvent(rel_path=path, text=event.result.content))
-
-
 def _last_assistant_text(history: list[Message]) -> str:
     for msg in reversed(history):
         if msg.role == "assistant":
@@ -901,131 +637,3 @@ def _recap(graph: TaskGraph, *, halted: TaskGraphHalted | None) -> str:
         f"{last_output_line}"
         "prior steps' work is kept; nothing was rolled back."
     )
-
-
-def _bridge_llm_event(
-    event: LlmEvent,
-    queue: asyncio.Queue,
-    session: Session,
-    files_touched: list[str],
-    verbose_telemetry: bool,
-    run_id: str | None,
-    *,
-    emit_text_chunks: bool = False,
-    diff_sink: list[DiffEvent] | None = None,
-    mutation_count: list[int] | None = None,
-) -> None:
-    """Shared bus->queue bridge for both the single-agent path and the
-    plan-interpreter path — tool/diff/thinking/delegation rendering is one
-    implementation, not duplicated per path.
-
-    `emit_text_chunks` (plan 34 Phase 2): only the no-graph direct-dispatch
-    caller (`Harness.stream`) passes `True` here. The graph path
-    (`_stream_graph`'s `dispatch()`) leaves it at the default `False` so a
-    graph-routed step's streamed answer text — which would otherwise
-    interleave with `LogEvent`/`DiffEvent` in a multi-step transcript — never
-    reaches the TUI as a `TextChunkEvent`. Display-only either way: the
-    persisted answer always comes from the assembled response, never from
-    these chunks.
-
-    `diff_sink`/`mutation_count` (verifier gate, graph path only): mirrors of
-    `queue.put_nowait`/`files_touched.append` that a caller can read
-    synchronously right after `await`-ing the dispatch that produced them —
-    unlike `queue`, which a separate consumer drains at its own pace, and
-    `files_touched`, which dedupes across the whole turn so a second touch of
-    an already-known path is invisible. Both default to `None`
-    (`Harness.stream`'s single-agent path has no per-dispatch boundary to
-    track against, so it never passes them)."""
-    _SINGLE_PATH_TOOLS = ("write_file", "edit_file", "make_dir", "delete_file")
-    _DUAL_PATH_TOOLS = ("move_file", "copy_file")
-
-    if isinstance(event, ToolExecutionStarted):
-        queue.put_nowait(LogEvent(message=_fmt_tool_call(event.call), tool_name=event.call.name))
-        if verbose_telemetry:
-            append_debug(session, {"content": {"tool_call": _fmt_debug_tool_input(event.call)}})
-    elif isinstance(event, ToolExecutionCompleted):
-        # A tool can fail without raising — e.g. `edit_file`'s atomic `edits`
-        # batch writes nothing and returns an "error: ..." string when any
-        # one hunk doesn't apply — so `is_error` alone under-detects failure;
-        # every failure path in agent/tools/files.py returns that prefix.
-        succeeded = not event.result.is_error and not event.result.content.startswith("error:")
-        if succeeded:
-            if event.call.name == "edit_file":
-                inp = event.call.input or {}
-                path = inp.get("path", "")
-                edits = inp.get("edits")
-                if edits:
-                    for hunk in edits:
-                        hunk_old = hunk.get("old_str", "")
-                        hunk_new = hunk.get("new_str", "")
-                        if hunk_old != hunk_new:
-                            diff_lines = build_diff(hunk_old, hunk_new)
-                            diff_event = DiffEvent(path=path, diff_lines=diff_lines, via="edit_file")
-                            queue.put_nowait(diff_event)
-                            if diff_sink is not None:
-                                diff_sink.append(diff_event)
-                else:
-                    old_str = inp.get("old_str", "")
-                    new_str = inp.get("new_str", "")
-                    if old_str != new_str:
-                        diff_lines = build_diff(old_str, new_str)
-                        diff_event = DiffEvent(path=path, diff_lines=diff_lines, via="edit_file")
-                        queue.put_nowait(diff_event)
-                        if diff_sink is not None:
-                            diff_sink.append(diff_event)
-            elif event.call.name == "write_file":
-                inp = event.call.input or {}
-                content = inp.get("content", "")
-                if content:
-                    diff_lines = build_diff("", content)
-                    via = "overwrite" if event.result.content.startswith("ok: overwritten") else "write_file"
-                    diff_event = DiffEvent(path=inp.get("path", ""), diff_lines=diff_lines, via=via)
-                    queue.put_nowait(diff_event)
-                    if diff_sink is not None:
-                        diff_sink.append(diff_event)
-            inp = event.call.input or {}
-            if event.call.name in _SINGLE_PATH_TOOLS:
-                path = inp.get("path", "")
-                if path:
-                    if mutation_count is not None:
-                        mutation_count[0] += 1
-                    if path not in files_touched:
-                        files_touched.append(path)
-            elif event.call.name in _DUAL_PATH_TOOLS:
-                for path in (inp.get("src", ""), inp.get("dst", "")):
-                    if path:
-                        if mutation_count is not None:
-                            mutation_count[0] += 1
-                        if path not in files_touched:
-                            files_touched.append(path)
-        if verbose_telemetry:
-            append_debug(session, {
-                "content": {
-                    "tool_result": {
-                        "name": event.call.name,
-                        "duration_s": round(event.duration_s, 3),
-                        "is_error": event.result.is_error,
-                        "result": _truncate_debug_text(event.result.content),
-                    }
-                }
-            })
-    elif isinstance(event, UsageUpdated) and event.delta:
-        queue.put_nowait(InferEndEvent(
-            prompt_tokens=event.delta.get("input_tokens"),
-            completion_tokens=event.delta.get("output_tokens"),
-        ))
-    elif isinstance(event, ThinkingChunkReceived):
-        queue.put_nowait(ThinkingTokenEvent(text=event.text))
-    elif isinstance(event, TextChunkReceived):
-        if emit_text_chunks:
-            queue.put_nowait(TextChunkEvent(text=event.text))
-    elif isinstance(event, DelegationStarted):
-        queue.put_nowait(DelegationStartEvent(agent_name=event.agent, task=event.task, mission=event.mission))
-    elif isinstance(event, DelegationCompleted):
-        queue.put_nowait(DelegationDoneEvent(agent_name=event.agent))
-    elif isinstance(event, AgentStopped) and run_id is not None:
-        if event.run_id != run_id:
-            return  # a nested run's own completion — not ours
-        if event.budget_exhausted:
-            queue.put_nowait(BudgetExhaustedEvent())
-        queue.put_nowait(None)

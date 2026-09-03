@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .llm.resolve import ResolvedTier
-from .openai_client import build_openai_client
+from .tiers.resolve import ResolvedTier
+from .oneshot import complete
 from .persona import ROOT_SYSTEM_PROMPT
 from .session import Session
 
@@ -60,25 +60,19 @@ async def summarize(messages: list[dict], tier: ResolvedTier, instructions: str 
     The original leading system message, if any, is dropped and replaced by
     the summarization prompt — the model summarizes the transcript, it does
     not continue it. Exceptions propagate; callers handle failure."""
-    client = build_openai_client(tier.api_key, tier.api_base)
-
     prompt = _SUMMARIZE_PROMPT
     if instructions:
         prompt += f"\n\nAdditional Instructions:\n{instructions}"
 
     transcript = messages[1:] if messages and messages[0]["role"] == "system" else messages
 
-    response = await client.chat.completions.create(
-        model=tier.model,
+    return (await complete(
+        tier,
+        system=prompt,
+        user="Produce the summary now.",
+        context=transcript,
         temperature=0,
-        messages=[
-            {"role": "system", "content": prompt},
-            *transcript,
-            {"role": "user", "content": "Produce the summary now."},
-        ],
-        **tier.extra_params,
-    )
-    return response.choices[0].message.content.strip()
+    )).strip()
 
 
 def apply_summary(session: Session, summary: str) -> None:

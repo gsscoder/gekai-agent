@@ -14,21 +14,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.harness import dispatch as harness_dispatch
 from agent.events import DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent, VerifyEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
+from agent.harness.touchpoints import resolve_at_tier
 from agent.llm import model_caps
 from agent.llm.events import ToolExecutionCompleted
 from agent.llm.model_caps import MODEL_CAPS, ModelCaps
-from agent.llm.resolve import ResolvedTier, resolve_tier
-from agent.llm.tiers import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierPolicy
+from agent.tiers.resolve import ResolvedTier, resolve_tier
+from agent.tiers.catalog import EFFORT_LADDER, ModelCatalogEntry, TierBinding, TierName, TierPolicy
 from agent.llm.types import CompletionResponse, Message, StreamDone, TextBlock, ToolResultBlock, ToolUseBlock
 from agent.pipeline.estimate import ScopeEstimate
 from agent.pipeline.plan import Task, TaskGraph
 from agent.pipeline.sequencer import Sequencer
 from agent.pipeline.verifier import Verdict
 from agent.session import Session
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.tools.catalog import ALL_TOOLS, RUNGS
 
 
@@ -118,7 +120,7 @@ def _make_scaling_harness(resolve: Callable[[TierName, str], ResolvedTier]) -> H
     a flat one, so scaling tests can tell which tier a dispatch used."""
     policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
     estimator_tier = ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={})
-    with patch("agent.harness.core.OpenAIAdapter"):
+    with patch("agent.harness.dispatch.OpenAIAdapter"):
         harness = Harness(
             resolve=resolve,
             sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
@@ -158,13 +160,16 @@ class _RecordingAdapter:
 
 def _capturing_sequencer_init(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     """Replaces `Sequencer.__init__` with one that records its kwargs instead
-    of building a real `AsyncOpenAI` client, so a test can assert which
+    of building a client, so a test can assert which
     resolved tier's config the sequencer's freshly-built `Sequencer` (built
     per `_stream_graph()` call, plan 28 Phase 2) actually received."""
     calls: list[dict] = []
 
-    def _init(self, model, api_key=None, api_base=None, extra_params=None) -> None:
-        calls.append({"model": model, "api_key": api_key, "api_base": api_base, "extra_params": extra_params})
+    def _init(self, tier) -> None:
+        calls.append({
+            "model": tier.model, "api_key": tier.api_key,
+            "api_base": tier.api_base, "extra_params": tier.extra_params,
+        })
 
     monkeypatch.setattr(Sequencer, "__init__", _init)
     return calls
@@ -178,7 +183,7 @@ def test_trivial_estimate_skips_sequencer(monkeypatch: pytest.MonkeyPatch, tmp_p
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn"),
     ]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "sum 10 numbers"))
@@ -231,7 +236,7 @@ def test_seed_dispatches_directly_without_sequencer_or_estimator(
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
     ]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "add coverage", seed="test-expert"))
@@ -259,7 +264,7 @@ def test_seed_dispatch_of_non_auto_assignable_code_refactorer_succeeds(
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="refactored")], stop_reason="end_turn"),
     ]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "clean this up", seed="code-refactorer"))
@@ -281,7 +286,7 @@ def test_seed_dispatch_of_non_auto_assignable_test_fixer_succeeds(
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="fixed")], stop_reason="end_turn"),
     ]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "fix the failing test", seed="test-fixer"))
@@ -304,7 +309,7 @@ def test_seed_dispatch_of_non_auto_assignable_complexity_remover_succeeds(
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="simplified")], stop_reason="end_turn"),
     ]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "prune the dead code", seed="complexity-remover"))
@@ -349,7 +354,7 @@ def test_sequencer_value_error_falls_back_to_solo_answer(
     _ScriptedAdapter.responses = [
         CompletionResponse(content=[TextBlock(text="solo answer")], stop_reason="end_turn"),
     ]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "get context on the banking pane cause I'm about to ask for a change"))
@@ -392,7 +397,7 @@ def test_mechanical_verify_promotes_only_its_own_step_not_the_next(
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _RecordingAdapter)
 
     session = _make_session(tmp_path)
     # Contains "and"/"both" -> `_sequencer_signal` stays neutral (keeps the
@@ -432,7 +437,7 @@ def test_seed_dispatch_never_constructs_a_sequencer(monkeypatch: pytest.MonkeyPa
     _patch_sequencer_sequence(monkeypatch, plan_mock)
 
     _RecordingAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _RecordingAdapter)
 
     session = _make_session(tmp_path)
     prompt = "rename this variable"
@@ -462,7 +467,7 @@ def test_sequencer_stays_at_core_on_multi_clause_request(monkeypatch: pytest.Mon
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _RecordingAdapter)
 
     session = _make_session(tmp_path)
     prompt = "add a login endpoint and write tests for it"
@@ -496,12 +501,12 @@ def test_each_touchpoint_resolves_at_its_own_operating_point(
     # fixture ids aren't real DeepSeek ids, so give "core-model" its own
     # fold-down entry to keep this test's model-agnostic intent.
     monkeypatch.setitem(model_caps._EFFORT_TO_PARAMS, "core-model", {"max": {"reasoning_effort": "max"}})
-    monkeypatch.setattr("agent.llm.resolve.credentials.has_api_key", lambda name: True)
-    monkeypatch.setattr("agent.llm.resolve.credentials.get_api_key", lambda name: "key")
+    monkeypatch.setattr("agent.tiers.resolve.credentials.has_api_key", lambda name: True)
+    monkeypatch.setattr("agent.tiers.resolve.credentials.get_api_key", lambda name: "key")
     resolved_at: list[tuple[str, str, dict]] = []
 
     def _resolve(tier: TierName, touchpoint_name: str) -> ResolvedTier:
-        resolved = resolve_tier(tier, catalog, bindings, touchpoint_name)
+        resolved = resolve_at_tier(tier, touchpoint_name, catalog, bindings)
         resolved_at.append((touchpoint_name, resolved.model, resolved.extra_params))
         return resolved
 
@@ -515,7 +520,7 @@ def test_each_touchpoint_resolves_at_its_own_operating_point(
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
 
     _RecordingAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _RecordingAdapter)
 
     session = _make_session(tmp_path)
     run(_drain(harness, session, "add a login endpoint and write tests for it"))
@@ -548,7 +553,7 @@ def test_single_agent_path_never_scales_or_emits_scale_event(
     _patch_sequencer_sequence(monkeypatch, plan_mock)
 
     _RecordingAdapter.instances = []
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _RecordingAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _RecordingAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "sum 10 numbers"))
@@ -590,7 +595,7 @@ def _spy_build_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         calls.append(kwargs)
         return _fake_history_agent()
 
-    monkeypatch.setattr(harness_core, "_build_agent", _fake)
+    monkeypatch.setattr(harness_dispatch, "build_agent", _fake)
     return calls
 
 
@@ -609,7 +614,7 @@ def test_graph_step_scope_read_excludes_write_tools_for_full_ceiling_agent(
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
-    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "read stuff"))
@@ -641,7 +646,7 @@ def test_graph_step_dispatch_forwards_can_delegate_true_to_build_agent(
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
-    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     run(_drain(harness, session, "audit stuff"))
@@ -662,7 +667,7 @@ def test_graph_step_scope_fs_gets_full_tools_for_full_ceiling_agent(
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
-    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "do anything"))
@@ -689,7 +694,7 @@ def test_graph_step_scope_none_gets_full_tools_for_full_ceiling_agent(
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
-    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "do it"))
@@ -712,7 +717,7 @@ def test_graph_step_scope_read_excludes_write_tools_for_subagent(
     )
     _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
     calls = _spy_build_agent(monkeypatch)
-    monkeypatch.setattr(harness_core, "_enrich_system_base", lambda base, working_dir: base)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
 
     session = _make_session(tmp_path)
     collected = run(_drain(harness, session, "read stuff"))

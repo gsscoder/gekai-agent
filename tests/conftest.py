@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from dotenv import load_dotenv
 
-from agent.llm.tiers import ModelCatalogEntry, TierBinding, TierName
+from agent.tiers.catalog import ModelCatalogEntry, TierBinding, TierName
+from agent.tiers.resolve import ResolvedTier
 
 load_dotenv(Path(__file__).parent / ".env.test", override=True)
 
@@ -19,6 +21,22 @@ def run(coro):
 def mock_llm_response(text: str | None) -> SimpleNamespace:
     choice = SimpleNamespace(message=SimpleNamespace(content=text))
     return SimpleNamespace(choices=[choice])
+
+
+@pytest.fixture
+def llm_create():
+    """Stubs the one client `agent.oneshot.complete` builds, yielding the
+    `chat.completions.create` mock so a test can set its return value or
+    side effect and then assert on the call it received."""
+    create = AsyncMock(return_value=mock_llm_response(""))
+    with patch("agent.oneshot.build_client") as mock_build:
+        mock_build.return_value.chat.completions.create = create
+        yield create
+
+
+ONESHOT_TIER = ResolvedTier(
+    model="test-model", api_key="key", api_base="http://localhost", extra_params={},
+)
 
 
 TIER_CATALOG = {

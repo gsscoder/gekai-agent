@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from typing import ClassVar
 
 
 @dataclass
 class AgentEvent:
-    pass
+    # When set, this event is telemetry: `harness/turn.py` forwards it to
+    # events-*.jsonl under this name, with its fields as the payload, instead
+    # of each event needing a hand-written emit call. A field opts out of the
+    # payload with `metadata={"telemetry": False}`.
+    telemetry: ClassVar[str | None] = None
+
+    def telemetry_payload(self) -> dict:
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if f.metadata.get("telemetry", True)
+        }
 
 
 @dataclass
@@ -99,6 +111,7 @@ class BudgetExhaustedEvent(AgentEvent):
 @dataclass
 class EstimateEvent(AgentEvent):
     """Result of the trivial-vs-mutate scope estimate (plan 27 improvement 5)."""
+    telemetry: ClassVar[str] = "estimate"
     decision: str = ""  # "chat" | "solo" | "mutate" | "dispatch" | "skipped"
     specialists: list[str] = field(default_factory=list)
     duration_ms: int = 0
@@ -107,6 +120,7 @@ class EstimateEvent(AgentEvent):
 @dataclass
 class TaskGraphStartedEvent(AgentEvent):
     """Telemetry: the sequencer produced a validated task graph (plan 27 improvement 6)."""
+    telemetry: ClassVar[str] = "task_graph"
     step_count: int = 0
     agents: list[str] = field(default_factory=list)
     verify_placements: int = 0
@@ -128,6 +142,7 @@ class ScaleEvent(AgentEvent):
     """Telemetry only (plan 28 Phase 2, hard problem 4): emitted to events-*.jsonl
     when the harness moves a component off its configured default tier for one
     dispatch. Never emitted on a no-op (chosen_tier == default_tier)."""
+    telemetry: ClassVar[str] = "scale"
     component: str = ""      # e.g. "root-dispatch" | "subagent-dispatch" | "sequencer"
     default_tier: str = ""   # e.g. "supp"
     chosen_tier: str = ""    # e.g. "core"
@@ -140,6 +155,7 @@ class ToolScopeEvent(AgentEvent):
     assignment-time tool scoping (`harness/tool_scope.py`) narrows a unit's
     tool grant below its `ToolPolicy` ceiling for one dispatch. Never
     emitted on a no-op (chosen_rung == "default")."""
+    telemetry: ClassVar[str] = "tool_scope"
     unit: str = ""            # e.g. "root" | "subagent-dispatch"
     chosen_rung: str = ""     # e.g. "read" | "edit" | "fs"
     reason: str = ""
@@ -150,6 +166,7 @@ class DirectivePumpEvent(AgentEvent):
     """Telemetry only (plan 28 Phase 3, hard problem 3): emitted when the
     harness pumps domain-craft directives into root's system prompt for one
     dispatch. Never emitted when no domain was detected (empty pump)."""
+    telemetry: ClassVar[str] = "directive_pump"
     domains: list[str] = field(default_factory=list)
 
 
@@ -184,11 +201,12 @@ class VerifyEvent(AgentEvent):
     """Telemetry only: emitted when the coding-step verifier actually ran
     (gate-skipped steps — e.g. pure filesystem scaffolding — emit nothing,
     same never-emitted-on-no-op convention as ScaleEvent/ToolScopeEvent)."""
+    telemetry: ClassVar[str] = "verify"
     step_index: int = 0
     agent: str = ""
     ok: bool = True
     violation_count: int = 0
-    violations: list[str] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list, metadata={"telemetry": False})
     chosen_tier: str = ""
     duration_ms: int = 0
     gate: str = "ran"  # "ran" | "skipped_with_mutations" | "repair_no_op" — "skipped_with_mutations" flags a step that mutated files but the coding-diff gate skipped anyway; "repair_no_op" flags a repair dispatch (attempt>=1) that produced no coding diff at all
@@ -200,5 +218,6 @@ class ResponderEvent(AgentEvent):
     falling back to the mechanical recap) the turn's final answer from the
     task graph's actual step outputs, reversing plan 27 decision 15's
     summary-only recap for mutate turns."""
+    telemetry: ClassVar[str] = "responder"
     duration_ms: int = 0
     fell_back: bool = False

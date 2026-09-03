@@ -22,16 +22,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.harness import dispatch as harness_dispatch
 from agent.events import ForeignFileDetectedEvent
 from agent.harness import core as harness_core
 from agent.harness import turn as harness_turn
 from agent.harness.core import Harness
-from agent.llm.resolve import ResolvedTier
-from agent.llm.tiers import TierName, TierPolicy
+from agent.tiers.resolve import ResolvedTier
+from agent.tiers.catalog import TierName, TierPolicy
 from agent.llm.types import CompletionResponse, StreamDone, StreamEvent, TextBlock, ToolUseBlock
 from agent.session import Session
-from agent.settings import Permissions
-from agent.subagents import Subagent
+from agent.permissions import Permissions
+
 
 
 def run(coro):
@@ -108,7 +109,7 @@ def test_markdown_read_on_root_fires_the_event(
 ) -> None:
     (tmp_path / "AGENTS.md").write_text(_INSTRUCTION_TEXT, encoding="utf-8")
     _ScriptedAdapter.responses = [_read_file_response("AGENTS.md"), _DONE]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(_make_harness(), session, "read AGENTS.md to get the project brief"))
@@ -127,7 +128,7 @@ def test_plain_readme_still_fires_the_event_no_prefilter(
     The one cheap LLM question is the only judgment left, downstream."""
     (tmp_path / "README.md").write_text(_README_TEXT, encoding="utf-8")
     _ScriptedAdapter.responses = [_read_file_response("README.md"), _DONE]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(_make_harness(), session, "read README.md"))
@@ -143,7 +144,7 @@ def test_non_markdown_read_never_fires(
 ) -> None:
     (tmp_path / "notes.py").write_text(f'"""{_INSTRUCTION_TEXT}"""\n', encoding="utf-8")
     _ScriptedAdapter.responses = [_read_file_response("notes.py"), _DONE]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
     session = _make_session(tmp_path)
     collected = run(_drain(_make_harness(), session, "read notes.py"))
@@ -156,11 +157,10 @@ def test_subagent_read_of_a_markdown_file_fires_nothing(
 ) -> None:
     (tmp_path / "AGENTS.md").write_text(_INSTRUCTION_TEXT, encoding="utf-8")
     _ScriptedAdapter.responses = [_read_file_response("AGENTS.md"), _DONE]
-    monkeypatch.setattr(harness_core, "OpenAIAdapter", _ScriptedAdapter)
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
 
-    sub = Subagent(name="t", namespace="coding", description="d")
     session = _make_session(tmp_path)
-    collected = run(_drain(_make_harness(), session, "read AGENTS.md", subagent=sub))
+    collected = run(_drain(_make_harness(), session, "read AGENTS.md", seed="ws-explorer"))
 
     assert _only(collected, ForeignFileDetectedEvent) == []
 

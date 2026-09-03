@@ -27,7 +27,7 @@ from agent.agent import GekaiAgent
 from agent.commands.registry import CommandRegistry
 from agent.harness import turn as harness_turn
 from agent.harness.turn import TurnResult
-from agent.settings import Permissions
+from agent.permissions import Permissions
 from agent.tui.app import GekaiApp
 from agent.tui.widgets import MessageKind, MessageWidget
 
