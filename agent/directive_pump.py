@@ -14,7 +14,8 @@ detection a silent no-op on any plain-English request: zero domains
 detected, zero directives pumped, even though root was about to write code.
 Eligibility is now decided by the caller instead: root gets the pump on
 every turn where it has tool access to write code, and skips it only on the
-"chat" rung (pure greeting/chit-chat, no tool schemas, no code involved).
+"chat" rung (pure greeting/chit-chat, no code involved -- the rung still
+carries root's normal tool schemas, it just never needs domain expertise).
 
 Open point 2 (escape-rank representation) is settled as: rank is a small
 int per namespace group (`namespace_directive_rank`, lower = higher

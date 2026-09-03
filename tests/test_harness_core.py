@@ -534,50 +534,11 @@ def test_chat_scope_uses_explicit_disable_payload_not_bare_dict(
     assert call_kwargs.get("extra_body") == {"thinking": {"type": "disabled"}}
 
 
-def test_chat_rung_registers_zero_tools(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """Plan 34 Phase 3 (Part A): a `chat`-rung dispatch must build root's
-    agent with `tools_override=frozenset()` -- no tool schemas at all -- so
-    the answer call's system prompt carries no `<tools>` JSON schemas."""
-    responses = [CompletionResponse(content=[TextBlock(text="Hi! What can I help you with?")], stop_reason="end_turn")]
-    _ScriptedAdapter.responses = responses
-    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
-
-    real_build_agent = harness_dispatch.build_agent
-    calls: list[dict[str, Any]] = []
-
-    def _spy_build_agent(*args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs)
-        return real_build_agent(*args, **kwargs)
-
-    monkeypatch.setattr(harness_dispatch, "build_agent", _spy_build_agent)
-
-    tier = ResolvedTier(model="test-model", api_key="key", api_base="http://localhost", extra_params={})
-    policy = TierPolicy(default=TierName.SUPP, allowed=(TierName.SUPP, TierName.CORE))
-    harness = Harness(
-        resolve=lambda _tier, _touchpoint: tier,
-        sequencer_policy=TierPolicy(default=TierName.CORE, allowed=(TierName.SUPP, TierName.CORE)),
-        root_dispatch_policy=policy,
-        subagent_dispatch_policy=policy,
-        verifier_policy=policy,
-        estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}),
-    )
-    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="chat"))
-
-    session = _make_session(tmp_path)
-    run(_drain(harness, session, "hi"))
-
-    assert len(calls) == 1
-    assert calls[0].get("tools_override") == frozenset()
-
-
 def test_solo_rung_still_registers_normal_tool_set(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Companion to test_chat_rung_registers_zero_tools: `scope="solo"` must
-    still dispatch with `tools_override=None` (the full, unfiltered grant),
-    unlike `chat`."""
+    """A `solo`-rung (root, no-graph) dispatch must build root's agent with
+    `tools_override=None` -- the full, unfiltered tool grant."""
     responses = [CompletionResponse(content=[TextBlock(text="ok")], stop_reason="end_turn")]
     _ScriptedAdapter.responses = responses
     monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)

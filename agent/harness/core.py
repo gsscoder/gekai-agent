@@ -198,20 +198,14 @@ class Harness:
             effective_extra_params = resolve_thinking_params(root_dispatch_resolved.model, enabled=False)
         else:
             effective_extra_params = root_dispatch_resolved.extra_params
-        if chat_rung:
-            # plan 34 phase 3: the chat rung carries no tool schemas — a
-            # greeting/chit-chat turn never needs them, and dropping the 9
-            # tool JSON schemas cuts root's prompt from ~2134 tokens toward
-            # a few hundred. The system prompt itself is untouched (decision
-            # 5) so a chat turn keeps solo's voice.
-            tools_override: frozenset[str] | None = frozenset()
-        elif subagent is not None:
+        if subagent is not None:
             # Seed-dispatch's tool ceiling clamp (decision 4): mirrors the
             # graph path's `tool_scope(matched.tool_policy, step_scope)`,
             # here with `step_scope=None` always (no sequencer step exists),
             # so this only ever applies the subagent's own ceiling — the
             # scope reason is always "default" (nothing to narrow further),
             # so no `ToolScopeEvent` telemetry, unlike the graph path.
+            tools_override: frozenset[str] | None
             tools_override, _scope_reason = tool_scope(subagent.tool_policy, None)
         else:
             tools_override = None
