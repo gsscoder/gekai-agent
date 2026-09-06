@@ -52,7 +52,28 @@ An explicit alias bypasses routing and planning entirely — the whole turn runs
 ## Install & run
 
 ```sh
+python -m venv .venv
+.venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -e .
+```
+
+```sh
+.venv/bin/python -m agent           # Windows: .venv\Scripts\python -m agent
+```
+
+Or add a shell function so `gekai` still works as a bare command anywhere:
+
+```sh
+# ~/.bashrc or ~/.zshrc
+gekai() { /path/to/repo/.venv/bin/python -m agent "$@"; }
+```
+
+```powershell
+# PowerShell profile ($PROFILE)
+function gekai { & C:\path\to\repo\.venv\Scripts\python.exe -m agent @args }
+```
+
+```sh
 gekai                    # launch the TUI in the current directory
 gekai -d path/to/repo    # launch in a specific working directory
 gekai -r SESSION_ID      # resume a previous session
