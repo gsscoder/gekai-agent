@@ -7,6 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 
+from ..directive_pump import detect_languages
 from ..llm.errors import MaxIterationsExceeded
 from ..llm.events import Event as LlmEvent, EventBus
 from ..llm.model_caps import resolve_thinking_params
@@ -163,8 +164,13 @@ class Harness:
         emit_start_event: bool = True,
     ) -> AsyncIterator[AgentEvent | str]:
         """No-graph turn: trivial single-agent (root), a seed-dispatched
-        subagent run bound to this session (warm context, no directive
-        pump/GEKAI.md — decision 2/3 of the seed-dispatch fix), or the
+        subagent run bound to this session (warm context, no domain
+        pump/GEKAI.md — decision 2/3 of the seed-dispatch fix — those two
+        channels carry session/project state and would break the subagent's
+        isolation from root's conversation; the language axis (plan 36
+        Phase 3, below) is exempt from that invariant, since it is
+        deterministic, mission-free craft resolved fresh from this call's own
+        `user_input` — never a leak of session state), or the
         Sequencer-failure fallback (`_stream_graph`'s `except ValueError`) —
         the same solo run any of those cases would have taken had the turn
         never been routed into a task graph. Runs at root-dispatch's
@@ -178,16 +184,24 @@ class Harness:
         exactly one such event, not two.
         """
         pumped_domains: list[str] = []
+        detected_languages: list[str] = []
         if subagent is None:
             system_base = ROOT_SYSTEM_PROMPT
             if not chat_rung:
                 system_base, pumped_domains = pumped_system_base(system_base)
             system_base = gekai_md_system_base(system_base, session)
         else:
-            system_base = subagent.build_system_base()
+            # plan 36 Phase 3: a seed-dispatched subagent is bound to
+            # `user_input` at this same moment root's own domain pump above
+            # resolves — mirrors that call, on the language axis instead.
+            if subagent.language_aware:
+                detected_languages = detect_languages(user_input, session.working_dir)
+            system_base = subagent.build_system_base(languages=detected_languages)
         system_base = enrich_system_base(system_base, session.working_dir)
         if pumped_domains:
             yield DirectivePumpEvent(domains=pumped_domains)
+        if detected_languages:
+            yield DirectivePumpEvent(languages=detected_languages)
 
         root_dispatch_resolved = self._resolve(self._root_dispatch_policy.default, "root-dispatch")
         if chat_rung:
@@ -390,6 +404,15 @@ class Harness:
             tools_override, scope_reason = tool_scope(matched.tool_policy if matched else None, step_scope)
             if scope_reason != "default":
                 queue.put_nowait(ToolScopeEvent(unit=agent_name, chosen_rung=step_scope, reason=scope_reason))
+            # plan 36 Phase 3: same `ToolScopeEvent` queuing pattern above,
+            # for the language axis — `run_subagent` resolves this same
+            # detection again internally for the actual system-base build
+            # (it has no `queue` to telemeter through), so this is telemetry
+            # only, not the injection itself.
+            if matched is not None and matched.language_aware:
+                detected_languages = detect_languages(instruction, working_dir)
+                if detected_languages:
+                    queue.put_nowait(DirectivePumpEvent(languages=detected_languages))
             diffs_before = len(dispatch_diff_sink)
             mutations_before = dispatch_mutation_count[0]
             result = await run_subagent(

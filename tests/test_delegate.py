@@ -157,6 +157,77 @@ def test_verbose_telemetry_false_or_no_session_does_not_append_debug() -> None:
     mock_append_debug.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# language-aware system-base injection (plan 36 Phase 3): `run_subagent`
+# resolves `detect_languages(task, ctx.working_dir)` once, only when the
+# resolved agent is `language_aware`, and threads it into `build_system_base`
+# — this is the one call site that covers both graph-step dispatch and the
+# `delegate` tool.
+# ---------------------------------------------------------------------------
+
+def test_language_aware_agent_dispatch_passes_detected_languages_to_build_system_base(tmp_path) -> None:
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=fake_history)
+    captured: dict = {}
+
+    def _capture_enrich(base: str, working_dir) -> str:
+        captured["system_base"] = base
+        return base
+
+    with (
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent),
+        patch("agent.harness.dispatch.enrich_system_base", side_effect=_capture_enrich),
+    ):
+        run(_call_run_subagent("code-expert", task="fix agent/session.py", working_dir=tmp_path))
+
+    assert '<language_directives lang="python">' in captured["system_base"]
+
+
+def test_non_language_aware_agent_never_gets_language_block_even_with_matching_task(tmp_path) -> None:
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=fake_history)
+    captured: dict = {}
+
+    def _capture_enrich(base: str, working_dir) -> str:
+        captured["system_base"] = base
+        return base
+
+    with (
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent),
+        patch("agent.harness.dispatch.enrich_system_base", side_effect=_capture_enrich),
+    ):
+        run(_call_run_subagent("ws-explorer", task="fix agent/session.py", working_dir=tmp_path))
+
+    assert "language_directives" not in captured["system_base"]
+
+
+def test_language_aware_agent_with_non_matching_task_gets_no_language_block(tmp_path) -> None:
+    from agent.llm.types import Message, TextBlock
+
+    fake_history = [Message(role="assistant", content=[TextBlock(text="done")])]
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=fake_history)
+    captured: dict = {}
+
+    def _capture_enrich(base: str, working_dir) -> str:
+        captured["system_base"] = base
+        return base
+
+    with (
+        patch("agent.harness.dispatch.build_agent", return_value=mock_agent),
+        patch("agent.harness.dispatch.enrich_system_base", side_effect=_capture_enrich),
+    ):
+        run(_call_run_subagent("code-expert", task="say hi", working_dir=tmp_path))
+
+    assert "language_directives" not in captured["system_base"]
+
+
 def test_no_delegate_tool_registered_for_main_or_subagent() -> None:
     """decision 11: `delegate` is removed from main outright — no hybrid.
     `_build_agent` must never register a `delegate` tool, subagent or not."""

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.harness import dispatch as harness_dispatch
-from agent.events import DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent, VerifyEvent
+from agent.events import DirectivePumpEvent, DoneEvent, EstimateEvent, ScaleEvent, SubAgentStartEvent, TaskGraphHaltedEvent, TaskGraphStartedEvent, ToolScopeEvent, VerifyEvent
 from agent.harness import core as harness_core
 from agent.harness.core import Harness
 from agent.harness.touchpoints import resolve_at_tier
@@ -247,6 +247,47 @@ def test_seed_dispatches_directly_without_sequencer_or_estimator(
     assert not any(isinstance(e, TaskGraphStartedEvent) for e in collected)
     assert any(isinstance(e, DoneEvent) for e in collected)
     assert collected[-1] == "done"
+
+
+def test_seed_dispatch_of_language_aware_agent_emits_directive_pump_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # plan 36 Phase 3: a seed-dispatched (`/alias`) `language_aware` subagent
+    # detects languages from `user_input` in `_stream_solo`'s subagent branch
+    # -- the same call site root's own domain pump resolves from, on the
+    # language axis instead.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(side_effect=AssertionError("sequencer must not run when seeded")))
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "fix agent/session.py", seed="code-expert"))
+
+    pump_events = _only(collected, DirectivePumpEvent)
+    assert pump_events == [DirectivePumpEvent(languages=["python"])]
+
+
+def test_seed_dispatch_of_non_language_aware_agent_emits_no_directive_pump_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # ws-explorer is language_aware=False -- the same `.py`-carrying prompt
+    # that fires the event above must never fire it here.
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(side_effect=AssertionError("estimator must not run when seeded"))
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(side_effect=AssertionError("sequencer must not run when seeded")))
+    _ScriptedAdapter.responses = [
+        CompletionResponse(content=[TextBlock(text="done")], stop_reason="end_turn"),
+    ]
+    monkeypatch.setattr(harness_dispatch, "OpenAIAdapter", _ScriptedAdapter)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "fix agent/session.py", seed="ws-explorer"))
+
+    assert not any(isinstance(e, DirectivePumpEvent) for e in collected)
 
 
 def test_seed_dispatch_of_non_auto_assignable_code_refactorer_succeeds(
@@ -732,6 +773,54 @@ def test_graph_step_scope_read_excludes_write_tools_for_subagent(
 
     scope_events = _only(collected, ToolScopeEvent)
     assert scope_events == [ToolScopeEvent(unit="code-expert", chosen_rung="read", reason="narrowed to 'read'")]
+
+
+# --- language-directive telemetry at the graph-step call site (plan 36
+# Phase 3): the interpreter's `dispatch()` closure queues a
+# `DirectivePumpEvent(languages=...)` for a `language_aware` step whose
+# instruction hits a known extension, the same `queue.put_nowait` pattern
+# `ToolScopeEvent` already uses above -- `run_subagent` resolves the same
+# detection again internally to actually build the system base; this proves
+# only the telemetry side.
+
+
+def test_graph_step_dispatch_emits_directive_pump_event_for_language_aware_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="fix the bug",
+        steps=[Task(agent="code-expert", instruction="fix src/app/foo.py", mission="fix it")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "fix src/app/foo.py"))
+
+    pump_events = [e for e in _only(collected, DirectivePumpEvent) if e.languages]
+    assert pump_events == [DirectivePumpEvent(languages=["python"])]
+
+
+def test_graph_step_dispatch_emits_no_directive_pump_event_for_non_language_aware_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    harness = _make_harness()
+    harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
+    graph = TaskGraph(
+        summary="explore the bug",
+        steps=[Task(agent="ws-explorer", instruction="read src/app/foo.py", mission="explore")],
+    )
+    _patch_sequencer_sequence(monkeypatch, AsyncMock(return_value=graph))
+    _spy_build_agent(monkeypatch)
+    monkeypatch.setattr(harness_dispatch, "enrich_system_base", lambda base, working_dir: base)
+
+    session = _make_session(tmp_path)
+    collected = run(_drain(harness, session, "read src/app/foo.py"))
+
+    assert not any(e.languages for e in _only(collected, DirectivePumpEvent))
 
 
 # --- the coding-step verifier gate (core.py's `verify_agent` closure): an

@@ -571,7 +571,7 @@ def test_solo_rung_still_registers_normal_tool_set(
     assert calls[0].get("tools_override") is None
 
 
-def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
+def test_mutate_routed_turn_does_not_emit_phantom_domain_directive_pump_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Regression test: before the fix, `Harness.stream` computed the
@@ -579,12 +579,19 @@ def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
     before knowing whether the turn takes the no-graph path or routes into
     `_stream_graph()` -- so a mutate-routed turn with a coding-shaped prompt
     emitted a phantom `DirectivePumpEvent` for a `system_base`/dispatch that
-    was thrown away and never used. Here the graph's single step delegates to
-    a non-"root" subagent (`run_subagent` is monkeypatched to bypass
-    `_stream_graph`'s own `dispatch()` closure entirely, which is the only
-    place a real pump for the graph path would happen -- and only for
-    agent_name == "root" steps), so under the fix no `DirectivePumpEvent`
-    should be emitted at all for this turn."""
+    was thrown away and never used. Root never runs inside the graph (plan 32
+    Phase 3), so under the fix no *domain* pump event is ever emitted for a
+    graph-routed turn.
+
+    Plan 36 Phase 3 adds a second, legitimate source of `DirectivePumpEvent`
+    on the language axis: the interpreter's `dispatch()` closure (`core.py`)
+    queues one for a `language_aware` step whose (post-`_inject_request_summary`,
+    so still carrying the user's original request verbatim) instruction hits
+    a known extension -- exactly what happens below for `code-expert` given
+    the `` `src/app/foo.py` `` in this turn's prompt. That is proven directly
+    by `test_graph_step_dispatch_emits_directive_pump_event_...` in
+    test_harness_stream_plan.py; this test's own job stays narrower: no
+    *domain* pump ever leaks into a graph-routed turn."""
     harness = _make_harness(estimator=ResolvedTier(model="supp-model", api_key="k", api_base=None, extra_params={}))
     harness._estimator.estimate = AsyncMock(return_value=ScopeEstimate(scope="mutate"))
     graph = TaskGraph(
@@ -604,7 +611,7 @@ def test_mutate_routed_turn_does_not_emit_phantom_directive_pump_event(
     # to trigger the phantom early pump/yield.
     collected = run(_drain(harness, session, "fix the bug in `src/app/foo.py`"))
 
-    assert not any(isinstance(e, DirectivePumpEvent) for e in collected)
+    assert not any(isinstance(e, DirectivePumpEvent) and e.domains for e in collected)
 
 
 class _CapturingEventBus(EventBus):

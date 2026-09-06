@@ -282,11 +282,19 @@ guarded by a drift test). `render_tool_instruction(ALL_TOOLS)` reproduces the le
 `TOOL_INSTRUCTION` string verbatim. Each fragment fires on "any" (intersection) or "all" (superset)
 of its trigger group, so the prompt only ever names tools the agent actually has.
 
-`Subagent.build_system_base()` assembles the spawn-mode prompt *base*: `_IDENTITY_SUB` + optional
-plain-prose role line (`subagent.mandate`, e.g. "you act as a code-change specialist…" — no
-`<core_mandate>` wrapper) + `_SHARED_BODY` + optional `<directives>` block (`subagent.directives`);
-tags are non-closing. The `<tools>` block is appended afterward by `Harness._build_agent`, not by
-the subagent — see below.
+`Subagent.build_system_base(*, languages=())` assembles the spawn-mode prompt *base*:
+`_IDENTITY_SUB` + optional plain-prose role line (`subagent.mandate`, e.g. "you act as a
+code-change specialist…" — no `<core_mandate>` wrapper) + `_SHARED_BODY` + optional `<directives>`
+block (`subagent.directives`) + one optional `<language_directives lang="...">` block per entry in
+`languages`, looked up in `agent/language_directives.py::LANGUAGE_DIRECTIVES` (plan 36 Phase 3,
+unrecognized names silently skipped); tags are non-closing. `languages` is resolved by the caller
+from the task at bind time (`detect_languages(task, working_dir)`, deterministic, no LLM call) and
+only ever non-empty when `subagent.language_aware` is `True` — six units set it
+(`code-expert`/`code-fixer`/`code-refactorer`/`complexity-remover`/`test-expert`/`test-fixer`),
+gated by `validate_registry()` rejecting `language_aware=True` on any unit with no edit tool. This
+is a second, independent axis from the `NAMESPACE_DIRECTIVES` domain pump above — its own registry
+(no TUI namespace/badge to key on) and its own budget (`LANGUAGE_BUDGET`, not `PUMP_BUDGET`). The
+`<tools>` block is appended afterward by `Harness._build_agent`, not by the subagent — see below.
 
 `Harness._build_agent(model, …, system_base, subagent=None)` is the **single point** that computes
 the effective tool set and assembles the final system string, for both modes:

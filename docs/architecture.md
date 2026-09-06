@@ -150,15 +150,60 @@ collects these into two module-level exports, `NAMESPACE_DIRECTIVES` and
 `NAMESPACE_DIRECTIVE_RANK`, disjoint from `Subagent.directives` (the deep, mission-presupposing
 per-role text a specialist gets from `build_system_base()` — this never escapes to root).
 
-`detect_domains(prompt)` reads backtick-quoted file-path extensions and a small keyword lexicon
-out of the raw prompt (no filesystem access, no located-files list — nothing upstream of the
-harness populates one yet); `pump(prompt)` intersects the detected domains against
-`NAMESPACE_DIRECTIVES`, sorts by rank, and takes the top `PUMP_BUDGET` (2), returning the
-concatenated directive text plus the domain list for telemetry. `Harness.stream`/`_stream_graph`
-(`agent/harness/core.py`) call this only when `subagent is None`, appending the result as a
-`<domain_directives>` block onto `system_base` before `_enrich_system_base`, and emit a
+There is no prompt-text detection any more — `detect_domains(prompt)` was deleted along with
+`PromptRewriter` (dead code: never constructed anywhere, so its backtick-quoted-path shape never
+appeared in a real prompt, and detection against it was a silent no-op). `pump()` now takes no
+argument at all: it unconditionally sorts every registered `NAMESPACE_DIRECTIVES` key by
+`NAMESPACE_DIRECTIVE_RANK`, takes the top `PUMP_BUDGET` (2), and returns the concatenated
+directive text plus the domain list for telemetry — eligibility is decided by the caller instead
+(root gets it on every turn it has code-writing tools, skipped only on the `chat` rung). `pumped_system_base()`
+(`agent/harness/dispatch.py`) calls `pump()`, appending the result as a `<domain_directives>` block
+onto `system_base`; `Harness._stream_solo` (`agent/harness/core.py`) calls `pumped_system_base()`
+only when `subagent is None` and not on the `chat` rung, before `enrich_system_base`, and emits a
 `DirectivePumpEvent` (logged to `events-*.jsonl` as `directive_pump`) whenever a domain was
 actually pumped.
+
+### Language directives (plan 36)
+
+A second, independent axis alongside the domain pump above: language *craft*, not domain craft.
+`agent/language_directives.py` holds `LANGUAGE_DIRECTIVES: dict[str, str]` — a hardcoded registry
+of mission-free style/idiom text, one entry today (`"python"`). It is a genuinely separate
+registry from `NAMESPACE_DIRECTIVES` rather than folded into it: a language has no TUI
+namespace/badge to register under, so `validate_registry()` would have nothing to check a colour
+against. `LANGUAGE_BUDGET` (2) is its own pool, deliberately not shared with `PUMP_BUDGET` — a
+Python testing turn must not have to choose between a domain slot and a language slot.
+
+`agent/directive_pump.py::detect_languages(task, working_dir)` is deterministic and non-LLM:
+extension hits in `task`'s text first (`_EXT_TO_LANG`, currently `.py` → `"python"`), falling back
+to a manifest file's presence under `working_dir` (`_LANG_MANIFESTS`, `pyproject.toml` for
+Python) only when no extension hit exists, else `[]`. Hits are ranked by count descending then
+name ascending and capped at `LANGUAGE_BUDGET`.
+
+`Subagent.language_aware: bool = False` (`agent/subagents/__init__.py`) marks a unit as eligible
+for a language block; six units set it today (`code-expert`, `code-fixer`, `code-refactorer`,
+`complexity-remover`, `test-expert`, `test-fixer`). `validate_registry()` rejects
+`language_aware=True` on any unit holding no edit tool. `Subagent.build_system_base(*,
+languages=())` appends one `<language_directives lang="...">` block per entry — looked up in
+`LANGUAGE_DIRECTIVES`, an unrecognized name silently skipped — after the existing `<directives>`
+block. Root never gets one: it isn't a `Subagent`, so it is structurally excluded, not merely
+opted out.
+
+Two call sites resolve `detect_languages` and thread it into `build_system_base(languages=...)`:
+`agent/harness/dispatch.py::run_subagent()` (covers both graph-step dispatch and the `delegate`
+tool, resolving once from the step's own `task` text and `ctx.working_dir`), and
+`Harness._stream_solo`'s subagent branch (`agent/harness/core.py`, seed dispatch e.g. `/build …`,
+resolving from `user_input`/`session.working_dir`).
+
+Telemetry is asymmetric between those two sites. `run_subagent()` cannot emit
+`DirectivePumpEvent` itself: `ctx.bus` is typed to `agent.llm.events.Event`, a disjoint hierarchy
+from `agent.events.AgentEvent`, and `bridge_llm_event` (the sole subscriber) does exhaustive
+`isinstance` checks against only the `Event` union — an `AgentEvent` emitted through `ctx.bus`
+would silently vanish, reaching neither `events-*.jsonl` nor the TUI. So the interpreter's
+`dispatch()` closure in `core.py` — which already queues `ToolScopeEvent` for graph steps the same
+way — queues `DirectivePumpEvent(languages=...)` there instead, and `_stream_solo` yields its own
+for the seed-dispatch case. Net effect: language-directive telemetry fires for graph-step dispatch
+and seed dispatch, but not for a subagent reached purely via the `delegate` tool — the same
+asymmetry `ToolScopeEvent` already has, not a new gap this feature introduced.
 
 ---
 

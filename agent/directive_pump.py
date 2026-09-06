@@ -27,13 +27,78 @@ plain-string convention the codebase already uses. No conflict-resolution
 step is needed beyond the budget cutoff: escaping directives are mission-
 free by construction (decision 11), so they cannot goal-conflict, only
 style-conflict, which is low-stakes and left for the model to reconcile.
+
+Plan 36 Phase 1 adds a second, independent axis alongside the domain pump
+above: language craft, resolved deterministically from a task's file
+extensions and manifests rather than pumped unconditionally. It is a
+genuinely separate registry (`LANGUAGE_DIRECTIVES`) rather than folded into
+`NAMESPACE_DIRECTIVES`, because a language has no TUI namespace or badge to
+register under — there is nothing for `validate_registry()` to check a
+colour against. `LANGUAGE_BUDGET` is kept as its own pool, deliberately not
+sharing `PUMP_BUDGET`'s cap: a Python testing turn must not have to choose
+between a domain slot and a language slot, since the two axes are
+orthogonal and neither should starve the other.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .subagents import NAMESPACE_DIRECTIVES, NAMESPACE_DIRECTIVE_RANK
 
 PUMP_BUDGET = 2  # cap on domains pumped into root per turn (hard problem 3)
+
+# Answers "which directives", not "which tree-sitter parser" — deliberately
+# not shared with `agent/workspace/symbols.py::_EXT_TO_LANG`, which answers
+# the parser question and will diverge once a language gets directives with
+# no parser installed.
+_EXT_TO_LANG: dict[str, str] = {".py": "python", ".ts": "typescript"}
+
+LANGUAGE_BUDGET = 2  # cap on languages detected per turn, its own pool (see module docstring)
+
+# Manifest filename(s) per language, used only when no extension hit exists.
+_LANG_MANIFESTS: dict[str, tuple[str, ...]] = {
+    "python": ("pyproject.toml",),
+    "typescript": ("tsconfig.json",),
+}
+
+
+def detect_languages(task: str, working_dir: Path) -> list[str]:
+    """Deterministic, non-LLM detection of the languages a task touches.
+    Scans `task` for substrings carrying a known extension, not immediately
+    followed by another word character (so `.tsx` never registers as a
+    `.ts` hit), first; falls back to a manifest file's presence directly
+    under `working_dir` only when no extension hit exists at all. Returns
+    the top `LANGUAGE_BUDGET` languages ranked by hit count descending,
+    then name ascending — `[]` when neither signal fires.
+
+    Scans via `str.find`, not a regex, deliberately: an unanchored regex
+    whose lead-in is a broadly-matching character class (`[\\w./\\\\-]+`)
+    degrades to O(n^2) on `task` text with no extension anywhere — every
+    one of the n starting positions the engine tries costs O(n) to fail,
+    since nothing rules a position out early. `task` is user-controlled
+    (it flows in verbatim from the turn's own instruction) and unbounded,
+    so this path must stay linear regardless of what it's fed."""
+    lower_task = task.lower()
+    hits: dict[str, int] = {}
+    for ext, lang in _EXT_TO_LANG.items():
+        start = 0
+        while (idx := lower_task.find(ext, start)) != -1:
+            end = idx + len(ext)
+            if end == len(task) or not (task[end].isalnum() or task[end] == "_"):
+                hits[lang] = hits.get(lang, 0) + 1
+            start = idx + 1
+
+    if not hits:
+        for lang, manifests in _LANG_MANIFESTS.items():
+            if any((working_dir / manifest).exists() for manifest in manifests):
+                hits[lang] = 1
+
+    if not hits:
+        return []
+
+    ranked = sorted(hits, key=lambda lang: (-hits[lang], lang))
+    return ranked[:LANGUAGE_BUDGET]
 
 
 def pump() -> tuple[str, list[str]]:

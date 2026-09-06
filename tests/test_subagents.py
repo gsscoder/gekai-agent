@@ -5,6 +5,7 @@ import pytest
 import dataclasses
 
 from agent import subagents as subagents_module
+from agent.language_directives import LANGUAGE_DIRECTIVES
 from agent.persona import _SHARED_BODY
 from agent.subagents import (
     NAMESPACE_COLORS,
@@ -14,7 +15,7 @@ from agent.subagents import (
     _compose_directives,
     validate_registry,
 )
-from agent.tools.catalog import RUNGS
+from agent.tools.catalog import EDIT_TOOLS, RUNGS
 
 
 def _subagent(mandate: str = "", directives: str = "") -> Subagent:
@@ -81,6 +82,34 @@ def test_build_system_base_order_identity_role_body_directives():
 def test_build_system_base_no_closing_tags():
     system = _subagent(mandate="you act as X", directives="do Y").build_system_base()
     assert "</" not in system
+
+
+# ---------------------------------------------------------------------------
+# languages= (plan 36 Phase 3) — task-bound language craft appended after
+# <directives>, resolved by the caller and passed in per dispatch
+# ---------------------------------------------------------------------------
+
+def test_build_system_base_no_arg_call_is_unchanged():
+    p = _subagent(mandate="you act as X", directives="do Y")
+    assert p.build_system_base() == p.build_system_base(languages=())
+
+
+def test_build_system_base_with_languages_appends_tag_after_directives():
+    system = _subagent(directives="do not invent features").build_system_base(languages=("python",))
+    directives_idx = system.index("<directives>")
+    tag_idx = system.index('<language_directives lang="python">')
+    assert directives_idx < tag_idx
+    assert system.endswith(f'<language_directives lang="python">\n{LANGUAGE_DIRECTIVES["python"]}')
+
+
+def test_build_system_base_with_unknown_language_is_silently_skipped():
+    system = _subagent(directives="do not invent features").build_system_base(languages=("cobol",))
+    assert "language_directives" not in system
+
+
+def test_build_system_base_without_languages_arg_has_no_language_tag():
+    system = _subagent(directives="do not invent features").build_system_base()
+    assert "language_directives" not in system
 
 
 # ---------------------------------------------------------------------------
@@ -340,3 +369,48 @@ def test_ws_explorer_registered_as_auto_assignable_discovery_stage():
 def test_only_ws_explorer_is_a_discovery_stage():
     discovery_agents = {s.name for s in subagents_module.SUBAGENTS if s.discovery_stage}
     assert discovery_agents == {"ws-explorer"}
+
+
+# ---------------------------------------------------------------------------
+# language_aware (plan 36 Phase 2) — declared, and validated against edit-tool
+# capability: a unit claiming eligibility for language-specific craft
+# directives must actually be able to write code
+# ---------------------------------------------------------------------------
+
+def test_language_aware_defaults_to_false():
+    assert _subagent().language_aware is False
+
+
+def test_validate_registry_raises_when_language_aware_holds_no_edit_tool(monkeypatch):
+    bad = dataclasses.replace(_subagent(), language_aware=True, tools=["read_file"])
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, bad])
+    with pytest.raises(ValueError, match="declares language_aware=True but holds no edit tool"):
+        validate_registry()
+
+
+def test_validate_registry_accepts_language_aware_with_tools_none(monkeypatch):
+    ok = dataclasses.replace(_subagent(), language_aware=True, tools=None)
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, ok])
+    validate_registry()  # must not raise
+
+
+def test_validate_registry_accepts_language_aware_with_an_edit_tool(monkeypatch):
+    ok = dataclasses.replace(_subagent(), language_aware=True, tools=["read_file", EDIT_TOOLS[0]])
+    monkeypatch.setattr(subagents_module, "SUBAGENTS", [*subagents_module.SUBAGENTS, ok])
+    validate_registry()  # must not raise
+
+
+def test_validate_registry_passes_with_the_six_language_aware_units_registered():
+    # the real, unmodified registry: code-expert, code-fixer, code-refactorer,
+    # complexity-remover, test-expert, test-fixer all flagged; ws-explorer and
+    # omni-worker stay at the False default
+    language_aware = {s.name for s in subagents_module.SUBAGENTS if s.language_aware}
+    assert language_aware == {
+        "code-expert",
+        "code-fixer",
+        "code-refactorer",
+        "complexity-remover",
+        "test-expert",
+        "test-fixer",
+    }
+    validate_registry()  # must not raise

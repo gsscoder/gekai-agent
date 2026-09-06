@@ -24,7 +24,7 @@ from ..llm.events import DelegationCompleted, DelegationStarted, EventBus
 from ..llm.providers.openai import OpenAIAdapter
 from ..llm.tools import Tool, tool
 from ..llm.types import TextBlock
-from ..directive_pump import pump as pump_directives
+from ..directive_pump import detect_languages, pump as pump_directives
 from ..permissions import PermissionCallback, PermissionGate, Permissions
 from ..persistence import append_debug
 from ..persona import render_tool_instruction
@@ -234,6 +234,18 @@ async def run_subagent(
     delegation target, so the depth-1 cap applies one hop further, to whatever
     that step itself delegates to (`make_delegate_tool`'s own closure never
     forwards this flag, so that next hop keeps the `False` default).
+
+    `resolved.language_aware` (plan 36 Phase 3) gates task-bound language
+    craft: when set, `detect_languages` resolves once here, from this call's
+    own `task` text and `ctx.working_dir` — never a static property of
+    `agent` — and is threaded into `build_system_base`. This single site
+    covers both the interpreter's graph-step dispatch and the `delegate`
+    tool. No telemetry is emitted here: `ctx.bus` is typed to
+    `agent.llm.events.Event`, a disjoint hierarchy from
+    `agent.events.AgentEvent`/`DirectivePumpEvent`, and nothing downstream
+    consumes the latter via `bus.emit()`; the interpreter's `dispatch()`
+    closure (`harness/core.py`), which already queues `ToolScopeEvent` the
+    same way, carries this telemetry for the graph-step case instead.
     """
     roster = {s.name: s for s in SUBAGENTS}
     resolved = roster.get(agent)
@@ -244,7 +256,8 @@ async def run_subagent(
     if parent_tools is not None:
         effective_override = parent_tools if effective_override is None else (effective_override & parent_tools)
 
-    system_base = enrich_system_base(resolved.build_system_base(), ctx.working_dir)
+    languages = detect_languages(task, ctx.working_dir) if resolved.language_aware else []
+    system_base = enrich_system_base(resolved.build_system_base(languages=languages), ctx.working_dir)
     resolved_tier = ResolvedTier(
         model=ctx.model, api_key=ctx.api_key, api_base=ctx.api_base, extra_params=ctx.extra_params,
     )

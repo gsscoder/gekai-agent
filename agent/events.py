@@ -163,11 +163,16 @@ class ToolScopeEvent(AgentEvent):
 
 @dataclass
 class DirectivePumpEvent(AgentEvent):
-    """Telemetry only (plan 28 Phase 3, hard problem 3): emitted when the
-    harness pumps domain-craft directives into root's system prompt for one
-    dispatch. Never emitted when no domain was detected (empty pump)."""
+    """Telemetry only (plan 28 Phase 3, hard problem 3; plan 36 Phase 3):
+    emitted when the harness pumps domain-craft directives into root's
+    system prompt, or task-bound language-craft directives into a
+    language-aware subagent's system prompt, for one dispatch. No longer
+    root-only — a subagent dispatch can trigger this too, via `languages`
+    instead of `domains`. Never emitted when nothing was detected (empty
+    pump)."""
     telemetry: ClassVar[str] = "directive_pump"
     domains: list[str] = field(default_factory=list)
+    languages: list[str] = field(default_factory=list)
 
 
 @dataclass

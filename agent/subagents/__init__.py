@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ..language_directives import LANGUAGE_DIRECTIVES
 from ..persona import _IDENTITY_SUB, _SHARED_BODY
 from ..permissions import Permissions
-from ..tools.catalog import RUNGS
+from ..tools.catalog import EDIT_TOOLS, RUNGS
 
 # action namespaces and their TUI badge colors — co-located so a namespace
 # cannot be declared without a color (no fallback color at render time);
@@ -50,6 +52,11 @@ class Subagent:
     alias: str = ""  # if set and user_invocable, shown/typed in slash palette instead of `name`
     params: str = "<subagent prompt>"  # declared parameter signature shown as a dimmed hint, e.g. `/<alias-or-name> <params>`
     auto_assignable: bool = False  # phase-1 decomposition may assign it; False = delegate-only, never auto-assigned by the sequencer
+    # marks a unit that writes code as eligible for language-specific craft
+    # directives (Python today, more languages later), resolved from the task
+    # at bind time. False (the default) = never gets one. Root is excluded
+    # structurally — it isn't a Subagent at all, so it needs no flag.
+    language_aware: bool = False
     # ADDITIONAL namespaces (beyond this subagent's own, which is always
     # auto-inherited unconditionally — never needs listing itself here) whose
     # directives should also be composed into this subagent's directives.
@@ -79,16 +86,26 @@ class Subagent:
     # None = inherit the default.
     max_iterations: int | None = None
 
-    def build_system_base(self) -> str:
+    def build_system_base(self, *, languages: Sequence[str] = ()) -> str:
         """Subagent identity (member, not the whole) + assigned role + the body
-        shared verbatim with root + directives — the <tools> block is
-        appended by the harness once the effective tool set is known."""
+        shared verbatim with root + directives + one <language_directives>
+        block per entry in `languages` (plan 36 Phase 3) — resolved by the
+        caller from the task at bind time, never derived here. A language
+        with no `LANGUAGE_DIRECTIVES` entry is silently skipped: today's
+        callers only ever pass names `agent.directive_pump.detect_languages`
+        produced, but an unrecognized name must never crash a turn. The
+        <tools> block is appended by the harness once the effective tool set
+        is known."""
         system = _IDENTITY_SUB
         if self.mandate:
             system += f"\n{self.mandate}"
         system += f"\n{_SHARED_BODY}"
         if self.directives:
             system += f"\n<directives>\n{self.directives}"
+        for lang in languages:
+            text = LANGUAGE_DIRECTIVES.get(lang)
+            if text is not None:
+                system += f'\n<language_directives lang="{lang}">\n{text}'
         return system
 
 
@@ -183,6 +200,8 @@ def validate_registry() -> None:
             seen[p.alias] = (p.name, "alias")
         if p.tool_policy is not None and not (0 <= p.tool_policy.ceiling < len(RUNGS)):
             raise ValueError(f"subagent {p.name!r} has out-of-range tool policy ceiling: {p.tool_policy.ceiling!r}")
+        if p.language_aware and not (p.tools is None or set(p.tools) & set(EDIT_TOOLS)):
+            raise ValueError(f"subagent {p.name!r} declares language_aware=True but holds no edit tool")
         if "*" in p.directive_domains and len(p.directive_domains) > 1:
             raise ValueError(
                 f"subagent {p.name!r} mixes wildcard '*' with explicit entries in directive_domains: "

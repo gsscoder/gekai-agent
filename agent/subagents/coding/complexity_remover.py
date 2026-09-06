@@ -73,6 +73,7 @@ subagent = Subagent(
         "identifier, or text in English unless the existing codebase convention says otherwise"
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + FS_TOOLS + SHELL_TOOLS),
+    language_aware=True,
     delegates_to=("code-refactorer", "ws-explorer"),
     directive_domains=("generic",),
 )

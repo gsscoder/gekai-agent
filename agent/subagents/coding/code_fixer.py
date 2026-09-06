@@ -38,6 +38,7 @@ subagent = Subagent(
     ),
     tools=list(READ_TOOLS + EDIT_TOOLS + SHELL_TOOLS),
     auto_assignable=True,
+    language_aware=True,
     delegates_to=("ws-explorer",),
     directive_domains=("generic",),
 )

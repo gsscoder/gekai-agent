@@ -142,6 +142,15 @@ don't disappear — they keep what a directive can't confer: permission/tool sco
 context isolation from the conversation. Dynamic directives replaces dispatch-for-expertise, not
 dispatch-for-isolation.
 
+Language works the same way, one level down, for units that already carry a domain role. A
+Python-writing turn doesn't need a `python-expert` alongside `code-expert` — the language is data
+resolved from the task at bind time (file extensions, a manifest file), not a role a subagent is
+cast into, so the roster stays flat and no per-language subagent ever needs deriving. What makes
+that safe is the same craft-versus-mission line the domain pump draws: a language block is idiom
+and style rules only — never "your job is…", never a scope instruction — for exactly the reason
+domain directives must stay mission-free. Mission still lives only in the subagent that already
+holds it; language just tells that subagent, on this task, which dialect to write it in.
+
 ## A linter for instruction files, not a guardrail
 
 A project can hand Gekai standing instructions two ways — its own `GEKAI.md`, ingested verbatim
