@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -380,14 +381,20 @@ class GekaiApp(App[None]):
             self._agent.model, self._agent.effort, session_tokens, self._other_ops_tokens,
             session_tokens, self._context_limit,
         )
-        right = _fmt_status_right(str(self._working_dir), self._branch)
-        left_text = Text.from_markup(left)
-        right_text = Text(right)
+        left_text = Text("  ") + Text.from_markup(left)
         width = self.size.width or 80
-        gap = max(width - 4 - left_text.cell_len - right_text.cell_len, 1)
-        bar = Text("  ") + left_text + Text(" " * gap) + right_text + Text("  ")
-        bar.no_wrap = True
-        bar.overflow = "crop"
+        right = _fmt_status_right(str(self._working_dir), self._branch, max_width=max(width - 5 - left_text.cell_len, 8))
+        right_text = Text(right) + Text("  ")
+        left_text.no_wrap = True
+        right_text.no_wrap = True
+        # Table.grid right-justifies against the real render width Textual hands it,
+        # so the folder/branch column hugs the right edge with the same 2-space pad
+        # the left column has — unlike computing a fixed gap off `self.size.width`,
+        # which can drift from the widget's actual box and leave it short of the corner.
+        bar = Table.grid(expand=True)
+        bar.add_column(no_wrap=True)
+        bar.add_column(no_wrap=True, justify="right")
+        bar.add_row(left_text, right_text)
         self.query_one("#context-bar", Static).update(bar)
 
     async def _maybe_warn_tiers_unconfigured(self, conversation: ScrollableContainer) -> None:

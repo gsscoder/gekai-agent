@@ -7,6 +7,7 @@ Nothing here touches a widget, so it is testable without a running app.
 
 from __future__ import annotations
 
+from rich.cells import cell_len
 from rich.style import Style
 
 from agent.session import Session
@@ -134,10 +135,23 @@ def _fmt_status_left(
     return f"\\[{model_label}] | {tokens} | {pct}"
 
 
-def _fmt_status_right(working_dir: str, branch: str | None) -> str:
-    location = f"📁 {_truncate_path_middle(working_dir)}"
+def _fmt_status_right(working_dir: str, branch: str | None, max_width: int | None = None) -> str:
+    """`max_width` caps the whole string's cell width to whatever room the
+    caller measured is actually left on the status line — without it, a long
+    left side (model/tokens/context%) can push the combined bar past the
+    terminal width and Rich's hard crop eats the tail, i.e. the directory
+    itself, leaving only the folder icon visible."""
+    if max_width is None:
+        location = f"📁 {_truncate_path_middle(working_dir)}"
+        if branch:
+            location += f" | ⎇ {branch}"
+        return location
+    path_budget = max(max_width - cell_len("📁 "), 4)
+    location = f"📁 {_truncate_path_middle(working_dir, path_budget)}"
     if branch:
-        location += f" | ⎇ {branch}"
+        suffix = f" | ⎇ {branch}"
+        if cell_len(location) + cell_len(suffix) <= max_width:
+            location += suffix
     return location
 
 

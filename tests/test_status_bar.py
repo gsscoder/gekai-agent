@@ -60,3 +60,16 @@ def test_fmt_status_right_with_branch() -> None:
 
 def test_fmt_status_right_without_branch() -> None:
     assert _fmt_status_right("/repo/gekai-agent", None) == "📁 /repo/gekai-agent"
+
+
+def test_fmt_status_right_shrinks_to_max_width() -> None:
+    from rich.cells import cell_len
+
+    result = _fmt_status_right("C:\\MyRepos\\coder\\gekai-agent", "main", max_width=13)
+    assert cell_len(result) <= 13
+    assert result.startswith("📁 ")
+
+
+def test_fmt_status_right_drops_branch_when_too_narrow() -> None:
+    result = _fmt_status_right("/repo/gekai-agent", "main", max_width=8)
+    assert "⎇" not in result
