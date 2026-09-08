@@ -292,6 +292,15 @@ class ToolRegistry:
                     content=f"Permission denied: '{use.name}' requires '{tool_obj.required_permission}' permission which was not granted",
                     is_error=True,
                 )
+            elif "_raw" in use.input:
+                result = ToolResultBlock(
+                    tool_use_id=use.id,
+                    content=(
+                        f"Arguments for '{use.name}' were not valid JSON and could not be "
+                        "parsed. Re-issue the call with correctly escaped JSON arguments."
+                    ),
+                    is_error=True,
+                )
             else:
                 effective_timeout: float | None = (
                     timeout if tool_obj.timeout is _UNSET else cast("float | None", tool_obj.timeout)

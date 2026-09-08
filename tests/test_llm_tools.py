@@ -84,3 +84,22 @@ def test_explicit_numeric_timeout_overrides_registry_default_larger() -> None:
     assert len(results) == 1
     assert results[0].is_error is False
     assert results[0].content == "done"
+
+
+def test_raw_sentinel_input_yields_clear_error_not_typeerror() -> None:
+    """When the provider fails to parse a tool call's JSON arguments, it
+    falls back to `{"_raw": <unparseable string>}` (see
+    `agent/llm/providers/openai.py`). The registry must catch that sentinel
+    before splatting it into the tool call — otherwise the tool raises a raw
+    `TypeError` for the unexpected `_raw` keyword, which is opaque to the
+    model. It must instead see a clear, actionable message."""
+    registry = ToolRegistry()
+    registry.register(tool(_slow, name="slow"))
+
+    use = ToolUseBlock(id="call-1", name="slow", input={"_raw": "{bad json"})
+    results = run(registry.run([use]))
+
+    assert len(results) == 1
+    assert results[0].is_error is True
+    assert "TypeError" not in results[0].content
+    assert "not valid JSON" in results[0].content
