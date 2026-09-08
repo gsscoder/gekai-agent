@@ -1,11 +1,11 @@
-# Subagent System
+﻿# Subagent System
 Structured async generators that stream typed events to the TUI for live progress rendering
 
 ## AgentEvent Protocol
 There is no enforced base class — `agent/subagent.py` holds only the `AgentEvent` taxonomy
 (plain no-field dataclass + its typed subclasses). The `SubAgent(ABC)` protocol class that used
 to live there was deleted as dead code once its only subclass was removed; nothing inherits from
-it today.
+it today
 
 The convention lives on **by usage, not by enforcement**: anything that streams typed progress to
 the TUI is an `AsyncIterator[AgentEvent | str]` generator following this shape:
@@ -13,7 +13,7 @@ the TUI is an `AsyncIterator[AgentEvent | str]` generator following this shape:
 - Last yield must be `DoneEvent` — triggers progress bar removal and summary line mount
 - Intermediate yields: any `AgentEvent` subclass in any order
 
-`Harness.stream()` is the live example — see [Harness](#harness) below.
+`Harness.stream()` is the live example — see [Harness](#harness) below
 
 ## Event Catalog
 All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
@@ -29,17 +29,17 @@ All dataclasses inherit from `AgentEvent` (itself a no-field dataclass)
 ## Existing Streamers
 
 ### Harness — `agent/harness/core.py`
-- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, subagent: Subagent | None = None, extra_params: dict | None = None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
-- One method, two modes selected by the `subagent` param — both run the same no-graph branch, both get warm session context:
-  - **root, no-graph** (`subagent=None`, `chat`/`solo`-estimated single-agent turn): system = `ROOT_SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input — root's warm session context; `SubAgentStartEvent(name="root", description="thinking", color="#4169E1")`. On the `chat` rung specifically (plan 34 Phase 3), `_build_agent` is called with `tools_override=frozenset()` — no tools registered, `render_tool_instruction([])` renders nothing, so the `<tools>` block is empty; the system prompt itself is otherwise unchanged (`solo` and `mutate` still register the full tool set)
-  - **seed-dispatched subagent** (`subagent=<Subagent>`, resolved from an explicit `/`-slash `seed` — the only way `stream()`'s own `subagent` param is ever bound; a graph-spawned step never calls `stream()` at all, it goes through `run_subagent()` instead, cold): handles a subagent's specialty (e.g. `code-expert` for **substantial or specialized code work** — features, fixes, behavior-changing rewrites; owns its assigned task's implementation in full); system = `subagent.build_system_base()` + `<tools>` appended by `_build_agent` (tool-ceiling clamp via `tool_scope(subagent.tool_policy, None)`); prior context = the same `_recency_turns` + current input as root — warm, not cold — with no domain-directive-pump/GEKAI.md injection (root-only, since both carry session/project state that would break the subagent's isolation from root's conversation). Exception (plan 36): when `subagent.language_aware=True`, `build_system_base(languages=...)` still injects a `<language_directives lang="...">` block, with `languages` resolved fresh at bind time via `agent.directive_pump.detect_languages()` against the task's own text/working-dir manifest — deterministic per-call, never from session/root state, so it doesn't reopen the isolation the domain-pump exclusion protects; `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
+- Not a class hierarchy member of anything — `stream(session, user_input, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None, seed=None)` is an async generator that yields `AgentEvent | str`, the live example of the protocol-by-convention above
+- One method, two modes selected by the `seed` param — both run the same no-graph branch, both get warm session context:
+  - **root, no-graph** (`seed=None`, `chat`/`solo`-estimated single-agent turn): system = `ROOT_SYSTEM_PROMPT + "\n<tools>\n" + render_tool_instruction(...)`; prior context = `_recency_turns(session.messages, _RECENCY_N=2)` (last 2 user/assistant pairs) + current input — root's warm session context; `SubAgentStartEvent(name="root", description="thinking", color="#4169E1")`. On the `chat` rung specifically (plan 34 Phase 3), `build_agent` is called with `tools_override=frozenset()` — no tools registered, `render_tool_instruction([])` renders nothing, so the `<tools>` block is empty; the system prompt itself is otherwise unchanged (`solo` and `mutate` still register the full tool set)
+  - **seed-dispatched subagent** (`seed=<str>`, subagent name resolved against `SUBAGENTS` — the only way this mode activates; a graph-spawned step never calls `stream()` at all, it goes through `run_subagent()` instead, cold): handles a subagent's specialty (e.g. `code-expert` for **substantial or specialized code work** — features, fixes, behavior-changing rewrites; owns its assigned task's implementation in full); system = `subagent.build_system_base()` + `<tools>` appended by `build_agent` (tool-ceiling clamp via `tool_scope(subagent.tool_policy, None)`); prior context = the same `_recency_turns` + current input as root — warm, not cold — with no domain-directive-pump/GEKAI.md injection (root-only, since both carry session/project state that would break the subagent's isolation from root's conversation). Exception (plan 36): when `subagent.language_aware=True`, `build_system_base(languages=...)` still injects a `<language_directives lang="...">` block, with `languages` resolved fresh at bind time via `agent.directive_pump.detect_languages()` against the task's own text/working-dir manifest — deterministic per-call, never from session/root state, so it doesn't reopen the isolation the domain-pump exclusion protects; `SubAgentStartEvent(name=subagent.name, description=subagent.description, color="#4169E1")`
 - Emits `SubAgentStartEvent`, `LogEvent` (one per `ToolExecutionStarted` bus event), `DiffEvent` (on `edit_file` completion when `old_str != new_str`), `InferEndEvent`, `ThinkingTokenEvent`, `TextChunkEvent` (root no-graph path only — see below), `MaxIterationsEvent` (iteration-limit path), and `DoneEvent`
-- After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. This final assembly is unconditional (from the completed history's `TextBlock`s) regardless of whether chunks streamed; streaming is a display-only side channel, never the source of the persisted answer.
+- After `DoneEvent`, yields a plain `str` with the final LLM answer — the TUI consumer appends this to `answer_chunks`. This final assembly is unconditional (from the completed history's `TextBlock`s) regardless of whether chunks streamed; streaming is a display-only side channel, never the source of the persisted answer
 - **Live text streaming is path-specific (plan 34 Phase 2), not blanket.** Root's no-graph direct-dispatch path (`Harness.stream()`'s non-graph branch) passes `emit_text_chunks=True` to `_bridge_llm_event`, so each `TextDelta` from the provider becomes a `TextChunkReceived` bus event (`agent/llm/agent.py::_run_loop`) and then a `TextChunkEvent` the TUI renders incrementally (`_run_step`'s `_on_event` in `agent/tui/app.py`
 appends each chunk's text to a running `_streamed_answer` and mounts/updates a live `MessageWidget`
-in place, reset per turn). The graph/subagent-step path (`Harness._stream_graph`) never sets `emit_text_chunks=True` — a graph-routed turn emits zero `TextChunkEvent`s (would otherwise interleave with `LogEvent`/`DiffEvent` mid-transcript), and its answer still only appears as the final assembled string.
+in place, reset per turn). The graph/subagent-step path (`Harness._stream_graph`) never sets `emit_text_chunks=True` — a graph-routed turn emits zero `TextChunkEvent`s (would otherwise interleave with `LogEvent`/`DiffEvent` mid-transcript), and its answer still only appears as the final assembled string
 - Uses `llmstitch` (`agent.llm.Agent`) `EventBus` to bridge tool-call events from the agent loop into the typed event stream
-- `_build_agent()` registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, computes the effective permission overlay (AND of `session.permissions` and `subagent.permissions`); no cross-agent tool is ever registered, for root or any subagent (see `architecture.md → Cross-Agent Dispatch`)
+- `build_agent()` (`agent/harness/dispatch.py`) registers tools from `make_tools(working_dir)`, filtered by `subagent.tools` allowlist when set, computes the effective permission overlay (AND of session permissions and `subagent.permissions`); root never receives a cross-agent tool; subagents that declare `delegates_to` receive `make_delegate_tool` — depth-capped at 1, capability-tightening only (see `architecture.md → Cross-Agent Dispatch`)
 
 > **Sequencer → interpreter flow, not delegate-driven decomposition:** the `Estimator` only
 > classifies scope, on a `chat`/`solo`/`mutate` ordinal scale (see `architecture.md → Estimator`;
@@ -55,7 +55,7 @@ in place, reset per turn). The graph/subagent-step path (`Harness._stream_graph`
 > agent. Root owns the turn around this execution — deployed first, present the whole time via its
 > warm session context — and synthesizes the final answer from the graph's `summary` + every step's
 > output once the walk finishes (or halts). See `architecture.md → Root` for the full synthesis
-> contract (`Harness._respond()`, fail-soft to `_recap()`).
+> contract (`Harness._respond()`, fail-soft to `_recap()`)
 
 > **Subagent vs harness-worker:** `Subagent` (and the streamers spawned for it) serve a
 > *user-turn* — assigned by the sequencer and walked by the interpreter, or dispatched directly by
@@ -63,7 +63,7 @@ in place, reset per turn). The graph/subagent-step path (`Harness._stream_graph`
 > `agent/subagents/worker/` directory, no `worker` entry in `NAMESPACE_COLORS`) — a prior draft of
 > this doc described a `ws-manager`/`ws_manager.py` unit in that role; it was never built. A
 > `harness-worker` category serving the system/lifecycle directly (e.g. a workspace-scan run
-> outside any single user turn) remains a possible future addition with zero code today.
+> outside any single user turn) remains a possible future addition with zero code today
 
 ## Generic Namespace
 `agent/subagents/generic/` is no longer dormant. `namespace_directives` (rank 0,
@@ -81,7 +81,7 @@ every other namespace's directives (rank-ordered) into its own, since a step can
 domain. The five coding/testing specialists (`code-expert`, `code-fixer`, `code-refactorer`,
 `test-expert`, `test-fixer`) declare `directive_domains=("generic",)`, composing the same
 cold-dispatch contract into their own directives (`Subagent._compose_directives`,
-`agent/subagents/__init__.py`).
+`agent/subagents/__init__.py`)
 
 ## Adding a New Subagent-Style Streamer
 There is no base class to inherit — any async generator yielding `AgentEvent`s following the
@@ -93,11 +93,11 @@ start/done convention qualifies. To add one:
 2. Bridge tool/inference events into the typed stream via `EventBus` if the streamer runs an `Agent` tool loop — follow `Harness.stream()`'s `_consume_bus()` pattern
 3. Wire into `app.py`: iterate the generator in a worker, dispatch events to a `SubAgentRenderer` instance — follow the pattern in `_stream()`
 
-No registration mechanism — discovery is explicit at call sites.
+No registration mechanism — discovery is explicit at call sites
 
 To add a new **`Subagent`** (the routable specialist entity, distinct from the streamer
 protocol above): drop one file in `agent/subagents/` exporting a module-level `subagent =
-Subagent(...)`; `_discover()` picks it up automatically — see `architecture.md → Subagent Routing`.
+Subagent(...)`; `_discover()` picks it up automatically — see `architecture.md → Subagent Routing`
 
 ## SubAgentRenderer
 Full implementation detail in `tui-layout.md → SubAgentRenderer`. Contract summary:

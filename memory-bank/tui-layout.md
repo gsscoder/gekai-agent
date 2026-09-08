@@ -1,4 +1,4 @@
-# TUI Layout
+﻿# TUI Layout
 Textual-based full-screen terminal UI; fixed footer with command palette and input, scrollable conversation body
 
 ## Package Layout
@@ -81,7 +81,7 @@ All widgets use `background: ansi_default` / `color: ansi_default` for terminal 
 - else → `conversation.scroll_up/down()`
 
 ## Streaming Worker (`_stream`)
-Runs as exclusive Textual worker.
+Runs as exclusive Textual worker
 - picks random operative verb pair and accent color for the turn
 - normalizes input via `agent.normalize`, classifies via `agent.classify`
 - calls `agent.check_gate(segments)`; if rejected and `session.scope_gate` → mount `REJECTED` widget and return
@@ -106,12 +106,12 @@ stage — folded into the Estimator and deleted, plan 33). A `mutate` (or `seed`
 routes into the sequencer + fixed interpreter, whose steps render as `DelegationStartEvent`/
 `DelegationDoneEvent` badges nested under the turn's `SubAgentRenderer` block (see
 `## SubAgentRenderer` below and `architecture.md → Cross-Agent Dispatch`) — never a separate
-HEADER/widget sequence of their own.
+HEADER/widget sequence of their own
 There is no `delegate` tool: no agent, root or subagent, can call another agent mid-turn (plan 27
-decision 11).
+decision 11)
 
 ## SubAgentRenderer
-Helper class in `app.py`; one instance per subagent block within a turn.
+Helper class in `app.py`; one instance per subagent block within a turn
 - `start(name, description, color)` — mounts `assistant-spacer` Static then a `HEADER` MessageWidget with `"[bold #666666]Thinking...[/bold #666666]"` header text; starts braille-frame `_animate_dot()` asyncio task on `.header-dot`
 - `thinking_chunk(text)` — buffers thinking tokens; updates `.header-text` to `"[bold #666666]Thinking({last_sentence})[/bold #666666]"`
 - `log(message, tool_name)` — skips messages ending with `"..."`; in non-debug mode deduplicates consecutive calls from the same `tool_name` (updates existing widget to `"{kind} ({n} calls)"`); first item prefix `"  ⎿"`, subsequent `"   "`
@@ -121,7 +121,7 @@ Helper class in `app.py`; one instance per subagent block within a turn.
 - `done(thinking_chars)` — cancels spinner task; removes all log widgets; removes progress bar if present; updates header dot to `"[#666666]●[/#666666]"` and header text to `"[#666666]Thought ({tokens} tokens · {elapsed} · {n} calls)[/#666666]"`; elapsed uses `_fmt_duration_verbose` (ms / s / m s)
 
 ## Context Bar
-`Static #context-bar`; sits below `#input-area` inside `#footer`; always visible.
+`Static #context-bar`; sits below `#input-area` inside `#footer`; always visible
 
 Startup/clear displays full status bar: `_fmt_status_bar(model, working_dir.name, branch, tokens, limit)` → `"[dim][{model}][/dim] | 📁 {dir} [⎇ {branch}] | [dim]{X.X}% context[/dim]"`
 After each `_stream` turn: updates to compact `_fmt_context_pct(tokens, limit)` → `"X.X% context"`
@@ -143,14 +143,14 @@ one line, last-verdict-wins**: there is no per-file store, so a second verdict l
 file read after GEKAI.md's own check already posted a warning, or a re-run this session) simply
 overwrites whatever is showing. Not a timed toast — the condition it reports (a standing file that
 addresses an AI agent's behavior) lasts the whole session, so the notice persists until the next
-verdict replaces it; there is no auto-hide timer.
+verdict replaces it; there is no auto-hide timer
 
 Both `GekaiAgent.start_directive_audit()` (fired from `_init_session` and `_clear_session`, right
 after `start_session()` sets `session.gekai_md`) and `start_foreign_file_audit()` (fired from the
 `ForeignFileDetectedEvent` handler) pass `GekaiApp._apply_directive_verdict(path, verdict)` as
 their callback — the single consumer of every verdict either path produces. `verdict` is now a
 plain `AuditVerdict(has_directives: bool, raw: str) | None` — v2's redundant/conflicting counts are
-gone.
+gone
 
 `_apply_directive_verdict(path, verdict)`:
 - `verdict is None` (in flight) → grey, `"⋯ checking {path}"`
@@ -163,12 +163,12 @@ gone.
 
 `_hide_directive_notice()` clears text and hides the widget; called at the top of both
 `_init_session` and `_clear_session`, before the new session's own `start_directive_audit()` call —
-so a fresh/cleared session never briefly shows the previous session's stale verdict.
+so a fresh/cleared session never briefly shows the previous session's stale verdict
 
 **Named ceiling, not a bug:** if a foreign-file verdict overwrites GEKAI.md's own standing warning
 (or its green loaded line), GEKAI.md's notice is gone until the next session start — the notice
 text gives no marker distinguishing "applies every turn" (GEKAI.md) from "sitting in message
-history, evictable by `/compact`" (a foreign file). Revisit only if this actually bites someone.
+history, evictable by `/compact`" (a foreign file). Revisit only if this actually bites someone
 
 ## Status / Spinner
 `_tick_status(color)` cycles `["·", "•", "●", "•"]` frames; skipped if `_status_paused`; derives text via `_fmt_status(verb, elapsed)` → `"{Verb}... ({elapsed}s)"`, calls `_set_status`

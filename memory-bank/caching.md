@@ -1,5 +1,5 @@
-# Caching
-Catalog of caching mechanisms in gekai-agent. Each cache gets its own subsection below, documenting storage, schema, write/read paths, staleness handling, and wiring into the agent. Currently one cache exists (locator/workspace), but new caches should be added here as their own `##` sections.
+﻿# Caching
+Catalog of caching mechanisms in gekai-agent. Each cache gets its own subsection below, documenting storage, schema, write/read paths, staleness handling, and wiring into the agent. Currently one cache exists (locator/workspace), but new caches should be added here as their own `##` sections
 
 ## Locator cache (workspace.db) — removed
 
@@ -10,6 +10,6 @@ no hits). `save_findings`, `find_candidates`, `mine_keywords`, and `.gekai/works
 remaining references in code; the previously-documented "write side alive, read side orphaned"
 state (write side populated by `ws_manager`'s onboarding walk) no longer holds either — that
 caller is also gone. There is currently no locator-cache/keyword-hint mechanism in the agent at
-all; file discovery is done entirely by the main agent's own read tools.
+all; file discovery is done entirely by the main agent's own read tools
 
-See `memory-bank/locator-cache.md` for the historical v1 design plan/build-order.
+See `memory-bank/locator-cache.md` for the historical v1 design plan/build-order
