@@ -3,16 +3,17 @@ from __future__ import annotations
 import re
 import shutil
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.llm import tool
-from agent.settings import load_allow_hidden, save_allow_hidden
+from agent.settings import load_allow_hidden, save_allow_hidden, load_external, save_external
 from agent.workspace import scanner
 from agent.workspace.ignore import IgnoreRules, load as _load_ignore_rules
 from agent.workspace.symbols import _EXT_TO_LANG, _LANG_TO_MODULE, _LANG_QUERIES
 
 HiddenGrantCallback = Callable[[str, str], Awaitable[bool]]
+ExternalGrantCallback = Callable[[Path, str], Awaitable[bool]]
 
 _MAX_RESULTS = 200
 _MAX_GREP_FILES = 5000
@@ -20,14 +21,47 @@ _MAX_GREP_FILES = 5000
 
 @dataclass(slots=True)
 class FileToolContext:
-    """The workspace-root/hidden-grant plumbing every file-tool helper needs —
-    repeats verbatim across `_authorize` and every helper that calls it, and
-    again from each helper's matching tool closure in `make_file_tools`;
-    carried as one unit instead of 4 loose parameters."""
+    """The workspace-root/hidden-grant/external-grant plumbing every file-tool
+    helper needs — repeats verbatim across `_authorize` and every helper that
+    calls it, and again from each helper's matching tool closure in
+    `make_file_tools`; carried as one unit instead of 6 loose parameters."""
     working_dir: Path
     allow_hidden: set[str] | None = None
     grant_cb: HiddenGrantCallback | None = None
     pending: set[str] | None = None
+    external: list[Path] = field(default_factory=list)
+    external_grant_cb: ExternalGrantCallback | None = None
+
+
+def _outside_workspace(path: str, working_dir: Path) -> Path | None:
+    """Resolve `path` against `working_dir` and return it only if it escapes
+    the workspace root. Split out of `_resolve_in_ws` so `_authorize` can
+    route a genuinely-outside path through the external-grant flow instead of
+    an unconditional deny; in-workspace `.aiignore`-forbidden handling stays
+    in `_resolve_in_ws`, untouched."""
+    target = (working_dir / path).resolve()
+    base = working_dir.resolve()
+    return target if not target.is_relative_to(base) else None
+
+
+def _external_root_candidate(target: Path) -> Path:
+    """Widest directory to offer for an external grant: the git-repo root
+    containing `target` (worktrees use a `.git` file, not a dir, hence
+    `.exists()` rather than `.is_dir()`), or `target` itself when no repo
+    root is found short of the home/drive-root boundary. Never offers an
+    entire drive or the user's whole home directory, nor searches for a
+    `.git` root at or beyond either boundary — those cases fall back to
+    `target` itself instead."""
+    home = Path.home().resolve()
+    start = target if target.is_dir() else target.parent
+    candidate = target.resolve()
+    for ancestor in (start, *start.parents):
+        if ancestor == home or ancestor.parent == ancestor:
+            break
+        if (ancestor / ".git").exists():
+            candidate = ancestor
+            break
+    return candidate.resolve()
 
 
 def _resolve_in_ws(path: str, working_dir: Path) -> Path | None:
@@ -48,17 +82,28 @@ async def _authorize(
     *,
     mode: str,
 ) -> Path | str:
-    """Resolve `path` and gate hidden-but-not-forbidden access behind a grant.
+    """Resolve `path` and gate hidden-but-not-forbidden or genuinely-outside-
+    workspace access behind a grant.
 
     Returns the resolved Path on success, or an "error: ..." string on
     failure. Forbidden (.aiignore) paths fail via _resolve_in_ws before any
-    grant logic runs - the red zone is never prompted.
+    grant logic runs - the red zone is never prompted. A path that resolves
+    outside the workspace root entirely goes through the external-grant
+    branch below instead - a granted external root gets full access to its
+    subtree, bypassing the workspace's own .aiignore/hidden-tier rules.
 
-    `ctx.pending` tracks hidden paths with an in-flight grant request. If a
+    `ctx.pending` tracks hidden paths and external-grant candidate roots with
+    an in-flight grant request (keyed by `rel` or by the candidate root's
+    string form respectively - these never collide, since `rel` is always
+    workspace-relative and a candidate root is always absolute). If a
     concurrent same-batch call targets the same path while a grant is
     already pending, it is denied immediately rather than double-prompting
     (mirrors PermissionGate._pending).
     """
+    outside = _outside_workspace(path, ctx.working_dir)
+    if outside is not None:
+        return await _authorize_external(outside, ctx, mode=mode)
+
     target = _resolve_in_ws(path, ctx.working_dir)
     if target is None:
         return "error: path outside working directory"
@@ -82,6 +127,40 @@ async def _authorize(
             granted.add(rel)
             save_allow_hidden(ctx.working_dir, rel)
 
+    return target
+
+
+async def _authorize_external(
+    target: Path,
+    ctx: FileToolContext,
+    *,
+    mode: str,
+) -> Path | str:
+    """`_authorize`'s branch for a path that resolves outside the workspace
+    root entirely - gated by a per-workspace grant list (`ctx.external`)
+    instead of an unconditional deny. A grant covers `target`'s whole
+    subtree (any depth), full read/write access, with no further forbidden/
+    hidden checks - the workspace's `.aiignore`/hidden-tier rules are a
+    workspace concept and do not apply to a granted external root.
+    """
+    if any(target.is_relative_to(e) for e in ctx.external):
+        return target
+
+    candidate_root = _external_root_candidate(target)
+    candidate_key = str(candidate_root)
+    in_flight = ctx.pending if ctx.pending is not None else set()
+    if candidate_key in in_flight:
+        return f"error: access to external path denied: {target}"
+    if ctx.external_grant_cb is None:
+        return f"error: access to external path denied: {target}"
+    in_flight.add(candidate_key)
+    try:
+        if not await ctx.external_grant_cb(candidate_root, mode):
+            return f"error: access to external path denied: {target}"
+    finally:
+        in_flight.discard(candidate_key)
+    ctx.external.append(candidate_root)
+    save_external(ctx.working_dir, candidate_root)
     return target
 
 
@@ -239,12 +318,20 @@ async def _grep(
         return f"error: invalid pattern: {exc}"
 
     root = ctx.working_dir.resolve()
+    external = False
     if path:
         result = await _authorize(path, ctx, mode="read")
         if isinstance(result, str):
             return result
         target = result
-        candidates = [target] if target.is_file() else _walk_files(target, root)
+        # `target` may be outside the workspace root (a granted external
+        # path) - `target.relative_to(root)` would raise ValueError for
+        # those, and root's own .gitignore/.aiignore does not apply to a
+        # foreign tree anyway, so walk and format relative to `target`
+        # itself instead (scanner._walk's `root` param exists for this).
+        external = not target.is_relative_to(root)
+        walk_root = target if external else root
+        candidates = [target] if target.is_file() else _walk_files(target, walk_root)
     else:
         candidates = _walk_files(root, root)
 
@@ -257,7 +344,8 @@ async def _grep(
                 file.read_text(encoding="utf-8", errors="replace").splitlines(), 1
             ):
                 if regex.search(line):
-                    results.append(f"{file.relative_to(root)}:{i}: {line}")
+                    location = file if external else file.relative_to(root)
+                    results.append(f"{location}:{i}: {line}")
                     if len(results) >= _MAX_RESULTS:
                         break
         except (OSError, UnicodeDecodeError):
@@ -488,12 +576,18 @@ async def _make_dir(
         return f"error: {exc or type(exc).__name__}"
 
 
-def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = None) -> list:
+def make_file_tools(
+    working_dir: Path,
+    grant_cb: HiddenGrantCallback | None = None,
+    external_grant_cb: ExternalGrantCallback | None = None,
+) -> list:
     ctx = FileToolContext(
         working_dir=working_dir,
         allow_hidden=load_allow_hidden(working_dir),
         grant_cb=grant_cb,
         pending=set(),
+        external=load_external(working_dir),
+        external_grant_cb=external_grant_cb,
     )
 
     @tool(is_read_only=True, required_permission="read")
@@ -581,7 +675,6 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
     async def move_file(src: str, dst: str) -> str:
         """Move or rename a file within the workspace.
 
-        Both src and dst must be paths relative to the workspace root.
         Refuses if dst already exists — no silent overwrite.
         Returns 'ok' on success or an error string on failure.
         """
@@ -591,7 +684,7 @@ def make_file_tools(working_dir: Path, grant_cb: HiddenGrantCallback | None = No
     async def copy_file(src: str, dst: str) -> str:
         """Copy a file within the workspace.
 
-        src must be a file (not a directory). Both paths must be within the workspace.
+        src must be a file (not a directory).
         Refuses if dst already exists — no silent overwrite.
         Returns 'ok' on success or an error string on failure.
         """

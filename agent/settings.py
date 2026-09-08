@@ -69,6 +69,36 @@ def save_allow_hidden(working_dir: Path, rel: str) -> None:
         atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
+def load_external(working_dir: Path) -> list[Path]:
+    path = _settings_path(working_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    return [Path(p) for p in data.get("permissions", {}).get("external", [])]
+
+
+def save_external(working_dir: Path, root: Path) -> None:
+    root = root.resolve()
+    path = _settings_path(working_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_for(path):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            data = {}
+        perms = data.setdefault("permissions", {})
+        existing = [Path(p) for p in perms.get("external", [])]
+        if any(root.is_relative_to(e) for e in existing):
+            return
+        remaining = [e for e in existing if not e.is_relative_to(root)]
+        remaining.append(root)
+        perms["external"] = [str(p) for p in remaining]
+        atomic_write(path, json.dumps(data, indent=2) + "\n")
+
+
 def load_directive_audit_enabled(working_dir: Path) -> bool:
     """Off switch for plan 35's directive auditor (decision 15, unmeasurable
     features get deleted). Defaults to enabled — absent from a fresh

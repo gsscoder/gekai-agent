@@ -623,6 +623,17 @@ class GekaiApp(App[None]):
         self._status_start += time.monotonic() - pause_start
         return choice == "y"
 
+    async def _external_grant_callback(self, root: Path, mode: str) -> bool:
+        if self._worker_cancelled:
+            return False
+        question = f"Grant full access to external path '{root}' (outside the workspace)?"
+        self._status_paused = True
+        pause_start = time.monotonic()
+        choice = await self._ask_choice(question, [("y", "Yes"), ("n", "No")])
+        self._status_paused = False
+        self._status_start += time.monotonic() - pause_start
+        return choice == "y"
+
     async def _ask_choice(
         self,
         question: str,
@@ -1141,6 +1152,7 @@ class GekaiApp(App[None]):
                 turn_id=turn_id, session_id=session_id,
                 permission_callback=self._permission_callback,
                 hidden_grant_callback=self._hidden_grant_callback,
+                external_grant_callback=self._external_grant_callback,
                 append_user=append_user,
                 on_event=_on_event,
                 on_directive_verdict=self._apply_directive_verdict,

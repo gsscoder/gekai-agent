@@ -28,7 +28,7 @@ from ..events import (
 )
 from ..permissions import PermissionCallback
 from ..session import Session
-from ..tools import HiddenGrantCallback
+from ..tools import ExternalGrantCallback, HiddenGrantCallback
 
 OnEvent = Callable[[AgentEvent | str], Awaitable[None]]
 
@@ -60,6 +60,7 @@ async def run_step(
     session_id: str,
     permission_callback: PermissionCallback | None,
     hidden_grant_callback: HiddenGrantCallback | None,
+    external_grant_callback: ExternalGrantCallback | None,
     append_user: bool = True,
     on_event: OnEvent | None = None,
     on_directive_verdict: DirectiveVerdictCallback | None = None,
@@ -86,6 +87,7 @@ async def run_step(
         session, raw,
         permission_callback=permission_callback,
         hidden_grant_callback=hidden_grant_callback,
+        external_grant_callback=external_grant_callback,
         turn_id=turn_id,
         append_user=append_user,
         seed=seed,

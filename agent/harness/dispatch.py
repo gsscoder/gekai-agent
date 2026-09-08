@@ -32,7 +32,7 @@ from ..session import Session
 from ..shell import resolve_shell
 from ..subagents import SUBAGENTS, Subagent
 from ..tiers.resolve import ResolvedTier
-from ..tools import HiddenGrantCallback, make_tools
+from ..tools import ExternalGrantCallback, HiddenGrantCallback, make_tools
 
 # Shared sentinel prefix for a crashed/unresolvable delegated run (both
 # failure messages below carry it) — the interpreter's `run_task_graph`
@@ -108,6 +108,7 @@ def build_agent(
     bus: EventBus | None = None,
     subagent: Subagent | None = None,
     hidden_grant_callback: HiddenGrantCallback | None = None,
+    external_grant_callback: ExternalGrantCallback | None = None,
     tools_override: frozenset[str] | None = None,
     can_delegate: bool = True,
 ) -> Agent:
@@ -121,7 +122,7 @@ def build_agent(
         effective = permissions
 
     selected = []
-    for t in make_tools(working_dir, grant_cb=hidden_grant_callback):
+    for t in make_tools(working_dir, grant_cb=hidden_grant_callback, external_grant_cb=external_grant_callback):
         if subagent and subagent.tools is not None and t.name not in subagent.tools:
             continue
         perm = t.required_permission
@@ -149,6 +150,7 @@ def build_agent(
                 extra_params=resolved.extra_params, working_dir=working_dir,
                 permissions=permissions, permission_callback=permission_callback,
                 bus=bus, hidden_grant_callback=hidden_grant_callback,
+                external_grant_callback=external_grant_callback,
             ),
             frozenset(t.name for t in selected),
         )]
@@ -193,7 +195,7 @@ class DispatchContext:
     """The model/credential/session-plumbing bundle every dispatch into a
     nested agent needs — repeats verbatim across `run_subagent`,
     `make_delegate_tool`, and its `delegate` closure; carried as one unit
-    instead of 9 loose parameters."""
+    instead of 10 loose parameters."""
     model: str
     api_key: str | None
     api_base: str | None
@@ -203,6 +205,7 @@ class DispatchContext:
     permission_callback: PermissionCallback | None
     bus: EventBus | None
     hidden_grant_callback: Any | None
+    external_grant_callback: Any | None = None
     session: Session | None = None
     verbose_telemetry: bool = True
 
@@ -266,6 +269,7 @@ async def run_subagent(
         ctx.permissions, ctx.permission_callback, system_base, ctx.bus,
         subagent=resolved,
         hidden_grant_callback=ctx.hidden_grant_callback,
+        external_grant_callback=ctx.external_grant_callback,
         tools_override=effective_override,
         can_delegate=can_delegate,
     )

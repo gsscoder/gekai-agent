@@ -39,7 +39,7 @@ from ..text_format import clean_output
 from ..tiers.catalog import TierName, TierPolicy
 from ..tiers.resolve import ResolvedTier
 from ..subagents import SUBAGENTS, Subagent
-from ..tools import HiddenGrantCallback
+from ..tools import ExternalGrantCallback, HiddenGrantCallback
 from .bridge import (
     bridge_llm_event,
     format_diff_summary,
@@ -112,6 +112,7 @@ class Harness:
         user_input: str,
         permission_callback: PermissionCallback | None = None,
         hidden_grant_callback: HiddenGrantCallback | None = None,
+        external_grant_callback: ExternalGrantCallback | None = None,
         seed: str | None = None,
     ) -> AsyncIterator[AgentEvent | str]:
         bus = EventBus()
@@ -140,14 +141,15 @@ class Harness:
 
         if estimate_decision == "mutate":
             async for item in self._stream_graph(
-                session, user_input, permission_callback, hidden_grant_callback, bus,
+                session, user_input, permission_callback, hidden_grant_callback,
+                external_grant_callback, bus,
             ):
                 yield item
             return
 
         async for item in self._stream_solo(
             session, user_input, permission_callback, subagent,
-            hidden_grant_callback, bus, chat_rung=(estimate_decision == "chat"),
+            hidden_grant_callback, external_grant_callback, bus, chat_rung=(estimate_decision == "chat"),
         ):
             yield item
 
@@ -158,6 +160,7 @@ class Harness:
         permission_callback: PermissionCallback | None,
         subagent: Subagent | None,
         hidden_grant_callback: HiddenGrantCallback | None,
+        external_grant_callback: ExternalGrantCallback | None,
         bus: EventBus,
         *,
         chat_rung: bool,
@@ -228,6 +231,7 @@ class Harness:
             session.working_dir, session.permissions, permission_callback, system_base, bus,
             subagent=subagent,
             hidden_grant_callback=hidden_grant_callback,
+            external_grant_callback=external_grant_callback,
             tools_override=tools_override,
         )
         if self._verbose_telemetry:
@@ -306,6 +310,7 @@ class Harness:
         user_input: str,
         permission_callback: PermissionCallback | None,
         hidden_grant_callback: HiddenGrantCallback | None,
+        external_grant_callback: ExternalGrantCallback | None,
         bus: EventBus,
     ) -> AsyncIterator[AgentEvent | str]:
         """Case 3/4 mutation path: sequencer produces a validated TaskGraph, the
@@ -370,7 +375,7 @@ class Harness:
             _log.warning("sequencer failed to produce a valid task graph; falling back to solo: %s", exc)
             async for item in self._stream_solo(
                 session, user_input, permission_callback, None,
-                hidden_grant_callback, bus, chat_rung=False, emit_start_event=False,
+                hidden_grant_callback, external_grant_callback, bus, chat_rung=False, emit_start_event=False,
             ):
                 yield item
             return
@@ -423,6 +428,7 @@ class Harness:
                     extra_params=resolved.extra_params, working_dir=working_dir,
                     permissions=permissions, permission_callback=permission_callback,
                     bus=bus, hidden_grant_callback=hidden_grant_callback,
+                    external_grant_callback=external_grant_callback,
                     session=session, verbose_telemetry=self._verbose_telemetry,
                 ),
                 tools_override=tools_override,
@@ -522,6 +528,7 @@ class Harness:
                 answer, responder_event = await self._respond(
                     user_input, session, graph, halted.results, halted=halted,
                     permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
+                    external_grant_callback=external_grant_callback,
                     files_touched=files_touched, diff_summaries=diff_summaries,
                 )
                 if responder_event is not None:
@@ -533,6 +540,7 @@ class Harness:
             answer, responder_event = await self._respond(
                 user_input, session, graph, results, halted=None,
                 permission_callback=permission_callback, hidden_grant_callback=hidden_grant_callback,
+                external_grant_callback=external_grant_callback,
                 files_touched=files_touched, diff_summaries=diff_summaries,
             )
             if responder_event is not None:
@@ -551,6 +559,7 @@ class Harness:
         halted: TaskGraphHalted | None,
         permission_callback: PermissionCallback | None,
         hidden_grant_callback: HiddenGrantCallback | None,
+        external_grant_callback: ExternalGrantCallback | None,
         files_touched: list[str],
         diff_summaries: list[str],
     ) -> tuple[str, ResponderEvent | None]:
@@ -573,6 +582,7 @@ class Harness:
                 resolved,
                 session.working_dir, session.permissions, permission_callback, system_base,
                 hidden_grant_callback=hidden_grant_callback,
+                external_grant_callback=external_grant_callback,
             )
             outputs_block = "\n\n".join(
                 f"--- step {i + 1} output ---\n{r.output}" for i, r in enumerate(results)

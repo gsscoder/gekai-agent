@@ -16,7 +16,7 @@ from .tiers import (
     load_model_catalog,
     load_tier_bindings,
 )
-from .harness import Harness, HiddenGrantCallback
+from .harness import ExternalGrantCallback, Harness, HiddenGrantCallback
 from .harness.touchpoints import resolve_at_tier, resolve_touchpoint, touchpoint
 from .permissions import PermissionCallback, Permissions
 from .session import IngestedFile, Session
@@ -306,6 +306,7 @@ class GekaiAgent:
         permission_callback: PermissionCallback | None = None,
         turn_id: str | None = None,
         hidden_grant_callback: HiddenGrantCallback | None = None,
+        external_grant_callback: ExternalGrantCallback | None = None,
         append_user: bool = True,
         seed: str | None = None,
     ) -> AsyncIterator[str | AgentEvent]:
@@ -324,6 +325,7 @@ class GekaiAgent:
             session, user_input,
             permission_callback=permission_callback,
             hidden_grant_callback=hidden_grant_callback,
+            external_grant_callback=external_grant_callback,
             seed=seed,
         )
         try:

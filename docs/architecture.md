@@ -294,7 +294,7 @@ stronger control would otherwise protect is already held mechanically, by the pe
 
 Tool execution is **not** OS-sandboxed. The current boundary is:
 
-- **Path jail** — `_resolve_in_ws` rejects any path that resolves outside the workspace root (symlinks included via `.resolve()`), and hard-denies `.aiignore`-forbidden paths (see [Workspace Ignore Rules & Hidden-Path Grants](#workspace-ignore-rules--hidden-path-grants)) before any grant logic runs.
+- **Path jail** — a path that resolves outside the workspace root (symlinks included via `.resolve()`) is denied unless it falls under a per-workspace external grant (see [External-Path Grants](#external-path-grants)); a path that resolves inside the workspace but is `.aiignore`-forbidden is hard-denied via `_resolve_in_ws`, with no grant possible (see [Workspace Ignore Rules & Hidden-Path Grants](#workspace-ignore-rules--hidden-path-grants)).
 - **No shell for file ops** — `read_file`/`write_file`/etc. use `shutil` / `pathlib` directly; no subprocess or shell interpolation surface. `run_command` (the one exec tool) does use a real subprocess, gated by `required_permission="exec"` and a best-effort forbidden-path scan (`_forbidden_token`).
 - **Permission gate** — `PermissionGate` enforces `read` / `write` / `exec` per tool call; `exec` permission is not granted by default.
 
@@ -338,10 +338,7 @@ Callers pass POSIX-style relative paths (`/` separators, no leading `/`); direct
 ```python
 async def _authorize(
     path: str,
-    working_dir: Path,
-    allow_hidden: set[str] | None,
-    grant_cb: HiddenGrantCallback | None,
-    pending: set[str] | None = None,
+    ctx: FileToolContext,   # working_dir, allow_hidden, grant_cb, pending, external, external_grant_cb
     *,
     mode: str,
 ) -> Path | str
@@ -351,8 +348,9 @@ Every file-tool helper (`_read_file`, `_file_info`, `_grep`, `_edit_file`, `_wri
 
 Flow:
 
-1. `_resolve_in_ws(path, working_dir)` — path-jail + `forbidden`-tier hard-deny. Returns `None` (→ `"error: path outside working directory"`) if the path escapes the workspace or matches `.aiignore`. **Forbidden paths are never prompted, with or without a grant.**
-2. If the resolved path is `hidden` (and not forbidden):
+1. `_outside_workspace(path, working_dir)` — if `path` resolves outside the workspace root entirely, control passes to `_authorize_external` (see [External-Path Grants](#external-path-grants)) instead of an unconditional deny.
+2. `_resolve_in_ws(path, working_dir)` — for a path that resolved inside the workspace: `forbidden`-tier hard-deny. Returns `None` (→ `"error: path outside working directory"`) if it matches `.aiignore`. **Forbidden paths are never prompted, with or without a grant.**
+3. If the resolved path is `hidden` (and not forbidden):
    - If `rel` is already in `allow_hidden`, proceed — no prompt.
    - Else if `rel` is already in `pending` (a concurrent grant is in flight for the same path), deny immediately: `"error: access to hidden path denied: {rel}"`.
    - Else if `grant_cb is None`, deny: `"error: access to hidden path denied: {rel}"`.
@@ -360,7 +358,7 @@ Flow:
      - `False` → deny (same error string); only this tool call fails, no session/worker cancellation.
      - `True` → add `rel` to `allow_hidden` (in-memory) and persist via `save_allow_hidden(working_dir, rel)`.
    - `rel` is removed from `pending` in a `finally` block regardless of outcome.
-3. Return the resolved `Path`.
+4. Return the resolved `Path`.
 
 Granted hidden paths remain invisible to discovery tools (`list_files`, `grep` without an explicit `path`) — a grant covers only the explicitly-named path, not directory listings.
 
@@ -401,6 +399,59 @@ TUI._hidden_grant_callback(self, rel, mode) -> bool   agent/tui/app.py
 ```
 
 The TUI implementation pauses the status timer, asks `"Grant {mode} access to hidden path '{rel}' (excluded by .gitignore)?"` via `_ask_choice` (yes/no), and returns `choice == "y"`. If the worker was already cancelled (`self._worker_cancelled`), it short-circuits to `False` without prompting.
+
+---
+
+## External-Path Grants
+
+A path that resolves entirely outside the workspace root — an absolute path into a sibling repo, another project, anywhere `.resolve()` lands outside `working_dir` — is not an unconditional deny. It is gated by a per-workspace grant list (`permissions.external` in `.gekai/settings.local.json`), following the exact same shape as the hidden-path grant flow above, with one difference: a grant here covers a whole subtree (any depth under the granted root) with full read/write/delete/move/copy/mkdir access, and bypasses the workspace's own `.aiignore`/hidden-tier rules entirely — those are a workspace concept and do not apply to a foreign tree.
+
+### `_authorize_external`
+
+```python
+async def _authorize_external(target: Path, ctx: FileToolContext, *, mode: str) -> Path | str
+```
+
+Called from `_authorize` once `_outside_workspace` confirms `target` resolves outside the workspace root. Flow:
+
+1. If `target.is_relative_to(e)` for any `e` in `ctx.external`, the path is already covered — return `target` immediately, with no further checks.
+2. Otherwise compute the candidate grant root via `_external_root_candidate(target)` (below).
+3. If the candidate root's string form is already in `ctx.pending` (a concurrent grant is in flight for the same root), deny immediately: `"error: access to external path denied: {target}"`.
+4. If `ctx.external_grant_cb is None`, deny with the same message.
+5. Else add the candidate root to `ctx.pending`, `await ctx.external_grant_cb(candidate_root, mode)`:
+   - `False` → deny (same message).
+   - `True` → append `candidate_root` to `ctx.external` (in-memory) and persist via `save_external(ctx.working_dir, candidate_root)`.
+   - The candidate root is removed from `ctx.pending` in a `finally` block regardless of outcome.
+6. Return the resolved `target` (not the wider `candidate_root` — the denial/success both act on the path the tool call actually named; what gets persisted and offered to the user is the wider root).
+
+`ctx.pending` is the same set the hidden-path flow above uses, keyed by the candidate root's absolute string form there instead of a workspace-relative `rel` — the two key spaces never collide (a `rel` is always workspace-relative, a candidate root is always absolute).
+
+### `_external_root_candidate` — what gets offered for grant
+
+Widens to the natural project boundary so one grant covers a whole repo, not one file at a time — but never past the user's home directory or a filesystem root:
+
+1. Start at `target` if it's a directory, else `target.parent`.
+2. Walk that directory and its parents looking for the first one containing a `.git` entry (dir or file — worktrees use a `.git` file) — that ancestor is the candidate. The walk stops, without considering `.git` there, the moment it reaches the user's home directory or a filesystem root, so a `.git` sitting at or beyond either boundary is never picked up.
+3. If the walk finds no `.git` short of that boundary, the candidate falls back to `target` itself — not the starting directory, which can equal the home directory when `target` is a file directly inside it. Never offer to grant an entire drive or home directory.
+
+### Persistence
+
+```python
+def load_external(working_dir: Path) -> list[Path]: ...
+def save_external(working_dir: Path, root: Path) -> None: ...
+```
+
+(`agent/settings.py`) read/write `permissions.external` — a JSON array of absolute path strings — in `.gekai/settings.local.json`. `save_external` merges by `Path.is_relative_to` (never string-prefix comparison, so `/foo` never falsely matches `/foobar`): a root already covered by an existing entry is a no-op; a new root that subsumes an existing narrower entry replaces it. `make_file_tools(working_dir, external_grant_cb=None)` calls `load_external(working_dir)` once at construction to seed `ctx.external`; subsequent grants within the session update both the list and the file.
+
+### `external_grant_callback` wiring
+
+```python
+ExternalGrantCallback = Callable[[Path, str], Awaitable[bool]]   # (candidate_root, mode) -> grant?
+```
+
+Defined in `agent/tools/files.py`, re-exported via `agent/tools/__init__.py` and `agent/harness/__init__.py`. Threaded end to end alongside `hidden_grant_callback`, one sibling parameter at each of the same touchpoints listed above (`make_tools`, `Harness.stream`/`_stream_solo`/`_stream_graph`/`_respond`, `dispatch.build_agent`/`DispatchContext`/`run_subagent`, `GekaiAgent.process_stream`, `run_step`, and `TUI._external_grant_callback` wired into `run_step(...)`).
+
+The TUI implementation mirrors `_hidden_grant_callback` exactly (same `_worker_cancelled` guard, same status-timer pause bookkeeping): it only asks `"Grant full access to external path '{root}' (outside the workspace)?"` via `_ask_choice` (yes/no) and returns `choice == "y"`. Persistence happens in exactly one place — step 5 of `_authorize_external` above — not in the TUI callback, matching `_hidden_grant_callback`'s own division of labor.
 
 ---
 

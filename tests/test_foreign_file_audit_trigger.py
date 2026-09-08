@@ -195,7 +195,7 @@ def test_run_step_fires_start_foreign_file_audit_with_the_verdict_callback(tmp_p
         return await harness_turn.run_step(
             agent, session, "read AGENTS.md", None,
             turn_id="t1", session_id="s1",
-            permission_callback=None, hidden_grant_callback=None,
+            permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
             on_directive_verdict=lambda path, v: seen_verdicts.append((path, v)),
         )
 

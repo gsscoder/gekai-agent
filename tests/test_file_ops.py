@@ -3,9 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from agent.settings import load_allow_hidden
+from agent.settings import load_allow_hidden, load_external
 from agent.tools import _move_file, _copy_file, _delete_file, _make_dir
-from agent.tools.files import FileToolContext, _grep, _read_file, _edit_file, _write_file, _list_files, _file_info
+from agent.tools import files
+from agent.tools.files import FileToolContext, _external_root_candidate, _grep, _read_file, _edit_file, _write_file, _list_files, _file_info
 
 
 def run(coro):
@@ -17,8 +18,14 @@ def _ctx(
     allow_hidden: set[str] | None = None,
     grant_cb=None,
     pending: set[str] | None = None,
+    external: list[Path] | None = None,
+    external_grant_cb=None,
 ) -> FileToolContext:
-    return FileToolContext(working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending)
+    return FileToolContext(
+        working_dir=working_dir, allow_hidden=allow_hidden, grant_cb=grant_cb, pending=pending,
+        external=external if external is not None else [],
+        external_grant_cb=external_grant_cb,
+    )
 
 
 def _write(p: Path, text: str = "content") -> None:
@@ -70,13 +77,15 @@ class TestMoveFile:
         assert (tmp_path / "a.txt").exists()
 
     def test_jail_src(self, tmp_path):
+        expected = (tmp_path / "../outside.txt").resolve()
         result = run(_move_file("../outside.txt", "b.txt", ctx=_ctx(tmp_path)))
-        assert result == "error: path outside working directory"
+        assert result == f"error: access to external path denied: {expected}"
 
     def test_jail_dst(self, tmp_path):
         _write(tmp_path / "a.txt")
+        expected = (tmp_path / "../outside.txt").resolve()
         result = run(_move_file("a.txt", "../outside.txt", ctx=_ctx(tmp_path)))
-        assert result == "error: path outside working directory"
+        assert result == f"error: access to external path denied: {expected}"
 
 
 # ---------------------------------------------------------------------------
@@ -109,13 +118,15 @@ class TestCopyFile:
         assert result.startswith("error:")
 
     def test_jail_src(self, tmp_path):
+        expected = (tmp_path / "../outside.txt").resolve()
         result = run(_copy_file("../outside.txt", "b.txt", ctx=_ctx(tmp_path)))
-        assert result == "error: path outside working directory"
+        assert result == f"error: access to external path denied: {expected}"
 
     def test_jail_dst(self, tmp_path):
         _write(tmp_path / "a.txt")
+        expected = (tmp_path / "../outside.txt").resolve()
         result = run(_copy_file("a.txt", "../outside.txt", ctx=_ctx(tmp_path)))
-        assert result == "error: path outside working directory"
+        assert result == f"error: access to external path denied: {expected}"
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +150,9 @@ class TestDeleteFile:
         assert result.startswith("error:")
 
     def test_jail(self, tmp_path):
+        expected = (tmp_path / "../outside.txt").resolve()
         result = run(_delete_file("../outside.txt", ctx=_ctx(tmp_path)))
-        assert result == "error: path outside working directory"
+        assert result == f"error: access to external path denied: {expected}"
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +176,9 @@ class TestMakeDir:
         assert result == "ok"
 
     def test_jail(self, tmp_path):
+        expected = (tmp_path / "../outside").resolve()
         result = run(_make_dir("../outside", ctx=_ctx(tmp_path)))
-        assert result == "error: path outside working directory"
+        assert result == f"error: access to external path denied: {expected}"
 
 
 class TestGrep:
@@ -558,6 +571,146 @@ class TestHiddenGrantConcurrency:
 
         assert result == "top secret"
         assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# External-path grant flow (external_grant_cb / ctx.external)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def external_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A directory outside any workspace `tmp_path`, isolated per test (not
+    the shared `tmp_path.parent`) so external-grant tests can actually write
+    files there without risking collisions with sibling test runs."""
+    return tmp_path_factory.mktemp("external")
+
+
+class TestExternalGrant:
+    def test_no_callback_denies(self, tmp_path, external_dir):
+        target = external_dir / "secret.txt"
+        _write(target, "outside content")
+
+        result = run(_read_file(str(target), ctx=_ctx(tmp_path)))
+
+        assert result == f"error: access to external path denied: {target}"
+
+    def test_explicit_no_denies(self, tmp_path, external_dir):
+        target = external_dir / "secret.txt"
+        _write(target, "outside content")
+
+        async def cb(root, mode):
+            return False
+
+        result = run(_read_file(str(target), ctx=_ctx(tmp_path, external_grant_cb=cb)))
+
+        assert result == f"error: access to external path denied: {target}"
+        assert load_external(tmp_path) == []
+
+    def test_grant_yes_allows_read_and_persists(self, tmp_path, external_dir):
+        target = external_dir / "secret.txt"
+        _write(target, "outside content")
+
+        calls = []
+
+        async def cb(root, mode):
+            calls.append((root, mode))
+            return True
+
+        result = run(_read_file(str(target), ctx=_ctx(tmp_path, external_grant_cb=cb)))
+
+        assert result == "outside content"
+        assert len(calls) == 1
+        granted_root, mode = calls[0]
+        assert mode == "read"
+        assert target.is_relative_to(granted_root)
+        assert load_external(tmp_path) == [granted_root]
+
+        # follow-up call, fresh context seeded from the persisted grant
+        # (mirrors how make_file_tools seeds ctx.external at construction),
+        # proves the file actually gets accessed with no further prompt
+        result2 = run(_read_file(str(target), ctx=_ctx(tmp_path, external=[granted_root])))
+        assert result2 == "outside content"
+
+    def test_granted_path_not_reprompted(self, tmp_path, external_dir):
+        target = external_dir / "secret.txt"
+        _write(target, "outside content")
+        count = 0
+
+        async def cb(root, mode):
+            nonlocal count
+            count += 1
+            return True
+
+        ctx = _ctx(tmp_path, external_grant_cb=cb)
+        result1 = run(_read_file(str(target), ctx=ctx))
+        result2 = run(_read_file(str(target), ctx=ctx))
+
+        assert result1 == "outside content"
+        assert result2 == "outside content"
+        assert count == 1
+
+    def test_list_files_and_grep_never_surface_granted_external_root(self, tmp_path, external_dir):
+        target = external_dir / "secret.txt"
+        _write(target, "unique_needle_content")
+        _write(tmp_path / "visible.txt", "nothing here")
+
+        async def cb(root, mode):
+            return True
+
+        ctx = _ctx(tmp_path, external_grant_cb=cb)
+        result = run(_read_file(str(target), ctx=ctx))
+        assert result == "unique_needle_content"
+
+        list_result = run(_list_files("*", working_dir=tmp_path))
+        assert "secret.txt" not in list_result
+        assert "visible.txt" in list_result
+
+        grep_result = run(_grep("unique_needle_content", ctx=ctx))
+        assert "unique_needle_content" not in grep_result
+
+
+class TestExternalGrantConcurrency:
+    def test_concurrent_double_call_not_double_prompted(self, tmp_path, external_dir):
+        target = external_dir / "secret.txt"
+        _write(target, "outside content")
+
+        pending: set[str] = set()
+        count = 0
+
+        async def cb(root, mode):
+            nonlocal count
+            count += 1
+            await asyncio.sleep(0)
+            return True
+
+        async def both():
+            ctx = _ctx(tmp_path, external_grant_cb=cb, pending=pending)
+            return await asyncio.gather(
+                _read_file(str(target), ctx=ctx),
+                _read_file(str(target), ctx=ctx),
+            )
+
+        result1, result2 = run(both())
+
+        assert count == 1
+        results = {result1, result2}
+        assert "outside content" in results
+        assert f"error: access to external path denied: {target}" in results
+        assert pending == set()
+
+
+class TestExternalRootCandidate:
+    def test_target_under_fake_home_with_no_git_returns_narrower_than_home(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(files.Path, "home", classmethod(lambda cls: tmp_path))
+        target = tmp_path / "secret_diary.txt"
+        _write(target, "dear diary")
+
+        candidate = _external_root_candidate(target)
+
+        assert candidate != tmp_path.resolve()
+        assert candidate == target.resolve()
 
 
 # ---------------------------------------------------------------------------

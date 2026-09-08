@@ -287,7 +287,7 @@ def test_respond_success_path_carries_session_recency(monkeypatch: pytest.Monkey
 
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
-        halted=None, permission_callback=None, hidden_grant_callback=None,
+        halted=None, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
         files_touched=["some/file.py"], diff_summaries=[],
     ))
 
@@ -317,7 +317,7 @@ def test_respond_falls_back_to_recap_on_synthesis_error(monkeypatch: pytest.Monk
 
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
-        halted=None, permission_callback=None, hidden_grant_callback=None,
+        halted=None, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
         files_touched=[], diff_summaries=[],
     ))
 
@@ -339,7 +339,7 @@ def test_respond_halted_path_falls_back_to_recap_on_synthesis_error(monkeypatch:
 
     answer, event = _run(harness._respond(
         "current request", session, graph, [],
-        halted=halted, permission_callback=None, hidden_grant_callback=None,
+        halted=halted, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
         files_touched=[], diff_summaries=[],
     ))
 
@@ -370,7 +370,7 @@ def test_respond_halted_path_carries_completed_step_outputs(
 
     answer, event = _run(harness._respond(
         "current request", session, graph, halted.results,
-        halted=halted, permission_callback=None, hidden_grant_callback=None,
+        halted=halted, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
         files_touched=["some/file.py"], diff_summaries=[],
     ))
 
@@ -399,7 +399,7 @@ def test_respond_halted_path_carries_failed_step_own_last_output(
 
     answer, event = _run(harness._respond(
         "current request", session, graph, halted.results,
-        halted=halted, permission_callback=None, hidden_grant_callback=None,
+        halted=halted, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
         files_touched=[], diff_summaries=[],
     ))
 
@@ -424,7 +424,7 @@ def test_respond_carries_diff_summaries_into_synthesis_prompt(
 
     answer, event = _run(harness._respond(
         "current request", session, graph, results,
-        halted=None, permission_callback=None, hidden_grant_callback=None,
+        halted=None, permission_callback=None, hidden_grant_callback=None, external_grant_callback=None,
         files_touched=["some/file.py"], diff_summaries=["--- some/file.py ---\n+added line"],
     ))
 

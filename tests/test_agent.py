@@ -21,7 +21,7 @@ class _FakeMain:
         self._chunks = chunks
         self.last_extra_params: dict | None | str = "unset"  # sentinel — distinguishes "not passed" from None
 
-    def stream(self, session, user_input, permission_callback=None, extra_params=None, hidden_grant_callback=None, seed=None):
+    def stream(self, session, user_input, permission_callback=None, extra_params=None, hidden_grant_callback=None, external_grant_callback=None, seed=None):
         self.last_extra_params = extra_params
 
         async def _gen():
