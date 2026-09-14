@@ -1,6 +1,39 @@
-# Concepts
+# Concept
 
 What makes Gekai different — conceptually, independent of current implementation status.
+
+## A companion, not a competitor
+
+Gekai is positioned first as a companion to a parent coding tool (Claude Code, Codex), not as a
+head-on competitor to one. In the primary mode, the parent tool opens a Gekai session over MCP and
+hands over context — what the user is working on, and the repo. The user then works in Gekai's own
+TUI; when the work is done, Gekai sends a summary back to the parent tool. The niche is sharper
+than head-on competition: as a standalone TUI agent Gekai is compared on model strength and speed,
+a contest it loses; as a switch-in target the question becomes "should a human watch this change
+closely, with a different permission scope and model budget?" — which Gekai's design already
+answers. The defensible line is that a parent tool will not stop and hand control to a human in a
+separate application with its own permission scope and model budget — that is the space Gekai
+occupies.
+
+The hand-off is a switch-in and a switch-out, never delegation. The parent tool never sends change
+requests to Gekai and never drives it; the hand-off moves only the *user*, with context, into Gekai
+and back out. The same human is on both sides and knows what is happening. The parent tool stays
+outside the harness — it is not a new role inside it, and main is still the one persistent agent
+(see [One persistent agent, many borrowed roles](#one-persistent-agent-many-borrowed-roles)).
+Reconciliation — how Gekai's work is merged back with the parent tool's view — is an open design
+point. It probably happens through an explicit MCP call on switch-out, but because the same user
+stands on both sides, reconciliation is not an automated contract Gekai owes.
+
+Existing concepts become the reason for the hand-off, not limits on it. Checkpoint-oriented means
+the human switches in exactly when a checkpoint matters. Cold subagents with no carried context fit
+the split: the parent holds the long context, Gekai holds the focused session. And the harness is
+the multiplier: the parent may run an expensive model while Gekai does the focused work with a
+cheaper model and a strong harness. "Surgical" stays, one level down — surgical and precise is
+*how* Gekai works; a companion checkpoint station is *what* Gekai is.
+
+None of this demotes standalone use. Running Gekai directly on a repo stays a complete, first-class,
+supported tool, not a degraded fallback; the companion mode is the primary *positioning*, not a
+gate on capability.
 
 ## The harness is the multiplier
 
@@ -9,7 +42,8 @@ checkpointed execution — lets a smaller, cheaper model produce results compara
 to, a stronger model used without one. Model strength is one input; how the model is orchestrated
 is the other, and orchestration is what Gekai is actually optimizing. If the bet holds, the
 ceiling on what's achievable stops being "which model can you afford" and becomes "how good is
-the harness around it." Every other concept below is in service of this one.
+the harness around it." The companion is Gekai's *position*; this is its core *bet*, and every
+other concept below is in service of it.
 
 ## The harness is a boundary, not an identity
 
@@ -34,7 +68,8 @@ for, not the default shape of "more work."
 The instinct is to call a tool "surgical" because it limits *how much* it touches. Gekai's
 position: scope size is not the safety property that matters. A one-line edit in the wrong
 place is worse than a mechanical rename across fifty files. What makes an intervention surgical
-is whether it's *correct*, not whether it's *small*.
+is whether it's *correct*, not whether it's *small*. Precision is *how* Gekai works; being the
+companion a user switches into is *what* Gekai is.
 
 The precision mechanism is **verification of the change itself** — a check that runs on what was
 actually created or modified, not on how many files were touched before anything happened. Plan 27
@@ -49,7 +84,8 @@ open design point.
 ## Checkpoint-oriented, not autonomous-run-oriented
 
 Gekai is built around keeping a human in the loop, not long unsupervised execution. Every turn is
-expected to produce something a human looks at before the next one starts. This shapes
+expected to produce something a human looks at before the next one starts — which is also why a
+user switches in from a parent tool at all: exactly when a checkpoint matters. This shapes
 everything downstream: subagents run cold with no carried context (fire-and-forget per turn,
 by design), and diff/event output exists specifically to give the human something concrete to
 check at each step. Each step's instruction does carry a mechanical `<request_summary>` block —
@@ -102,7 +138,8 @@ warrants it, spawns a specialist on main's behalf. Subagents are not separate to
 they're scoped roles the same system plays for a single turn, with their own restricted
 tool/permission view, then discarded. This avoids the common multi-agent-framework trap of
 fragmenting identity and context across a fleet of independent actors; Gekai stays one thing that
-can temporarily specialize, not a dispatcher handing work to strangers.
+can temporarily specialize, not a dispatcher handing work to strangers. A parent tool that switches
+the user into Gekai does not change this: it stays outside the harness, not a new role inside it.
 
 ## Model tiers are capability contracts, not models
 
